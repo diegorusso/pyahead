@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyahead"
+dynamic = ["version"]
+description = "Evidence-backed Python compatibility forecasting"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = []
+
+[project.urls]
+Documentation = "https://github.com/diegorusso/pyahead/blob/main/docs/design.md"
+Issues = "https://github.com/diegorusso/pyahead/issues"
+Repository = "https://github.com/diegorusso/pyahead"
+
+[project.scripts]
+pyahead = "pyahead.cli:main"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.15,<2",
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1",
+]
+
+[tool.hatch.version]
+path = "src/pyahead/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyahead"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/AGENTS.md",
+  "/LICENSE",
+  "/README.md",
+  "/docs",
+  "/pyproject.toml",
+  "/src",
+  "/tests",
+  "/uv.lock",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+extend-exclude = ["docs/design.md"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "COM812", # Conflicts with the formatter.
+  "CPY001", # The repository license replaces per-file copyright headers.
+  "D203",   # Use one blank line before class docstrings (D211).
+  "D213",   # Start multi-line docstrings on the first line (D212).
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+pretty = true
+show_error_codes = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "--cov=pyahead",
+  "--cov-branch",
+  "--cov-report=term-missing",
+]
+testpaths = ["tests"]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["pyahead"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
