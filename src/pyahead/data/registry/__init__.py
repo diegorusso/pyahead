@@ -1,0 +1,1 @@
+"""Bundled compatibility registry snapshot."""

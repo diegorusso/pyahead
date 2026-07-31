@@ -26,5 +26,13 @@ def test_version_command(
 
 
 def test_main_accepts_no_arguments() -> None:
-    """The bootstrap parser has no required arguments."""
+    """The root command remains a successful help path."""
     assert main([]) == 0
+
+
+def test_version_subcommand(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The spelled-out version command matches the global alias."""
+    assert main(["version"]) == 0
+    assert capsys.readouterr().out == f"pyahead {__version__}\n"

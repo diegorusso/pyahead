@@ -1,0 +1,102 @@
+{
+  "diagnostics": [],
+  "findings": [
+    {
+      "action_version": "3.13",
+      "enclosing_scope": "<module>",
+      "fingerprint": "e781bbe30afe0c48c582ed1da3a157bfc8b048eaa000737e1109499f8d63c3ee",
+      "impact": "breaking",
+      "location": {
+        "path": "legacy.py",
+        "region": {
+          "end": {
+            "column": 11,
+            "line": 1
+          },
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      "match": {
+        "confidence": "high",
+        "kind": "module-import"
+      },
+      "registry_revision": "c197fd097ca2da044c700fc655b9dcc4a5ba5d04224441ce12318f96b66ce189",
+      "remediation": {
+        "summary": "Replace the specific cgi functionality in use. There is no single drop-in replacement for the complete module."
+      },
+      "rule_id": "CPY0001",
+      "sources": [
+        {
+          "id": "pep-0594",
+          "title": "PEP 594 — Removing dead batteries from the standard library",
+          "url": "https://peps.python.org/pep-0594/"
+        },
+        {
+          "id": "python-3.13-cgi",
+          "title": "cgi — Common Gateway Interface support",
+          "url": "https://docs.python.org/3.13/library/cgi.html"
+        }
+      ],
+      "subject": "cgi",
+      "timeline": [
+        {
+          "certainty": "released",
+          "event": "deprecated",
+          "python": "3.11",
+          "source": "pep-0594"
+        },
+        {
+          "certainty": "released",
+          "event": "removed",
+          "python": "3.13",
+          "source": "python-3.13-cgi"
+        }
+      ],
+      "title": "The cgi module is removed"
+    }
+  ],
+  "gate": {
+    "fail_on": "breaking",
+    "failed": true,
+    "new_only": false
+  },
+  "policy": {
+    "baseline_python": "3.11",
+    "horizon_python": "3.13",
+    "provenance": {
+      "baseline_python": "command-line",
+      "horizon_python": "command-line"
+    },
+    "versions": [
+      "3.11",
+      "3.12",
+      "3.13"
+    ]
+  },
+  "registry": {
+    "release": "2026.07.31",
+    "revision": "c197fd097ca2da044c700fc655b9dcc4a5ba5d04224441ce12318f96b66ce189"
+  },
+  "scan": {
+    "files_analyzed": 1,
+    "files_discovered": 1,
+    "files_incomplete": 0,
+    "root": "."
+  },
+  "schema_version": 1,
+  "summary": {
+    "breaking": 1,
+    "deprecated": 0,
+    "informational": 0,
+    "new": 1,
+    "risk": 0,
+    "suppressed": 0
+  },
+  "tool": {
+    "name": "pyahead",
+    "version": "0.1.0a1"
+  }
+}

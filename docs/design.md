@@ -183,14 +183,15 @@ The first usable slice supports:
 - a packaged CLI;
 - explicit baseline and horizon versions;
 - registry loading and validation;
-- direct and aliased module imports;
-- exact qualified references and calls;
+- direct, aliased, and from-module imports;
 - a small seed rule set, including PEP 594 module removals;
 - text and JSON output;
 - deterministic exit codes;
 - tests from command line through rendered finding.
 
 This release exists to validate architecture, not registry breadth.
+Exact qualified-reference and qualified-call matching starts in M2 with the
+matcher framework and its required shadowing and ambiguity fixtures.
 
 ### 4.2 `0.1.0a2`: useful CPython static analyser
 

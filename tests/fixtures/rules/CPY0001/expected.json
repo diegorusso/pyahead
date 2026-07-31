@@ -1,0 +1,13 @@
+{
+  "negative": [
+    "negative/local_module/consumer.py",
+    "negative/shadowed_name.py",
+    "negative/string_only.py"
+  ],
+  "positive": {
+    "positive/from_import.py": "high",
+    "positive/import_alias.py": "high",
+    "positive/import_direct.py": "high"
+  },
+  "rule_id": "CPY0001"
+}

@@ -8,16 +8,23 @@ releases. The complete product and technical contract is in
 
 ## Status
 
-The repository is at milestone M0: repository bootstrap. The package currently
-provides only a version command:
+The repository is at milestone M1: the end-to-end static-analysis slice. It can
+scan Python source for exact imports of the bundled `cgi` module rule and render
+deterministic text or JSON with authoritative timeline sources:
 
 ```console
-pyahead --version
+pyahead check . --baseline-python 3.11 --horizon-python 3.13
 ```
 
-PyAhead does not yet analyse repositories, load a compatibility registry,
-prove compatibility, execute test suites, or provide a hosted service. Those
-capabilities belong to later milestones in the design.
+Exit code 1 means a breaking finding met the current fixed gate; 2 means invalid
+input, 3 means analysis was incomplete, and 4 means an internal failure. A clean
+exit is not proof of compatibility.
+
+M1 deliberately has one registry rule and one matcher kind. It does not yet
+match qualified references or calls, evaluate version guards, respect project
+configuration or `.gitignore`, emit SARIF, manage baselines or suppressions,
+execute target code, access the network while scanning, or provide a hosted
+service. Those capabilities belong to later milestones in the design.
 
 ## Development
 

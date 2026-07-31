@@ -1,0 +1,13 @@
+PyAhead 0.1.0a1
+Policy: Python 3.11 through 3.13
+Registry: 2026.07.31 (c197fd097ca2)
+
+Python 3.13 — breaking
+  CPY0001  legacy.py:1:1  cgi (high confidence)
+    The cgi module is removed
+    Timeline: deprecated in 3.11 (released); removed in 3.13 (released)
+    Guidance: Replace the specific cgi functionality in use. There is no single drop-in replacement for the complete module.
+    Source: PEP 594 — Removing dead batteries from the standard library — https://peps.python.org/pep-0594/
+    Source: cgi — Common Gateway Interface support — https://docs.python.org/3.13/library/cgi.html
+
+Result: 1 finding (1 breaking); 1 file analyzed; 0 files incomplete.
