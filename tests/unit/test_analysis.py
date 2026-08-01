@@ -267,6 +267,30 @@ def test_unparseable_source_marks_scan_incomplete(tmp_path: Path) -> None:
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        'value = b"bytes" "text"\n',
+        'import importlib\nimportlib.import_module("\\xzz")\n',
+    ],
+)
+def test_libcst_validation_and_literal_failures_are_incomplete(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    """Malformed syntax-tree and scalar literal states never become internals."""
+    (tmp_path / "broken.py").write_text(source, encoding="utf-8")
+
+    report = _scan(tmp_path)
+
+    assert report.findings == ()
+    assert report.counts.files_discovered == 1
+    assert report.counts.files_analyzed == 0
+    assert report.counts.files_incomplete == 1
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["PYA1003"]
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
 def test_invalid_encoding_marks_scan_incomplete(tmp_path: Path) -> None:
     """Unreadable declared encodings produce a safe relative diagnostic."""
     (tmp_path / "encoded.py").write_bytes(b"# coding: missing-codec\n")

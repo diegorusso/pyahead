@@ -1,0 +1,2 @@
+truth = True
+value = ~truth

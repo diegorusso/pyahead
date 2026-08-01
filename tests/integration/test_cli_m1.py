@@ -76,13 +76,22 @@ def test_invalid_yaml_exits_two_without_machine_output(
     assert str(tmp_path) not in captured.err
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "if:\n",
+        'value = b"bytes" "text"\n',
+        'import importlib\nimportlib.import_module("\\xzz")\n',
+    ],
+)
 def test_unparseable_included_source_exits_three(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    source: str,
 ) -> None:
     """Incomplete analysis outranks otherwise gated findings."""
-    (tmp_path / "broken.py").write_text("if:\n", encoding="utf-8")
+    (tmp_path / "broken.py").write_text(source, encoding="utf-8")
     (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
@@ -90,8 +99,68 @@ def test_unparseable_included_source_exits_three(
     document = cast("dict[str, object]", json.loads(capsys.readouterr().out))
     scan = cast("dict[str, int]", document["scan"])
     gate = cast("dict[str, bool]", document["gate"])
+    diagnostics = cast("list[dict[str, object]]", document["diagnostics"])
     assert scan["files_incomplete"] == 1
     assert gate["failed"] is True
+    assert [diagnostic["code"] for diagnostic in diagnostics] == ["PYA1003"]
+
+
+def test_pathological_delimiter_depth_exits_three_without_a_signal(
+    tmp_path: Path,
+) -> None:
+    """Deep delimiters are diagnosed before LibCST can exhaust the C stack."""
+    depth = 1_500
+    (tmp_path / "nested.py").write_text(
+        "value = " + ("(" * depth) + "0" + (")" * depth) + "\n",
+        encoding="utf-8",
+    )
+    command = [sys.executable, "-m", "pyahead", *_check_args("json")]
+
+    completed = subprocess.run(  # noqa: S603
+        command,
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert completed.returncode == int(ExitCode.INCOMPLETE)
+    document = cast("dict[str, object]", json.loads(completed.stdout))
+    diagnostics = cast("list[dict[str, object]]", document["diagnostics"])
+    assert [diagnostic["code"] for diagnostic in diagnostics] == ["PYA1003"]
+    assert "nesting exceeds" in cast("str", diagnostics[0]["message"])
+    assert completed.stderr == b""
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "value = " + ("~" * 1_500) + "True\n",
+        "value = " + ("1 ** " * 1_500) + "1\n",
+    ],
+)
+def test_pathological_cst_depth_exits_three_without_a_signal(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    """Non-delimiter CST depth is bounded before recursive metadata work."""
+    (tmp_path / "nested.py").write_text(source, encoding="utf-8")
+    command = [sys.executable, "-m", "pyahead", *_check_args("json")]
+
+    completed = subprocess.run(  # noqa: S603
+        command,
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert completed.returncode == int(ExitCode.INCOMPLETE)
+    document = cast("dict[str, object]", json.loads(completed.stdout))
+    diagnostics = cast("list[dict[str, object]]", document["diagnostics"])
+    assert [diagnostic["code"] for diagnostic in diagnostics] == ["PYA1003"]
+    assert "syntax tree nesting exceeds" in cast("str", diagnostics[0]["message"])
+    assert completed.stderr == b""
 
 
 def test_unexpected_failure_exits_four_without_exception_details(

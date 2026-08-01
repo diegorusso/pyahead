@@ -8,9 +8,9 @@ releases. The complete product and technical contract is in
 
 ## Status
 
-The repository is at milestone M1: the end-to-end static-analysis slice. It can
-scan Python source for exact imports of the bundled `cgi` module rule and render
-deterministic text or JSON with authoritative timeline sources:
+The repository is at milestone M2: the registry and matcher framework. It can
+scan Python source with the bundled `cgi` rule and render deterministic text or
+JSON with authoritative timeline sources:
 
 ```console
 pyahead check . --baseline-python 3.11 --horizon-python 3.13
@@ -25,11 +25,22 @@ classifying imports. Competing project modules are shown as analysis inferences
 instead of high-confidence standard-library findings. Source reads are limited
 to regular files no larger than 2 MiB; skipped entries make the scan incomplete.
 
-M1 deliberately has one registry rule and one matcher kind. It does not yet
-match qualified references or calls, evaluate version guards, respect project
-configuration or `.gitignore`, emit SARIF, manage baselines or suppressions,
-execute target code, access the network while scanning, or provide a hosted
-service. Those capabilities belong to later milestones in the design.
+The strict registry supports indexed module imports, qualified references and
+calls, call shapes, literal dynamic imports, and a fixed whitelist of built-in
+syntax patterns. Registry data can be validated, listed, and explained without
+scanning a repository:
+
+```console
+pyahead registry validate
+pyahead registry list
+pyahead explain CPY0001
+```
+
+M2 does not yet evaluate version guards, propagate runtime-versus-typing
+contexts, respect project configuration or `.gitignore`, emit SARIF, manage
+baselines or suppressions, execute target code, access the network while
+scanning, or provide a hosted service. Those capabilities belong to later
+milestones in the design.
 
 Milestone M1.5 adds repository development automation without changing those
 product capabilities. Maintainers can use the resumable, independently verified

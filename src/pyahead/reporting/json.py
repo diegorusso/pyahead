@@ -47,6 +47,15 @@ def _evidence(
 
 
 def _finding(finding: Finding) -> dict[str, JsonValue]:
+    remediation: dict[str, JsonValue] = {"summary": finding.remediation.summary}
+    if finding.remediation.documentation_url is not None:
+        remediation["documentation_url"] = finding.remediation.documentation_url
+    if finding.remediation.automation is not None:
+        automation = finding.remediation.automation
+        remediation["automation"] = {
+            "rule": automation.rule,
+            "tool": automation.tool.value,
+        }
     return {
         "action_version": str(finding.action_version),
         "enclosing_scope": finding.enclosing_scope,
@@ -59,7 +68,7 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             "kind": finding.match_kind,
         },
         "registry_revision": finding.registry_revision,
-        "remediation": {"summary": finding.remediation.summary},
+        "remediation": remediation,
         "rule_id": finding.rule_id,
         "sources": [
             {"id": source.id, "title": source.title, "url": source.url}

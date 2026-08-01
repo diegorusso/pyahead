@@ -33,6 +33,7 @@ pyahead = "pyahead.cli:main"
 
 [dependency-groups]
 dev = [
+  "jsonschema>=4.19,<5",
   "mypy>=1.15,<2",
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",

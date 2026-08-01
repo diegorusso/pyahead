@@ -6,19 +6,24 @@ import os
 import stat
 import tokenize
 from collections import defaultdict
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 import libcst as cst
-from libcst.helpers import get_full_name_for_node
 from libcst.metadata import (
     ClassScope,
     CodeRange,
+    ExpressionContext,
+    ExpressionContextProvider,
     FunctionScope,
     GlobalScope,
     MetadataWrapper,
+    ParentNodeProvider,
     PositionProvider,
+    QualifiedNameProvider,
+    QualifiedNameSource,
     ScopeProvider,
 )
 from libcst.metadata.scope_provider import Scope
@@ -32,15 +37,45 @@ from pyahead.analysis.discovery import (
     discover_python_files,
     project_module_paths,
 )
+from pyahead.analysis.matchers import MatcherIndex, build_matcher_index
+from pyahead.analysis.matchers.base import IndexedMatcher
+from pyahead.analysis.matchers.builtins import matches_builtin_pattern
+from pyahead.analysis.matchers.calls import (
+    BUILTIN_IMPORT_FUNCTION,
+    IMPORT_MODULE_FUNCTION,
+    call_arguments,
+    call_shape_matches,
+    literal_dynamic_module,
+)
+from pyahead.analysis.matchers.imports import (
+    ImportedModule,
+    competing_project_paths,
+    imported_modules,
+    module_matches,
+)
+from pyahead.analysis.matchers.qualified import (
+    QualifiedResolution,
+    classify_reference_context,
+    qualified_project_candidates,
+    resolve_qualified_name,
+    resolve_qualified_name_sources,
+    terminal_name,
+)
 from pyahead.model import (
     AnalysisInference,
+    BuiltinPatternMatcher,
+    CallShapeMatcher,
     ChangeEventKind,
     Diagnostic,
     DiagnosticCategory,
     Finding,
     Impact,
+    LiteralDynamicImportMatcher,
     MatchConfidence,
+    ModuleImportMatcher,
     Policy,
+    QualifiedCallMatcher,
+    QualifiedReferenceMatcher,
     Registry,
     Rule,
     ScanCounts,
@@ -52,6 +87,9 @@ from pyahead.model import (
 )
 from pyahead.registry import load_registry
 from pyahead.versions import PythonMinor
+
+MAX_PARSE_NESTING = 200
+MAX_CST_DEPTH = 256
 
 
 @dataclass(frozen=True)
@@ -97,128 +135,560 @@ def _location(
     )
 
 
-class _ImportVisitor(cst.CSTVisitor):
-    """Collect exact imports for indexed module rules."""
+class _MatcherVisitor(cst.CSTVisitor):
+    """Run all indexed M2 matchers in one metadata-aware traversal."""
 
-    METADATA_DEPENDENCIES = (PositionProvider, ScopeProvider)
+    METADATA_DEPENDENCIES = (
+        ExpressionContextProvider,
+        ParentNodeProvider,
+        PositionProvider,
+        QualifiedNameProvider,
+        ScopeProvider,
+    )
 
     def __init__(
         self,
         path: DiscoveredFile,
-        rules_by_module: dict[str, tuple[Rule, ...]],
+        matcher_index: MatcherIndex,
         project_modules: dict[str, tuple[PurePosixPath, ...]],
     ) -> None:
         """Configure one coordinated read-only traversal."""
         self._path = path
-        self._rules_by_module = rules_by_module
+        self._index = matcher_index
         self._project_modules = project_modules
+        self._inference_keys: set[tuple[int, int, str]] = set()
         self.matches: list[StaticMatch] = []
         self.inferences: list[AnalysisInference] = []
 
-    def _record(
+    def _record_match(
         self,
-        node: cst.Import | cst.ImportFrom,
-        module: str,
-        syntax: str,
-        bound_names: tuple[str, ...],
+        binding: IndexedMatcher,
+        node: cst.CSTNode,
+        confidence: MatchConfidence,
+        evidence: tuple[tuple[str, str | tuple[str, ...]], ...],
     ) -> None:
-        rules = self._rules_by_module.get(module, ())
-        if not rules:
-            return
         location = _location(
             self._path,
             self.get_metadata(PositionProvider, node),
         )
         scope = self.get_metadata(ScopeProvider, node)
-        project_candidates = self._project_modules.get(module, ())
-        if project_candidates:
-            self.inferences.append(
-                AnalysisInference(
-                    code="PYA2001",
-                    kind="module-resolution",
-                    message=(
-                        f"did not classify import of {module!r} as standard library "
-                        "because a competing project module exists"
-                    ),
-                    location=location,
-                    evidence=(
-                        ("bound_names", bound_names),
-                        (
-                            "candidate_paths",
-                            tuple(path.as_posix() for path in project_candidates),
-                        ),
-                        ("imported_module", module),
-                        ("resolution", "competing-project-module"),
-                        ("source_roots", (".", "src")),
-                        ("syntax", syntax),
-                    ),
-                )
+        self.matches.append(
+            StaticMatch(
+                rule_id=binding.rule.id,
+                matcher_kind=binding.matcher.kind.value,
+                location=location,
+                enclosing_scope=_scope_name(scope),
+                subject=binding.rule.subject,
+                confidence=confidence,
+                evidence=evidence,
             )
-            return
-        for rule in rules:
-            self.matches.append(
-                StaticMatch(
-                    rule_id=rule.id,
-                    matcher_kind="module-import",
-                    location=location,
-                    enclosing_scope=_scope_name(scope),
-                    subject=rule.subject,
-                    confidence=MatchConfidence.HIGH,
-                    evidence=(
-                        ("bound_names", bound_names),
-                        ("imported_module", module),
-                        ("resolution", "no-competing-project-module"),
-                        ("source_roots", (".", "src")),
-                        ("syntax", syntax),
+        )
+
+    def _record_import_inference(
+        self,
+        node: cst.Import | cst.ImportFrom,
+        imported: ImportedModule,
+        candidates: tuple[PurePosixPath, ...],
+    ) -> None:
+        location = _location(
+            self._path,
+            self.get_metadata(PositionProvider, node),
+        )
+        self.inferences.append(
+            AnalysisInference(
+                code="PYA2001",
+                kind="module-resolution",
+                message=(
+                    f"did not classify import of {imported.module!r} as standard "
+                    "library because a competing project module exists"
+                ),
+                location=location,
+                evidence=(
+                    ("bound_names", imported.bound_names),
+                    (
+                        "candidate_paths",
+                        tuple(path.as_posix() for path in candidates),
                     ),
-                )
+                    ("imported_module", imported.module),
+                    ("resolution", "competing-project-module"),
+                    ("source_roots", (".", "src")),
+                    ("syntax", imported.syntax),
+                ),
+            )
+        )
+
+    def _record_qualified_inference(
+        self,
+        node: cst.CSTNode,
+        qualified_name: str,
+        candidates: tuple[PurePosixPath, ...],
+    ) -> None:
+        location = _location(
+            self._path,
+            self.get_metadata(PositionProvider, node),
+        )
+        key = (
+            location.region.start.line,
+            location.region.start.column,
+            qualified_name,
+        )
+        if key in self._inference_keys:
+            return
+        self._inference_keys.add(key)
+        self.inferences.append(
+            AnalysisInference(
+                code="PYA2001",
+                kind="module-resolution",
+                message=(
+                    f"did not classify reference to {qualified_name!r} because a "
+                    "competing project module exists"
+                ),
+                location=location,
+                evidence=(
+                    (
+                        "candidate_paths",
+                        tuple(path.as_posix() for path in candidates),
+                    ),
+                    ("qualified_name", qualified_name),
+                    ("resolution", "competing-project-module"),
+                    ("source_roots", (".", "src")),
+                ),
+            )
+        )
+
+    def _record_dynamic_import_inference(
+        self,
+        node: cst.Call,
+        module: str,
+        dynamic_function: str,
+        candidates: tuple[PurePosixPath, ...],
+    ) -> None:
+        location = _location(
+            self._path,
+            self.get_metadata(PositionProvider, node),
+        )
+        self.inferences.append(
+            AnalysisInference(
+                code="PYA2001",
+                kind="module-resolution",
+                message=(
+                    f"did not classify dynamic import of {module!r} as standard "
+                    "library because a competing project module exists"
+                ),
+                location=location,
+                evidence=(
+                    (
+                        "candidate_paths",
+                        tuple(path.as_posix() for path in candidates),
+                    ),
+                    ("dynamic_function", dynamic_function),
+                    ("imported_module", module),
+                    ("resolution", "competing-project-module"),
+                    ("source_roots", (".", "src")),
+                ),
+            )
+        )
+
+    def _record_import(
+        self,
+        node: cst.Import | cst.ImportFrom,
+        imported: ImportedModule,
+    ) -> None:
+        bindings = tuple(
+            binding
+            for binding in self._index.module_imports.get(
+                imported.module.partition(".")[0], ()
+            )
+            if isinstance(binding.matcher, ModuleImportMatcher)
+            and module_matches(binding.matcher.module, imported.module)
+        )
+        if not bindings:
+            return
+        project_candidates = competing_project_paths(
+            imported.module, self._project_modules
+        )
+        if project_candidates:
+            self._record_import_inference(node, imported, project_candidates)
+            return
+        for binding in bindings:
+            self._record_match(
+                binding,
+                node,
+                MatchConfidence.HIGH,
+                (
+                    ("bound_names", imported.bound_names),
+                    ("imported_module", imported.module),
+                    ("resolution", "no-competing-project-module"),
+                    ("source_roots", (".", "src")),
+                    ("syntax", imported.syntax),
+                ),
             )
 
     def visit_Import(self, node: cst.Import) -> None:  # noqa: N802
         """Match direct and aliased module imports."""
-        bindings: dict[str, list[str]] = {}
-        for alias in node.names:
-            module = get_full_name_for_node(alias.name)
-            if module is None:
-                continue
-            bound_name = (
-                get_full_name_for_node(alias.asname.name)
-                if alias.asname is not None
-                else module.split(".", maxsplit=1)[0]
-            )
-            module_bindings = bindings.setdefault(module, [])
-            if (resolved_binding := bound_name or module) not in module_bindings:
-                module_bindings.append(resolved_binding)
-        for module, module_bindings in bindings.items():
-            self._record(node, module, "import", tuple(module_bindings))
+        for imported in imported_modules(node):
+            self._record_import(node, imported)
 
     def visit_ImportFrom(self, node: cst.ImportFrom) -> None:  # noqa: N802
-        """Match absolute ``from MODULE import ...`` statements."""
-        if node.relative:
+        """Match absolute from-import statements."""
+        for imported in imported_modules(node):
+            self._record_import(node, imported)
+
+    def _resolution(
+        self,
+        node: cst.BaseExpression,
+        qualified_name: str,
+        *,
+        source: QualifiedNameSource = QualifiedNameSource.IMPORT,
+    ) -> QualifiedResolution:
+        names = self.get_metadata(QualifiedNameProvider, node, set())
+        return resolve_qualified_name(names, qualified_name, source=source)
+
+    def _resolution_sources(
+        self,
+        node: cst.BaseExpression,
+        qualified_name: str,
+        sources: frozenset[QualifiedNameSource],
+    ) -> QualifiedResolution:
+        names = self.get_metadata(QualifiedNameProvider, node, set())
+        return resolve_qualified_name_sources(names, qualified_name, sources)
+
+    def _indexed_bindings(
+        self,
+        node: cst.BaseExpression,
+        index: Mapping[str, tuple[IndexedMatcher, ...]],
+    ) -> tuple[IndexedMatcher, ...]:
+        terminals = set()
+        if (syntax_terminal := terminal_name(node)) is not None:
+            terminals.add(syntax_terminal)
+        terminals.update(
+            name.name.rpartition(".")[2]
+            for name in self.get_metadata(QualifiedNameProvider, node, set())
+        )
+        bindings = {
+            (binding.rule.id, repr(binding.matcher)): binding
+            for terminal in terminals
+            for binding in index.get(terminal, ())
+        }
+        return tuple(bindings[key] for key in sorted(bindings))
+
+    def _import_resolution(
+        self,
+        node: cst.BaseExpression,
+        qualified_name: str,
+    ) -> QualifiedResolution:
+        resolution = self._resolution(node, qualified_name)
+        return self._project_safe_resolution(node, qualified_name, resolution)
+
+    def _project_safe_resolution(
+        self,
+        node: cst.BaseExpression,
+        qualified_name: str,
+        resolution: QualifiedResolution,
+    ) -> QualifiedResolution:
+        if resolution.confidence is None:
+            return resolution
+        candidates = qualified_project_candidates(qualified_name, self._project_modules)
+        if candidates:
+            self._record_qualified_inference(node, qualified_name, candidates)
+            return QualifiedResolution(
+                confidence=None,
+                qualified_names=resolution.qualified_names,
+                resolution="competing-project-module",
+            )
+        return resolution
+
+    def _visit_reference(self, node: cst.BaseExpression) -> None:
+        if (
+            self.get_metadata(ExpressionContextProvider, node, None)
+            is not ExpressionContext.LOAD
+        ):
             return
-        module = get_full_name_for_node(node.module) if node.module else None
+        reference_context = classify_reference_context(
+            node,
+            lambda child: self.get_metadata(ParentNodeProvider, child, None),
+        )
+        for binding in self._indexed_bindings(node, self._index.qualified_references):
+            matcher = binding.matcher
+            if not isinstance(matcher, QualifiedReferenceMatcher):
+                continue
+            if matcher.contexts and reference_context not in matcher.contexts:
+                continue
+            resolution = self._import_resolution(node, matcher.qualified_name)
+            if resolution.confidence is None:
+                continue
+            self._record_match(
+                binding,
+                node,
+                resolution.confidence,
+                (
+                    ("qualified_names", resolution.qualified_names),
+                    ("reference_context", reference_context.value),
+                    ("resolution", resolution.resolution),
+                ),
+            )
+
+    def visit_Name(self, node: cst.Name) -> None:  # noqa: N802
+        """Match unqualified imported references."""
+        self._visit_reference(node)
+
+    def visit_Attribute(self, node: cst.Attribute) -> None:  # noqa: N802
+        """Match attribute references derived from imports."""
+        self._visit_reference(node)
+
+    def _record_qualified_call(
+        self,
+        binding: IndexedMatcher,
+        matcher: QualifiedCallMatcher | CallShapeMatcher,
+        node: cst.Call,
+    ) -> None:
+        if isinstance(matcher, CallShapeMatcher) and not call_shape_matches(
+            node, matcher
+        ):
+            return
+        resolution = self._import_resolution(node.func, matcher.qualified_name)
+        if resolution.confidence is None:
+            return
+        evidence: tuple[tuple[str, str | tuple[str, ...]], ...] = (
+            ("qualified_names", resolution.qualified_names),
+            ("resolution", resolution.resolution),
+        )
+        if isinstance(matcher, CallShapeMatcher):
+            arguments = call_arguments(node)
+            evidence = (
+                ("keyword_names", tuple(sorted(arguments.keywords))),
+                ("positional_count", str(len(arguments.positional))),
+                *evidence,
+            )
+        self._record_match(
+            binding,
+            node.func,
+            resolution.confidence,
+            evidence,
+        )
+
+    @staticmethod
+    def _combined_confidence(
+        authored: MatchConfidence,
+        resolution: MatchConfidence,
+    ) -> MatchConfidence:
+        if MatchConfidence.MEDIUM in {authored, resolution}:
+            return MatchConfidence.MEDIUM
+        return authored
+
+    def _dynamic_import_function(
+        self,
+        node: cst.Call,
+    ) -> tuple[str, QualifiedResolution] | None:
+        import_resolution = self._resolution(node.func, IMPORT_MODULE_FUNCTION)
+        if import_resolution.confidence is not None:
+            return IMPORT_MODULE_FUNCTION, import_resolution
+        builtin_resolution = self._resolution_sources(
+            node.func,
+            BUILTIN_IMPORT_FUNCTION,
+            frozenset({QualifiedNameSource.BUILTIN, QualifiedNameSource.IMPORT}),
+        )
+        if builtin_resolution.confidence is not None:
+            return BUILTIN_IMPORT_FUNCTION, builtin_resolution
+        return None
+
+    def _record_dynamic_import(self, node: cst.Call) -> None:
+        resolved_function = self._dynamic_import_function(node)
+        if resolved_function is None:
+            return
+        dynamic_function, resolution = resolved_function
+        module = literal_dynamic_module(node, dynamic_function)
         if module is None:
             return
-        bound_names: tuple[str, ...]
-        if isinstance(node.names, cst.ImportStar):
-            bound_names = ("*",)
-        else:
-            bound_names = tuple(
-                name
-                for alias in node.names
-                if (
-                    name := get_full_name_for_node(
-                        alias.asname.name if alias.asname is not None else alias.name
-                    )
-                )
-                is not None
+        bindings = tuple(
+            binding
+            for binding in self._index.literal_dynamic_imports.get(
+                module.partition(".")[0], ()
             )
-        self._record(node, module, "from-import", bound_names)
+            if isinstance(binding.matcher, LiteralDynamicImportMatcher)
+            and module_matches(binding.matcher.module, module)
+        )
+        if not bindings:
+            return
+        if dynamic_function == IMPORT_MODULE_FUNCTION:
+            resolution = self._project_safe_resolution(
+                node.func,
+                dynamic_function,
+                resolution,
+            )
+        if resolution.confidence is None:
+            return
+        project_candidates = competing_project_paths(module, self._project_modules)
+        if project_candidates:
+            self._record_dynamic_import_inference(
+                node,
+                module,
+                dynamic_function,
+                project_candidates,
+            )
+            return
+        for binding in bindings:
+            matcher = binding.matcher
+            if not isinstance(matcher, LiteralDynamicImportMatcher):
+                continue
+            self._record_match(
+                binding,
+                node,
+                self._combined_confidence(matcher.confidence, resolution.confidence),
+                (
+                    ("dynamic_function", dynamic_function),
+                    ("imported_module", module),
+                    ("qualified_names", resolution.qualified_names),
+                    ("resolution", resolution.resolution),
+                ),
+            )
+
+    def visit_Call(self, node: cst.Call) -> None:  # noqa: N802
+        """Match qualified calls, call shapes, and literal dynamic imports."""
+        for binding in self._indexed_bindings(node.func, self._index.qualified_calls):
+            matcher = binding.matcher
+            if isinstance(matcher, QualifiedCallMatcher):
+                self._record_qualified_call(binding, matcher, node)
+        for binding in self._indexed_bindings(node.func, self._index.call_shapes):
+            matcher = binding.matcher
+            if isinstance(matcher, CallShapeMatcher):
+                self._record_qualified_call(binding, matcher, node)
+        self._record_dynamic_import(node)
+
+    def visit_UnaryOperation(self, node: cst.UnaryOperation) -> None:  # noqa: N802
+        """Dispatch syntax matchers through fixed visitor hooks."""
+        for pattern, bindings in self._index.builtin_patterns.items():
+            if not matches_builtin_pattern(pattern, node):
+                continue
+            for binding in bindings:
+                if isinstance(binding.matcher, BuiltinPatternMatcher):
+                    self._record_match(
+                        binding,
+                        node,
+                        MatchConfidence.HIGH,
+                        (("pattern", pattern.value),),
+                    )
+
+
+def _nesting_diagnostic(
+    relative_path: PurePosixPath,
+    structure: str,
+    limit: int,
+) -> Diagnostic:
+    """Create one stable incomplete diagnostic for bounded parser depth."""
+    return Diagnostic(
+        code="PYA1003",
+        category=DiagnosticCategory.PARSE,
+        message=(
+            f"unable to parse source: {structure} nesting exceeds "
+            f"the {limit}-level analysis limit"
+        ),
+        location=_initial_location(relative_path),
+        incomplete=True,
+    )
+
+
+def _parse_nesting_diagnostic(
+    source: str,
+    relative_path: PurePosixPath,
+) -> Diagnostic | None:
+    """Reject pathological delimiter depth before entering LibCST's C stack."""
+    depth = 0
+
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for token in tokens:
+            if token.type != tokenize.OP:
+                continue
+            if token.string in {"(", "[", "{"}:
+                depth += 1
+                if depth > MAX_PARSE_NESTING:
+                    return _nesting_diagnostic(
+                        relative_path,
+                        "delimiter",
+                        MAX_PARSE_NESTING,
+                    )
+            elif token.string in {")", "]", "}"} and depth:
+                depth -= 1
+    except tokenize.TokenError:
+        if depth >= MAX_PARSE_NESTING:
+            return _nesting_diagnostic(
+                relative_path,
+                "delimiter",
+                MAX_PARSE_NESTING,
+            )
+        return None
+    except IndentationError:
+        # LibCST produces the user-facing syntax diagnostic for malformed tokens.
+        return None
+    return None
+
+
+def _cst_nesting_diagnostic(
+    module: cst.Module,
+    relative_path: PurePosixPath,
+) -> Diagnostic | None:
+    """Bound every CST shape iteratively before recursive metadata traversal."""
+    stack: list[tuple[cst.CSTNode, int]] = [(module, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > MAX_CST_DEPTH:
+            return _nesting_diagnostic(
+                relative_path,
+                "concrete syntax tree",
+                MAX_CST_DEPTH,
+            )
+        stack.extend((child, depth + 1) for child in node.children)
+    return None
+
+
+def _parse_module(
+    source: str,
+    relative_path: PurePosixPath,
+) -> tuple[cst.Module | None, Diagnostic | None]:
+    """Parse one module after enforcing both parser depth boundaries."""
+    nesting_diagnostic = _parse_nesting_diagnostic(source, relative_path)
+    if nesting_diagnostic is not None:
+        return None, nesting_diagnostic
+
+    try:
+        module = cst.parse_module(source)
+    except cst.ParserSyntaxError as error:
+        position = SourcePosition(
+            line=error.raw_line,
+            column=error.raw_column + 1,
+        )
+        return None, Diagnostic(
+            code="PYA1003",
+            category=DiagnosticCategory.PARSE,
+            message=f"unable to parse source: {error.message}",
+            location=SourceLocation(
+                path=relative_path,
+                region=SourceRegion(start=position, end=position),
+            ),
+            incomplete=True,
+        )
+    except RecursionError:
+        return None, _nesting_diagnostic(
+            relative_path,
+            "concrete syntax tree",
+            MAX_CST_DEPTH,
+        )
+    except cst.CSTValidationError:
+        return None, Diagnostic(
+            code="PYA1003",
+            category=DiagnosticCategory.PARSE,
+            message="unable to parse source: invalid concrete syntax tree",
+            location=_initial_location(relative_path),
+            incomplete=True,
+        )
+
+    return module, _cst_nesting_diagnostic(module, relative_path)
 
 
 def _parse_file(
     path: DiscoveredFile,
-    rules_by_module: dict[str, tuple[Rule, ...]],
+    matcher_index: MatcherIndex,
     project_modules: dict[str, tuple[PurePosixPath, ...]],
 ) -> tuple[
     tuple[StaticMatch, ...],
@@ -232,27 +702,36 @@ def _parse_file(
         msg = "source text is absent without a read diagnostic"
         raise RuntimeError(msg)
 
-    try:
-        module = cst.parse_module(source)
-    except cst.ParserSyntaxError as error:
-        position = SourcePosition(
-            line=error.raw_line,
-            column=error.raw_column + 1,
-        )
-        diagnostic = Diagnostic(
-            code="PYA1003",
-            category=DiagnosticCategory.PARSE,
-            message=f"unable to parse source: {error.message}",
-            location=SourceLocation(
-                path=path.relative_path,
-                region=SourceRegion(start=position, end=position),
-            ),
-            incomplete=True,
-        )
-        return (), (), diagnostic
+    module, parse_diagnostic = _parse_module(source, path.relative_path)
+    if parse_diagnostic is not None:
+        return (), (), parse_diagnostic
+    if module is None:  # pragma: no cover - guarded by the diagnostic result.
+        msg = "parsed module is absent without a parse diagnostic"
+        raise RuntimeError(msg)
 
-    visitor = _ImportVisitor(path, rules_by_module, project_modules)
-    MetadataWrapper(module).visit(visitor)
+    visitor = _MatcherVisitor(path, matcher_index, project_modules)
+    try:
+        MetadataWrapper(module).visit(visitor)
+    except (RecursionError, cst.CSTValidationError, SyntaxError, ValueError) as error:
+        if isinstance(error, RecursionError):
+            diagnostic = _nesting_diagnostic(
+                path.relative_path,
+                "concrete syntax tree",
+                MAX_CST_DEPTH,
+            )
+        else:
+            diagnostic = Diagnostic(
+                code="PYA1003",
+                category=DiagnosticCategory.PARSE,
+                message="unable to parse source: invalid literal expression",
+                location=_initial_location(path.relative_path),
+                incomplete=True,
+            )
+        return (
+            (),
+            (),
+            diagnostic,
+        )
     return tuple(visitor.matches), tuple(visitor.inferences), None
 
 
@@ -348,18 +827,6 @@ def _read_source(path: DiscoveredFile) -> tuple[str | None, Diagnostic | None]:
         )
 
 
-def _rules_by_module(registry: Registry) -> dict[str, tuple[Rule, ...]]:
-    indexed: defaultdict[str, list[Rule]] = defaultdict(list)
-    for rule in registry.rules:
-        for matcher in rule.matchers:
-            if matcher.kind == "module-import":
-                indexed[matcher.module].append(rule)
-    return {
-        module: tuple(sorted(rules, key=lambda rule: rule.id))
-        for module, rules in indexed.items()
-    }
-
-
 def _impact_for_policy(
     rule: Rule,
     policy: Policy,
@@ -376,11 +843,7 @@ def _impact_for_policy(
             event.kind is ChangeEventKind.REMOVED,
         ),
     )
-    impact = (
-        rule.on_deprecation
-        if latest.kind is ChangeEventKind.DEPRECATED
-        else rule.on_removal
-    )
+    impact = rule.impact_for(latest.kind)
     action_version = max(latest.python, policy.baseline_python)
     return impact, action_version
 
@@ -399,6 +862,70 @@ def _fingerprint(match: StaticMatch, occurrence_ordinal: int) -> str:
     return hashlib.sha256(material.encode()).hexdigest()
 
 
+_MATCH_KIND_PRIORITY = {
+    "module-import": 0,
+    "qualified-reference": 1,
+    "qualified-call": 2,
+    "literal-dynamic-import": 2,
+    "builtin-pattern": 2,
+    "call-shape": 3,
+}
+_CONFIDENCE_PRIORITY = {
+    MatchConfidence.LOW: 0,
+    MatchConfidence.MEDIUM: 1,
+    MatchConfidence.HIGH: 2,
+}
+
+
+def _deduplicate_matches(matches: list[StaticMatch]) -> tuple[StaticMatch, ...]:
+    """Merge matchers that identify the same rule, region, and subject."""
+    deduplicated: dict[tuple[str, SourceLocation, str], StaticMatch] = {}
+    for match in sorted(
+        matches,
+        key=lambda item: (
+            item.location.path.as_posix(),
+            item.location.region.start,
+            item.rule_id,
+            item.matcher_kind,
+        ),
+    ):
+        key = (match.rule_id, match.location, match.subject)
+        existing = deduplicated.get(key)
+        if existing is None:
+            deduplicated[key] = match
+            continue
+        existing_strength = (
+            _CONFIDENCE_PRIORITY[existing.confidence],
+            _MATCH_KIND_PRIORITY[existing.matcher_kind],
+        )
+        incoming_strength = (
+            _CONFIDENCE_PRIORITY[match.confidence],
+            _MATCH_KIND_PRIORITY[match.matcher_kind],
+        )
+        primary, secondary = (
+            (match, existing)
+            if incoming_strength > existing_strength
+            else (existing, match)
+        )
+        evidence = list(primary.evidence)
+        evidence_keys = {name for name, _value in evidence}
+        evidence.extend(
+            (name, value)
+            for name, value in secondary.evidence
+            if name not in evidence_keys
+        )
+        deduplicated[key] = StaticMatch(
+            rule_id=primary.rule_id,
+            matcher_kind=primary.matcher_kind,
+            location=primary.location,
+            enclosing_scope=primary.enclosing_scope,
+            subject=primary.subject,
+            confidence=primary.confidence,
+            evidence=tuple(evidence),
+        )
+    return tuple(deduplicated.values())
+
+
 def _findings(
     matches: list[StaticMatch], registry: Registry, policy: Policy
 ) -> tuple[Finding, ...]:
@@ -406,7 +933,7 @@ def _findings(
     ordinals: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
     findings: list[Finding] = []
     for match in sorted(
-        matches,
+        _deduplicate_matches(matches),
         key=lambda item: (
             item.location.path.as_posix(),
             item.location.region.start,
@@ -511,7 +1038,7 @@ def scan(request: ScanRequest) -> ScanReport:
         root_discovery.files,
         root_discovery.issues,
     )
-    rules_by_module = _rules_by_module(registry)
+    matcher_index = build_matcher_index(registry)
 
     matches: list[StaticMatch] = []
     inferences: list[AnalysisInference] = []
@@ -520,7 +1047,7 @@ def scan(request: ScanRequest) -> ScanReport:
     for path in discovery.files:
         file_matches, file_inferences, diagnostic = _parse_file(
             path,
-            rules_by_module,
+            matcher_index,
             project_modules,
         )
         if diagnostic is not None:
@@ -530,7 +1057,11 @@ def scan(request: ScanRequest) -> ScanReport:
         matches.extend(file_matches)
         inferences.extend(file_inferences)
 
-    findings = _findings(matches, registry, policy)
+    findings = _findings(
+        [match for match in matches if match.confidence is MatchConfidence.HIGH],
+        registry,
+        policy,
+    )
     return ScanReport(
         schema_version=1,
         tool_version=__version__,

@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import cast
 
 from pyahead.analysis import ScanRequest, scan
-from pyahead.model import Diagnostic, DiagnosticCategory
+from pyahead.model import (
+    AutomationReference,
+    AutomationTool,
+    Diagnostic,
+    DiagnosticCategory,
+    Remediation,
+)
 from pyahead.reporting import render_json, render_text
 
 
@@ -73,4 +79,40 @@ def test_module_resolution_inference_is_visible_in_both_reports(
             "end": {"column": 11, "line": 1},
             "start": {"column": 1, "line": 1},
         },
+    }
+
+
+def test_remediation_links_and_automation_are_inert_report_metadata(
+    tmp_path: Path,
+) -> None:
+    """Both report formats expose, but never execute, external automation."""
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+    report = scan(
+        ScanRequest(
+            root=tmp_path,
+            baseline_python="3.11",
+            horizon_python="3.13",
+        )
+    )
+    finding = replace(
+        report.findings[0],
+        remediation=Remediation(
+            summary="Use the supported replacement.",
+            documentation_url="https://example.com/remediation",
+            automation=AutomationReference(tool=AutomationTool.RUFF, rule="UP999"),
+        ),
+    )
+    report = replace(report, findings=(finding,))
+
+    text = render_text(report)
+    document = cast("dict[str, object]", json.loads(render_json(report)))
+    findings = cast("list[dict[str, object]]", document["findings"])
+    remediation = cast("dict[str, object]", findings[0]["remediation"])
+
+    assert "Remediation documentation: https://example.com/remediation" in text
+    assert "Automation metadata: ruff UP999 (not invoked)" in text
+    assert remediation == {
+        "automation": {"rule": "UP999", "tool": "ruff"},
+        "documentation_url": "https://example.com/remediation",
+        "summary": "Use the supported replacement.",
     }
