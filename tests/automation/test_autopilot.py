@@ -727,6 +727,51 @@ def test_strict_result_parsing_rejects_schema_and_semantic_drift(
             autopilot.parse_review_result(symlink_path, "M2")
 
 
+def test_codex_schemas_use_portable_constraints_with_local_semantic_validation(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """API schemas stay portable while the parent preserves stricter semantics."""
+    fixture = repo_factory()
+    fixture.make_autopilot().doctor()
+
+    implementation_path = fixture.root / "implementation.json"
+    implementation_path.write_text(
+        json.dumps(
+            {
+                "milestone": "M2",
+                "status": "completed",
+                "summary": "done",
+                "files_changed": ["feature.txt", "feature.txt"],
+                "acceptance_criteria_addressed": ["fixture"],
+                "commands_reportedly_run": [],
+                "limitations": [],
+                "blocking_reason": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(autopilot.InvalidInputError, match="duplicates"):
+        autopilot.parse_implementation_result(
+            implementation_path, "M2", ["feature.txt"]
+        )
+
+
+def test_doctor_rejects_an_api_incompatible_output_schema(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Unsupported strict-schema keywords fail locally before a Codex request."""
+    fixture = repo_factory()
+    schema_path = fixture.root / autopilot.IMPLEMENTATION_SCHEMA
+    schema = cast("dict[str, object]", json.loads(schema_path.read_text()))
+    properties = cast("dict[str, object]", schema["properties"])
+    files_changed = cast("dict[str, object]", properties["files_changed"])
+    files_changed["uniqueItems"] = True
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+
+    with pytest.raises(autopilot.InvalidInputError, match="uniqueItems"):
+        fixture.make_autopilot().doctor()
+
+
 def test_successful_implement_verify_review_commit_flow(
     repo_factory: Callable[..., RepositoryFixture],
 ) -> None:
@@ -747,6 +792,11 @@ def test_successful_implement_verify_review_commit_flow(
     assert [event["role"] for event in events] == ["implementation", "review"]
     assert [event["sandbox"] for event in events] == ["workspace-write", "read-only"]
     assert all(event["approval"] == "never" for event in events)
+    assert all(
+        cast("list[str]", event["arguments"])[2:4]
+        == ["--config", 'approval_policy="never"']
+        for event in events
+    )
     assert all(event["child_marker"] == "1" for event in events)
     log = _run([fixture.git, "log", "-1", "--format=%B"], cwd=fixture.root).stdout
     assert "Implement M2: Registry and matcher framework" in log

@@ -41,6 +41,7 @@ CHILD_MARKER = "PYAHEAD_AUTOPILOT_CHILD"
 DEFAULT_CONFIG = Path("automation/milestones.toml")
 IMPLEMENTATION_SCHEMA = Path("automation/schemas/implementation-result.json")
 REVIEW_SCHEMA = Path("automation/schemas/review-result.json")
+CODEX_APPROVAL_OVERRIDE = 'approval_policy="never"'
 ROLE_TEMPLATES = {
     "implementation": Path("automation/prompts/implement.md"),
     "review": Path("automation/prompts/review.md"),
@@ -90,6 +91,28 @@ _SECRET_PATTERNS = (
     re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"(https?://)[^/@:\s]+:[^/@\s]+@"),
+)
+_CODEX_PORTABLE_SCHEMA_UNSUPPORTED = frozenset(
+    {
+        "allOf",
+        "dependentRequired",
+        "dependentSchemas",
+        "else",
+        "format",
+        "if",
+        "maxItems",
+        "maxLength",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minimum",
+        "multipleOf",
+        "not",
+        "pattern",
+        "patternProperties",
+        "then",
+        "uniqueItems",
+    }
 )
 
 
@@ -352,6 +375,46 @@ def _optional_string(value: object, context: str) -> str | None:
     if value is None:
         return None
     return _string(value, context)
+
+
+def _validate_codex_output_schema(schema: Mapping[str, object], context: str) -> None:
+    """Reject constraints outside the portable strict Structured Outputs subset."""
+    unsupported = sorted(set(schema) & _CODEX_PORTABLE_SCHEMA_UNSUPPORTED)
+    if unsupported:
+        raise InvalidInputError(
+            f"{context} uses unsupported Codex output-schema keywords: "
+            + ", ".join(unsupported)
+        )
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        properties = _mapping(schema.get("properties"), f"{context}.properties")
+        required = _string_tuple(schema.get("required"), f"{context}.required")
+        if set(required) != set(properties) or len(required) != len(properties):
+            raise InvalidInputError(
+                f"{context} must require every object property exactly once"
+            )
+        if schema.get("additionalProperties") is not False:
+            raise InvalidInputError(f"{context} must set additionalProperties to false")
+        for name, child in properties.items():
+            _validate_codex_output_schema(
+                _mapping(child, f"{context}.properties.{name}"),
+                f"{context}.properties.{name}",
+            )
+    items = schema.get("items")
+    if items is not None:
+        _validate_codex_output_schema(
+            _mapping(items, f"{context}.items"), f"{context}.items"
+        )
+    any_of = schema.get("anyOf")
+    if any_of is not None:
+        for index, child in enumerate(_sequence(any_of, f"{context}.anyOf")):
+            child_context = f"{context}.anyOf[{index}]"
+            _validate_codex_output_schema(_mapping(child, child_context), child_context)
+    definitions = schema.get("$defs")
+    if definitions is not None:
+        for name, child in _mapping(definitions, f"{context}.$defs").items():
+            child_context = f"{context}.$defs.{name}"
+            _validate_codex_output_schema(_mapping(child, child_context), child_context)
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -1698,7 +1761,11 @@ class Autopilot:
         checks.append(("Codex interface", codex_help))
         if codex_help.succeeded:
             help_text = f"{codex_help.stdout}\n{codex_help.stderr}"
-            if "--ask-for-approval" not in help_text or "never" not in help_text:
+            if (
+                "--ask-for-approval" not in help_text
+                or "never" not in help_text
+                or "--config" not in help_text
+            ):
                 raise InvalidInputError(
                     "installed Codex lacks explicit approval-policy control"
                 )
@@ -1707,6 +1774,8 @@ class Autopilot:
                 *self.config.tools["codex"],
                 "--ask-for-approval",
                 "never",
+                "--config",
+                CODEX_APPROVAL_OVERRIDE,
                 "exec",
                 "--help",
             ),
@@ -1766,10 +1835,11 @@ class Autopilot:
                 raise InvalidInputError(
                     f"invalid JSON schema: {schema_path}"
                 ) from error
-            if schema.get("additionalProperties") is not False:
+            if schema.get("type") != "object":
                 raise InvalidInputError(
-                    f"JSON schema must forbid additional properties: {schema_path}"
+                    f"Codex output schema root must be an object: {schema_path}"
                 )
+            _validate_codex_output_schema(schema, schema_path.as_posix())
 
         if publication:
             gh_version = self.runner.run(
@@ -2764,6 +2834,8 @@ class Autopilot:
             *self.config.tools["codex"],
             "--ask-for-approval",
             "never",
+            "--config",
+            CODEX_APPROVAL_OVERRIDE,
             "exec",
             "--ephemeral",
             "--sandbox",

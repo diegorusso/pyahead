@@ -217,11 +217,19 @@ def _record_event(
 def _help(arguments: list[str]) -> int | None:
     """Emulate only the documented CLI capability probes."""
     if arguments == ["--help"]:
-        print("--ask-for-approval <untrusted|on-request|never> exec")
+        print("--ask-for-approval <untrusted|on-request|never> --config exec")
         return 0
     if arguments in (
         ["exec", "--help"],
         ["--ask-for-approval", "never", "exec", "--help"],
+        [
+            "--ask-for-approval",
+            "never",
+            "--config",
+            'approval_policy="never"',
+            "exec",
+            "--help",
+        ],
     ):
         print(
             "--ephemeral --sandbox workspace-write read-only --output-schema "
@@ -237,7 +245,13 @@ def main(arguments: list[str] | None = None) -> int:
     help_result = _help(argv)
     if help_result is not None:
         return help_result
-    if argv[:3] != ["--ask-for-approval", "never", "exec"]:
+    if argv[:5] != [
+        "--ask-for-approval",
+        "never",
+        "--config",
+        'approval_policy="never"',
+        "exec",
+    ]:
         raise RuntimeError("orchestrator did not set the explicit approval policy")
     prompt = sys.stdin.read()
     role = _role(prompt)

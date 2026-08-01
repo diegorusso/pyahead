@@ -16,34 +16,30 @@
   ],
   "properties": {
     "milestone": {
-      "type": "string",
-      "pattern": "^M(?:[0-9]+(?:\\.[0-9]+)?)$"
+      "type": "string"
     },
     "status": {
       "type": "string",
       "enum": ["completed", "blocked", "failed"]
     },
     "summary": {
-      "type": "string",
-      "minLength": 1
+      "type": "string"
     },
     "files_changed": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
-      "uniqueItems": true
+      "items": {"type": "string"}
     },
     "acceptance_criteria_addressed": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
-      "uniqueItems": true
+      "items": {"type": "string"}
     },
     "commands_reportedly_run": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1}
+      "items": {"type": "string"}
     },
     "limitations": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1}
+      "items": {"type": "string"}
     },
     "blocking_reason": {
       "type": ["string", "null"]
