@@ -2302,8 +2302,11 @@ Only the controller owns branch creation, staging, commits, pushes, and draft
 pull requests. Child roles may not invoke the controller recursively or modify
 Git metadata. The controller hashes the harness, governance files, frozen
 contract, protected CI, selected quality-policy tables, ignored external gate
-record, and complete Git metadata at the relevant boundaries. A mismatch stops
-with work preserved; it is never silently reset or reverted.
+record, stable Git control metadata, and the semantic index at the relevant
+boundaries. The semantic index covers staged objects, modes, paths, merge
+stages, and index flags; the volatile physical index stat cache is excluded
+because read-only Git commands may refresh it. A mismatch stops with work
+preserved; it is never silently reset or reverted.
 
 Runtime state and logs live under ignored `.autopilot/`. State is written
 atomically and records the run/branch/base identity, current phase, repair

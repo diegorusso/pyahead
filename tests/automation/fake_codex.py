@@ -114,6 +114,30 @@ def _apply_changes(root: Path, action: dict[str, object]) -> None:
         path.write_text(raw_content, encoding="utf-8")
 
 
+def _refresh_index_stat_cache(root: Path, action: dict[str, object]) -> None:
+    """Emulate a read-only Git status refreshing physical index stat data."""
+    raw_path = action.get("refresh_index")
+    if raw_path is None:
+        return
+    if not isinstance(raw_path, str):
+        raise RuntimeError("fake refresh_index must be a path string")
+    path = _safe_path(root, raw_path)
+    metadata = path.stat()
+    os.utime(
+        path,
+        ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+    )
+    git = os.environ.get(GIT_ENV, "git")
+    subprocess.run(
+        [git, "status", "--porcelain=v1"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
 def _changed_paths(root: Path) -> list[str]:
     """Return the complete current worktree path set like the real agent must."""
     git = os.environ.get(GIT_ENV, "git")
@@ -271,6 +295,7 @@ def main(arguments: list[str] | None = None) -> int:
     if sleep_seconds:
         time.sleep(float(sleep_seconds))
     _apply_changes(root, action)
+    _refresh_index_stat_cache(root, action)
     behavior = action.get("behavior", "result")
     if behavior == "exit_failure":
         return 19

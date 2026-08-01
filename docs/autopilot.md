@@ -32,13 +32,15 @@ sandbox, `--ephemeral`, an explicit output schema, and
 fail. No child owns staging, commits, branch changes, pushes, or pull requests.
 Implementation context is never reused for review or repair.
 
-The controller independently checks the current branch, HEAD, index, complete
-worktree path/hash set, protected files, selected quality-policy tables, the
-frozen contract, and a deterministic digest of the complete Git metadata tree.
-It also pins the ignored Gate C approval record so a child or verification
-process cannot manufacture external approval. A mismatch stops with all work
-preserved. The controller does not reset, checkout, force-push, or silently
-revert suspicious changes.
+The controller independently checks the current branch, HEAD, semantic index,
+complete worktree path/hash set, protected files, selected quality-policy
+tables, the frozen contract, and a deterministic digest of stable Git control
+metadata. The semantic index digest covers staged objects, modes, paths, merge
+stages, and index flags while deliberately ignoring the physical index stat
+cache that read-only Git commands may refresh. It also pins the ignored Gate C
+approval record so a child or verification process cannot manufacture external
+approval. A mismatch stops with all work preserved. The controller does not
+reset, checkout, force-push, or silently revert suspicious changes.
 
 ## Prerequisites
 
@@ -244,8 +246,8 @@ Expected stops include:
 - malformed structured review output;
 - verification timeout, signal, failure, or tracked mutation;
 - review-requested changes that still fail after three repair cycles;
-- protected governance, harness, contract, CI, quality-policy, index, history,
-  branch, or Git-metadata modification;
+- protected governance, harness, contract, CI, quality-policy, semantic index,
+  history, branch, or stable Git-metadata modification;
 - branch/history/remote divergence while paused;
 - Gate C awaiting external evidence;
 - M9 or M10 policy refusal;

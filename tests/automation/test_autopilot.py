@@ -462,6 +462,7 @@ def _success_actions(
             "role": "implementation",
             "outcome": "completed",
             "changes": {"feature.txt": content},
+            "refresh_index": "AGENTS.md",
             "milestone": milestone,
         },
         {"role": "review", "outcome": "pass", "milestone": milestone},
@@ -1084,6 +1085,43 @@ def test_git_metadata_modification_stops_before_parent_git_mutation(
 
     assert fixture.state()["current_phase"] == "blocked"
     assert config_path.read_text(encoding="utf-8").endswith("# child edit\n")
+
+
+def test_git_metadata_digest_ignores_stat_cache_but_protects_semantic_index(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Read-only index refreshes pass while flags and staged blobs remain guarded."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    baseline = pilot.git.metadata_digest()
+    index_path = fixture.root / ".git/index"
+    raw_index_before = index_path.read_bytes()
+    tracked = fixture.root / "AGENTS.md"
+    metadata = tracked.stat()
+    os.utime(
+        tracked,
+        ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+    )
+
+    _run([fixture.git, "update-index", "--refresh"], cwd=fixture.root)
+
+    assert index_path.read_bytes() != raw_index_before
+    assert pilot.git.metadata_digest() == baseline
+
+    _run(
+        [fixture.git, "update-index", "--skip-worktree", "AGENTS.md"],
+        cwd=fixture.root,
+    )
+    assert pilot.git.metadata_digest() != baseline
+    _run(
+        [fixture.git, "update-index", "--no-skip-worktree", "AGENTS.md"],
+        cwd=fixture.root,
+    )
+    assert pilot.git.metadata_digest() == baseline
+
+    tracked.write_text("staged child edit\n", encoding="utf-8")
+    _run([fixture.git, "add", "--", "AGENTS.md"], cwd=fixture.root)
+    assert pilot.git.metadata_digest() != baseline
 
 
 def test_child_cannot_manufacture_gate_c_approval(

@@ -1460,7 +1460,7 @@ class GitRepository:
         return result.returncode == 0
 
     def metadata_digest(self) -> str:
-        """Hash complete Git metadata without persisting machine-specific paths."""
+        """Hash stable Git control data and the semantic index contents."""
         if self._metadata_roots is None:
             git_directory = Path(
                 self.require_output(
@@ -1486,6 +1486,8 @@ class GitRepository:
                     relative = (
                         "." if child == root else child.relative_to(root).as_posix()
                     )
+                    if relative == "index" or relative.startswith("sharedindex."):
+                        continue
                     metadata = child.lstat()
                     digest.update(relative.encode("utf-8", errors="surrogateescape"))
                     digest.update(b"\0")
@@ -1495,6 +1497,12 @@ class GitRepository:
                     digest.update(b"\0")
         except OSError as error:
             raise StateError("unable to hash Git metadata safely") from error
+        index = self.run(("ls-files", "--stage", "-v", "-z"))
+        if not index.succeeded:
+            raise StateError("unable to hash the semantic Git index")
+        digest.update(b"semantic-index\0")
+        digest.update(index.stdout.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
         return digest.hexdigest()
 
 
