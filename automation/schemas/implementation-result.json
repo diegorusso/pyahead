@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/diegorusso/pyahead/schemas/implementation-result.json",
+  "title": "PyAhead autopilot implementation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "milestone",
+    "status",
+    "summary",
+    "files_changed",
+    "acceptance_criteria_addressed",
+    "commands_reportedly_run",
+    "limitations",
+    "blocking_reason"
+  ],
+  "properties": {
+    "milestone": {
+      "type": "string",
+      "pattern": "^M(?:[0-9]+(?:\\.[0-9]+)?)$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "blocked", "failed"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "acceptance_criteria_addressed": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "commands_reportedly_run": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "limitations": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "blocking_reason": {
+      "type": ["string", "null"]
+    }
+  }
+}

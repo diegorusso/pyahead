@@ -1,0 +1,165 @@
+schema_version = 1
+state_directory = ".autopilot"
+base_branch = "main"
+remote = "origin"
+default_timeout_seconds = 900
+codex_timeout_seconds = 3600
+max_repair_cycles = 3
+branch_template = "codex/{from_slug}-{through_slug}-autopilot"
+commit_template = "Implement {milestone}: {title}"
+
+[tools]
+codex = ["codex"]
+git = ["git"]
+gh = ["gh"]
+
+[[protected_path]]
+path = "automation"
+allow_for = []
+
+[[protected_path]]
+path = "scripts/autopilot.py"
+allow_for = []
+
+[[protected_path]]
+path = "docs/design.md"
+allow_for = []
+
+[[protected_path]]
+path = "AGENTS.md"
+allow_for = []
+
+[[protected_path]]
+path = ".github/workflows"
+allow_for = ["M6"]
+
+[[quality_guard]]
+path = "pyproject.toml"
+tables = [
+  "tool.ruff",
+  "tool.mypy",
+  "tool.pytest.ini_options",
+  "tool.coverage.run",
+  "tool.coverage.report",
+]
+allow_for = []
+
+[[quality_guard]]
+path = "pyproject.toml"
+tables = ["build-system", "tool.hatch"]
+allow_for = ["M6"]
+
+[[verification]]
+id = "sync"
+command = ["uv", "sync", "--frozen"]
+timeout_seconds = 600
+
+[[verification]]
+id = "lint"
+command = ["uv", "run", "ruff", "check", "."]
+timeout_seconds = 600
+
+[[verification]]
+id = "format"
+command = ["uv", "run", "ruff", "format", "--check", "."]
+timeout_seconds = 600
+
+[[verification]]
+id = "types"
+command = ["uv", "run", "mypy", "src"]
+timeout_seconds = 600
+
+[[verification]]
+id = "tests"
+command = ["uv", "run", "pytest"]
+timeout_seconds = 1800
+
+[[verification]]
+id = "build"
+command = ["uv", "build"]
+timeout_seconds = 900
+
+[[verification]]
+id = "diff-check"
+command = ["git", "diff", "--check"]
+timeout_seconds = 120
+
+[[milestone_verification]]
+id = "registry-validate"
+command = ["uv", "run", "pyahead", "registry", "validate"]
+timeout_seconds = 300
+
+[[milestone_verification]]
+id = "registry-coverage"
+command = ["uv", "run", "pyahead", "registry", "coverage"]
+timeout_seconds = 300
+
+[[milestone_verification]]
+id = "explain-cpy0001"
+command = ["uv", "run", "pyahead", "explain", "CPY0001"]
+timeout_seconds = 300
+
+[[milestone]]
+id = "M2"
+title = "Registry and matcher framework"
+heading = "M2 — Registry and matcher framework"
+policy = "unattended"
+extra_verification = ["registry-validate", "explain-cpy0001"]
+
+[[milestone]]
+id = "M3"
+title = "Version timeline and reachability"
+heading = "M3 — Version timeline and reachability"
+policy = "unattended"
+extra_verification = []
+
+[[milestone]]
+id = "M4"
+title = "Project configuration and CI reports"
+heading = "M4 — Project configuration and CI reports"
+policy = "unattended"
+extra_verification = []
+
+[[milestone]]
+id = "M5"
+title = "CPython registry curation"
+heading = "M5 — CPython registry curation"
+policy = "unattended"
+extra_verification = ["registry-coverage"]
+
+[[milestone]]
+id = "M6"
+title = "Public-alpha hardening"
+heading = "M6 — Public-alpha hardening"
+policy = "unattended"
+extra_verification = []
+stop_after_gate = "C"
+
+[[milestone]]
+id = "M7"
+title = "First dynamic evidence provider"
+heading = "M7 — First dynamic evidence provider"
+policy = "gate_c"
+extra_verification = []
+
+[[milestone]]
+id = "M8"
+title = "Dependency compatibility"
+heading = "M8 — Dependency compatibility"
+policy = "gate_c"
+extra_verification = []
+
+[[milestone]]
+id = "M9"
+title = "Hosted GitHub private beta"
+heading = "M9 — Hosted GitHub private beta"
+policy = "external_repository"
+extra_verification = []
+
+[[milestone]]
+id = "M10"
+title = "C API roadmap"
+heading = "M10 — C API roadmap"
+policy = "design_required"
+required_design = "docs/c-api-design.md"
+extra_verification = []

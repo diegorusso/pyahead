@@ -325,6 +325,10 @@ The empty repository should begin as one Python package and one in-tree registry
 ```text
 pyahead/
 ├── AGENTS.md                       # concise Codex working contract
+├── automation/                     # M1.5 development policy (not product code)
+│   ├── milestones.toml
+│   ├── prompts/
+│   └── schemas/
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
 │   ├── pull_request_template.md
@@ -332,6 +336,7 @@ pyahead/
 │       ├── ci.yml
 │       └── release.yml              # added only when publishing starts
 ├── docs/
+│   ├── autopilot.md                # milestone-controller operations and safety
 │   ├── design.md                    # this document
 │   ├── registry-authoring.md
 │   └── contributing.md
@@ -375,11 +380,14 @@ pyahead/
 │               └── coverage/
 │                   └── *.yaml
 ├── tests/
+│   ├── automation/                 # offline fake-service controller tests
 │   ├── unit/
 │   ├── integration/
 │   ├── golden/
 │   └── fixtures/
 │       └── rules/
+├── scripts/
+│   └── autopilot.py                # M1.5 parent-owned controller
 ├── CHANGELOG.md
 ├── LICENSE
 ├── README.md
@@ -1908,6 +1916,51 @@ criterion. M1 cannot demonstrate call-binding shadowing without implementing the
 M2 matcher framework, so its negative criterion is limited to the import syntax
 that its matcher can emit.
 
+### M1.5 — Autonomous milestone orchestrator
+
+This is development infrastructure, not a product-capability milestone. It
+automates the implement, independently verify, review, repair, commit, and
+optional publication cycle without adding any M2 analyser or registry work.
+
+Deliverables:
+
+- a standard-library orchestrator at `scripts/autopilot.py` with `doctor`,
+  `plan`, `run`, `status`, `resume`, and evidence-backed Gate C commands;
+- repository-owned milestone policy, prompt templates, and strict result schemas
+  under `automation/`;
+- one fresh ephemeral Codex context for each implementation, review, and repair
+  role, with read-only review and bounded workspace-write implementation/repair;
+- independent parent-owned verification and one intentional Git commit per
+  passing milestone;
+- atomic ignored state, complete separated logs, interruption recovery, and
+  publication-only retry;
+- protected governance, harness, quality-policy, CI, frozen-contract, external
+  gate-record, and Git metadata boundaries;
+- deterministic offline tests using fake Codex, Git, and GitHub executables;
+- operator and security documentation in `docs/autopilot.md`.
+
+Acceptance:
+
+- `doctor` proves that the installed Codex CLI exposes the required ephemeral,
+  sandbox, approval-policy, schema-output, last-message, and working-directory
+  controls without invoking the service;
+- ranges, exact contract extraction, rendered prompts, closed-world result
+  parsing, role isolation, repair limits, Gate C, M9/M10 refusals, and every
+  durable resume boundary have deterministic offline tests;
+- parent verification is authoritative, a milestone cannot commit before all
+  configured commands pass and an independent reviewer returns `pass`, and a
+  recovered commit cannot be duplicated;
+- protected-file, quality-policy, and Git-metadata changes stop with work
+  preserved rather than being reverted or committed;
+- `run --dry-run` prints the branch, stages, argv, rendered prompts,
+  verification, commit, publication, gate, and protected-file plan while making
+  no state, Git, Codex, or remote mutation;
+- a failed push preserves local commits and resumes only publication;
+- M2–M6 may run unattended, execution stops after M6 in `awaiting_gate_C`, M7–M8
+  require recorded external evidence, M9 is refused in this repository, and M10
+  is refused until its design exists;
+- the full repository quality and build suite passes without a real M2 run.
+
 ### M2 — Registry and matcher framework
 
 Deliverables:
@@ -2182,11 +2235,15 @@ These do not block M0–M4 unless stated.
 
 ## 26. Codex implementation protocol
 
-PyAhead should be built by asking Codex for one milestone at a time. A single “implement the whole design” request creates too much opportunity for unverified assumptions and architectural drift.
+PyAhead is built one milestone at a time. M1.5 replaces repeated operator
+prompting with a repository-owned, resumable controller; it does not relax
+milestone boundaries, independent evidence, or external product gates. A single
+agent context that implements and approves multiple milestones creates too much
+opportunity for unverified assumptions and architectural drift.
 
 ### 26.1 Rules for every Codex milestone
 
-Codex must:
+Each implementation, review, or repair role must, as applicable:
 
 1. Read `docs/design.md`, `README.md`, `pyproject.toml`, and any repository instruction file before editing.
 2. State which milestone and acceptance criteria it is implementing.
@@ -2199,7 +2256,101 @@ Codex must:
 9. Update documentation when behaviour or a design decision changes.
 10. Stop and explain if an acceptance criterion requires a product decision not covered here.
 
-### 26.2 Initial Codex prompt
+### 26.2 Default automated cycle
+
+After M1.5 is merged and local `main` exactly matches `origin/main`, the normal
+unattended alpha sequence is:
+
+```console
+python scripts/autopilot.py doctor --push --draft-pr
+python scripts/autopilot.py plan --from M2 --through M6
+python scripts/autopilot.py run --from M2 --through M6 --push --draft-pr
+```
+
+Omit `--push --draft-pr` for local commits only. `run --dry-run` must expose the
+complete planned branch, stages, argv, prompts, verification, commits, gate
+boundaries, publication, and protected files without calling Codex, writing
+state, changing Git, or touching a remote.
+
+The controller freezes the exact current milestone subsection and its SHA-256
+digest. It then performs this cycle:
+
+1. launch a fresh ephemeral workspace-write implementer with only the current
+   contract, repository rules, previous status, parent checks, and prohibitions;
+2. validate its closed-world structured result and compare its claimed paths to
+   the complete Git worktree;
+3. independently run every configured verification argv with a deadline and
+   separated logs;
+4. launch a separate fresh ephemeral read-only reviewer over the contract, live
+   diff, tests, and parent-owned evidence;
+5. on failed verification or concrete `changes_requested`, launch a fresh
+   workspace-write fixer with only the contract, failed output, and findings;
+6. repeat independent verification and review, permitting at most three repair
+   cycles;
+7. let the parent controller create exactly one intentional milestone commit
+   only after verification passes and the reviewer returns `pass`;
+8. optionally push that commit and create or update one draft pull request,
+   never merging it or pushing directly to `main`.
+
+No implementation context is resumed for review or repair. Agent claims about
+commands are informational; only controller-run verification is acceptance
+evidence.
+
+### 26.3 Ownership and protected boundaries
+
+Only the controller owns branch creation, staging, commits, pushes, and draft
+pull requests. Child roles may not invoke the controller recursively or modify
+Git metadata. The controller hashes the harness, governance files, frozen
+contract, protected CI, selected quality-policy tables, ignored external gate
+record, and complete Git metadata at the relevant boundaries. A mismatch stops
+with work preserved; it is never silently reset or reverted.
+
+Runtime state and logs live under ignored `.autopilot/`. State is written
+atomically and records the run/branch/base identity, current phase, repair
+count, commits, prompt and contract hashes, exact accepted worktree, Git
+metadata digest, and publication progress. `resume` accepts only that recorded
+identity and work, detects history movement or divergence, recovers a
+trailer-authenticated parent commit once, and retries publication without
+re-running accepted Codex roles.
+
+### 26.4 Gates and repository boundaries
+
+M2 through M6 may run unattended, but a successful M6 always transitions to
+`awaiting_gate_C`. Codex output cannot manufacture external usefulness. Record
+an accountable approval only after a non-empty evidence document exists inside
+the repository:
+
+```console
+python scripts/autopilot.py gate approve C \
+  --evidence docs/evidence/gate-c.md \
+  --approved-by "release council"
+python scripts/autopilot.py gate status C
+```
+
+If an existing run selected work after M6, use `resume`; otherwise, after the M6
+branch is reviewed, merged, and local `main` again exactly matches
+`origin/main`, start the next range with:
+
+```console
+python scripts/autopilot.py run --from M7 --through M8 --push --draft-pr
+```
+
+M9 is refused because the hosted service belongs in a separate private
+repository. M10 is refused until `docs/c-api-design.md` exists. Unknown or
+reverse ranges are rejected before state or Git mutation.
+
+### 26.5 Interruption and operator review
+
+Interrupt with Ctrl-C, inspect `python scripts/autopilot.py status`, the live
+diff, and `.autopilot/runs/<run-id>/`, then use
+`python scripts/autopilot.py resume`. Never discard or reset incomplete work as
+part of automated recovery. Before merging, review each milestone commit,
+verification logs, structured review, protected-policy changes, and draft-PR
+body. “Autonomous” means no repeated prompting; it does not mean bypassing
+security boundaries, human merge review, or product gates. Full operational and
+security guidance is in `docs/autopilot.md`.
+
+### 26.6 Historical initial prompt (manual fallback)
 
 Use this prompt against <https://github.com/diegorusso/pyahead>:
 
@@ -2231,7 +2382,7 @@ provided design document first. Do not weaken an acceptance criterion to make
 the checks pass; explain and fix the underlying problem.
 ```
 
-### 26.3 Subsequent milestone prompt template
+### 26.7 Subsequent milestone prompt template (manual fallback)
 
 ```text
 Implement milestone M<N> from docs/design.md in diegorusso/pyahead.
@@ -2256,7 +2407,7 @@ Finish with:
 - the recommended next milestone, without implementing it.
 ```
 
-### 26.4 Review prompt after each milestone
+### 26.8 Review prompt after each milestone (manual fallback)
 
 Run a separate review before merging:
 
