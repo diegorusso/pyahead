@@ -31,6 +31,11 @@ configuration or `.gitignore`, emit SARIF, manage baselines or suppressions,
 execute target code, access the network while scanning, or provide a hosted
 service. Those capabilities belong to later milestones in the design.
 
+Milestone M1.5 adds repository development automation without changing those
+product capabilities. Maintainers can use the resumable, independently verified
+milestone controller described in [`docs/autopilot.md`](docs/autopilot.md) for
+M2 onward.
+
 ## Development
 
 PyAhead requires Python 3.11 or newer. The development environment and lockfile
@@ -49,6 +54,15 @@ uv run pyahead --version
 See [`docs/contributing.md`](docs/contributing.md) before proposing a change.
 Installing a built distribution does not require uv; packaging uses Hatchling
 through the standard Python build interface.
+
+To inspect the next automated development range without starting Codex or
+changing Git:
+
+```console
+python scripts/autopilot.py doctor
+python scripts/autopilot.py plan --from M2 --through M6
+python scripts/autopilot.py run --from M2 --through M6 --dry-run
+```
 
 ## License
 
