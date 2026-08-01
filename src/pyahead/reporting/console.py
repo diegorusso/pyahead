@@ -2,7 +2,20 @@
 
 from collections import Counter
 
-from pyahead.model import Diagnostic, Finding, ScanReport
+from pyahead.model import (
+    AnalysisInference,
+    Diagnostic,
+    EvidenceValue,
+    Finding,
+    ScanReport,
+)
+
+
+def _evidence_text(evidence: tuple[tuple[str, EvidenceValue], ...]) -> str:
+    def render(value: EvidenceValue) -> str:
+        return f"[{', '.join(value)}]" if isinstance(value, tuple) else value
+
+    return "; ".join(f"{key}={render(value)}" for key, value in evidence)
 
 
 def _finding_lines(finding: Finding) -> list[str]:
@@ -19,6 +32,7 @@ def _finding_lines(finding: Finding) -> list[str]:
             f"{finding.subject} ({finding.match_confidence.value} confidence)"
         ),
         f"    {finding.title}",
+        f"    Match evidence: {_evidence_text(finding.match_evidence)}",
         f"    Timeline: {timeline}",
         f"    Guidance: {finding.remediation.summary}",
     ]
@@ -35,6 +49,15 @@ def _diagnostic_lines(diagnostic: Diagnostic) -> list[str]:
         start = diagnostic.location.region.start
         where = f" {diagnostic.location.path.as_posix()}:{start.line}:{start.column}"
     return [f"  {diagnostic.code}{where}: {diagnostic.message}"]
+
+
+def _inference_lines(inference: AnalysisInference) -> list[str]:
+    start = inference.location.region.start
+    path = inference.location.path.as_posix()
+    return [
+        f"  {inference.code} {path}:{start.line}:{start.column}: {inference.message}",
+        f"    Evidence: {_evidence_text(inference.evidence)}",
+    ]
 
 
 def _plural(count: int, noun: str) -> str:
@@ -71,6 +94,11 @@ def render_text(report: ScanReport) -> str:
         lines.extend(["", "Incomplete analysis:"])
         for diagnostic in report.diagnostics:
             lines.extend(_diagnostic_lines(diagnostic))
+
+    if report.inferences:
+        lines.extend(["", "Analysis inferences:"])
+        for inference in report.inferences:
+            lines.extend(_inference_lines(inference))
 
     impact_counts = Counter(finding.impact.value for finding in report.findings)
     impact_summary = ", ".join(

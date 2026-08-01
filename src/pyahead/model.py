@@ -3,9 +3,11 @@
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import PurePosixPath
-from typing import Self
+from typing import Self, TypeAlias
 
 from pyahead.versions import PythonMinor
+
+EvidenceValue: TypeAlias = str | tuple[str, ...]
 
 
 class ConfigurationError(ValueError):
@@ -194,7 +196,18 @@ class StaticMatch:
     enclosing_scope: str
     subject: str
     confidence: MatchConfidence
-    evidence: tuple[tuple[str, str], ...]
+    evidence: tuple[tuple[str, EvidenceValue], ...]
+
+
+@dataclass(frozen=True)
+class AnalysisInference:
+    """Visible provenance for a conservative static-analysis decision."""
+
+    code: str
+    kind: str
+    message: str
+    location: SourceLocation
+    evidence: tuple[tuple[str, EvidenceValue], ...]
 
 
 @dataclass(frozen=True)
@@ -209,6 +222,7 @@ class Finding:
     subject: str
     match_kind: str
     match_confidence: MatchConfidence
+    match_evidence: tuple[tuple[str, EvidenceValue], ...]
     impact: Impact
     action_version: PythonMinor
     events: tuple[RuleEvent, ...]
@@ -239,6 +253,7 @@ class ScanReport:
     counts: ScanCounts
     findings: tuple[Finding, ...]
     diagnostics: tuple[Diagnostic, ...]
+    inferences: tuple[AnalysisInference, ...]
 
     @property
     def gate_failed(self) -> bool:

@@ -1,14 +1,19 @@
 """Tests for deterministic and bounded source discovery."""
 
+import os
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 from pyahead.analysis.discovery import (
+    MAX_SOURCE_BYTES,
     DiscoveryError,
     discover_python_files,
     project_module_names,
+    project_module_paths,
 )
+
+_TWO_FILES = 2
 
 
 def test_discovery_is_sorted_deduplicated_and_excludes_build_data(
@@ -21,9 +26,13 @@ def test_discovery_is_sorted_deduplicated_and_excludes_build_data(
     (tmp_path / ".venv").mkdir()
     (tmp_path / ".venv/hidden.py").write_text("", encoding="utf-8")
 
-    files = discover_python_files(tmp_path, (Path(), Path("b.py")))
+    result = discover_python_files(tmp_path, (Path(), Path("b.py")))
 
-    assert [file.relative_path.as_posix() for file in files] == ["a.pyi", "b.py"]
+    assert [file.relative_path.as_posix() for file in result.files] == [
+        "a.pyi",
+        "b.py",
+    ]
+    assert result.issues == ()
 
 
 def test_discovery_rejects_unsafe_or_invalid_explicit_paths(
@@ -59,16 +68,19 @@ def test_project_module_names_support_root_src_and_packages(tmp_path: Path) -> N
         tmp_path / "cgi.py",
         tmp_path / "src/widget/__init__.py",
         tmp_path / "src/widget/api.py",
+        tmp_path / "src/cgi.pyi",
         tmp_path / "bad-name.py",
     ]
     for path in paths:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
 
-    files = discover_python_files(tmp_path, ())
+    result = discover_python_files(tmp_path, ())
 
-    assert project_module_names(files) == frozenset({"cgi", "widget", "widget.api"})
-    assert PurePosixPath("cgi.py") in {item.relative_path for item in files}
+    assert project_module_names(result.files) == frozenset(
+        {"cgi", "widget", "widget.api"}
+    )
+    assert PurePosixPath("cgi.py") in {item.relative_path for item in result.files}
 
 
 def test_discovery_does_not_follow_file_symlinks_outside_root(
@@ -79,4 +91,36 @@ def test_discovery_does_not_follow_file_symlinks_outside_root(
     outside.write_text("import cgi\n", encoding="utf-8")
     (tmp_path / "linked.py").symlink_to(outside)
 
-    assert discover_python_files(tmp_path, ()) == ()
+    result = discover_python_files(tmp_path, ())
+
+    assert result.files == ()
+    assert result.issues == ()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
+def test_discovery_skips_oversized_and_non_regular_sources(tmp_path: Path) -> None:
+    """Unsafe source entries are finite incomplete results, never open streams."""
+    (tmp_path / "large.py").write_bytes(b"#" * (MAX_SOURCE_BYTES + 1))
+    fifo = tmp_path / "pipe.py"
+    os.mkfifo(fifo)
+
+    result = discover_python_files(tmp_path, ())
+
+    assert result.files == ()
+    assert result.files_discovered == _TWO_FILES
+    assert [
+        (issue.relative_path.as_posix(), issue.code) for issue in result.issues
+    ] == [("large.py", "PYA1005"), ("pipe.py", "PYA1004")]
+
+
+def test_unsafe_runtime_module_candidate_still_prevents_false_certainty(
+    tmp_path: Path,
+) -> None:
+    """An unanalysable .py candidate remains relevant to import resolution."""
+    (tmp_path / "cgi.py").write_bytes(b"#" * (MAX_SOURCE_BYTES + 1))
+
+    result = discover_python_files(tmp_path, ())
+
+    assert project_module_paths(result.files, result.issues) == {
+        "cgi": (PurePosixPath("cgi.py"),)
+    }

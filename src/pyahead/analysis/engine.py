@@ -1,10 +1,14 @@
 """End-to-end M1 static-analysis pipeline."""
 
 import hashlib
+import io
+import os
+import stat
 import tokenize
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import libcst as cst
 from libcst.helpers import get_full_name_for_node
@@ -21,12 +25,15 @@ from libcst.metadata.scope_provider import Scope
 
 from pyahead import __version__
 from pyahead.analysis.discovery import (
+    MAX_SOURCE_BYTES,
     DiscoveredFile,
     DiscoveryIncompleteError,
+    DiscoveryIssue,
     discover_python_files,
-    project_module_names,
+    project_module_paths,
 )
 from pyahead.model import (
+    AnalysisInference,
     ChangeEventKind,
     Diagnostic,
     DiagnosticCategory,
@@ -99,23 +106,22 @@ class _ImportVisitor(cst.CSTVisitor):
         self,
         path: DiscoveredFile,
         rules_by_module: dict[str, tuple[Rule, ...]],
-        local_modules: frozenset[str],
+        project_modules: dict[str, tuple[PurePosixPath, ...]],
     ) -> None:
         """Configure one coordinated read-only traversal."""
         self._path = path
         self._rules_by_module = rules_by_module
-        self._local_modules = local_modules
+        self._project_modules = project_modules
         self.matches: list[StaticMatch] = []
+        self.inferences: list[AnalysisInference] = []
 
     def _record(
         self,
         node: cst.Import | cst.ImportFrom,
         module: str,
         syntax: str,
-        bound_name: str,
+        bound_names: tuple[str, ...],
     ) -> None:
-        if module in self._local_modules:
-            return
         rules = self._rules_by_module.get(module, ())
         if not rules:
             return
@@ -124,6 +130,31 @@ class _ImportVisitor(cst.CSTVisitor):
             self.get_metadata(PositionProvider, node),
         )
         scope = self.get_metadata(ScopeProvider, node)
+        project_candidates = self._project_modules.get(module, ())
+        if project_candidates:
+            self.inferences.append(
+                AnalysisInference(
+                    code="PYA2001",
+                    kind="module-resolution",
+                    message=(
+                        f"did not classify import of {module!r} as standard library "
+                        "because a competing project module exists"
+                    ),
+                    location=location,
+                    evidence=(
+                        ("bound_names", bound_names),
+                        (
+                            "candidate_paths",
+                            tuple(path.as_posix() for path in project_candidates),
+                        ),
+                        ("imported_module", module),
+                        ("resolution", "competing-project-module"),
+                        ("source_roots", (".", "src")),
+                        ("syntax", syntax),
+                    ),
+                )
+            )
+            return
         for rule in rules:
             self.matches.append(
                 StaticMatch(
@@ -134,8 +165,10 @@ class _ImportVisitor(cst.CSTVisitor):
                     subject=rule.subject,
                     confidence=MatchConfidence.HIGH,
                     evidence=(
-                        ("bound_name", bound_name),
+                        ("bound_names", bound_names),
                         ("imported_module", module),
+                        ("resolution", "no-competing-project-module"),
+                        ("source_roots", (".", "src")),
                         ("syntax", syntax),
                     ),
                 )
@@ -143,18 +176,21 @@ class _ImportVisitor(cst.CSTVisitor):
 
     def visit_Import(self, node: cst.Import) -> None:  # noqa: N802
         """Match direct and aliased module imports."""
-        recorded_modules: set[str] = set()
+        bindings: dict[str, list[str]] = {}
         for alias in node.names:
             module = get_full_name_for_node(alias.name)
-            if module is None or module in recorded_modules:
+            if module is None:
                 continue
-            recorded_modules.add(module)
             bound_name = (
                 get_full_name_for_node(alias.asname.name)
                 if alias.asname is not None
                 else module.split(".", maxsplit=1)[0]
             )
-            self._record(node, module, "import", bound_name or module)
+            module_bindings = bindings.setdefault(module, [])
+            if (resolved_binding := bound_name or module) not in module_bindings:
+                module_bindings.append(resolved_binding)
+        for module, module_bindings in bindings.items():
+            self._record(node, module, "import", tuple(module_bindings))
 
     def visit_ImportFrom(self, node: cst.ImportFrom) -> None:  # noqa: N802
         """Match absolute ``from MODULE import ...`` statements."""
@@ -163,32 +199,38 @@ class _ImportVisitor(cst.CSTVisitor):
         module = get_full_name_for_node(node.module) if node.module else None
         if module is None:
             return
-        self._record(node, module, "from-import", module)
+        bound_names: tuple[str, ...]
+        if isinstance(node.names, cst.ImportStar):
+            bound_names = ("*",)
+        else:
+            bound_names = tuple(
+                name
+                for alias in node.names
+                if (
+                    name := get_full_name_for_node(
+                        alias.asname.name if alias.asname is not None else alias.name
+                    )
+                )
+                is not None
+            )
+        self._record(node, module, "from-import", bound_names)
 
 
 def _parse_file(
     path: DiscoveredFile,
     rules_by_module: dict[str, tuple[Rule, ...]],
-    local_modules: frozenset[str],
-) -> tuple[tuple[StaticMatch, ...], Diagnostic | None]:
-    try:
-        with tokenize.open(path.absolute_path) as source_file:
-            source = source_file.read()
-    except (OSError, SyntaxError, UnicodeError) as error:
-        diagnostic = Diagnostic(
-            code="PYA1002",
-            category=DiagnosticCategory.ENCODING,
-            message=f"unable to read Python source ({type(error).__name__})",
-            location=SourceLocation(
-                path=path.relative_path,
-                region=SourceRegion(
-                    start=SourcePosition(line=1, column=1),
-                    end=SourcePosition(line=1, column=1),
-                ),
-            ),
-            incomplete=True,
-        )
-        return (), diagnostic
+    project_modules: dict[str, tuple[PurePosixPath, ...]],
+) -> tuple[
+    tuple[StaticMatch, ...],
+    tuple[AnalysisInference, ...],
+    Diagnostic | None,
+]:
+    source, read_diagnostic = _read_source(path)
+    if read_diagnostic is not None:
+        return (), (), read_diagnostic
+    if source is None:  # pragma: no cover - guarded by the diagnostic result.
+        msg = "source text is absent without a read diagnostic"
+        raise RuntimeError(msg)
 
     try:
         module = cst.parse_module(source)
@@ -207,11 +249,103 @@ def _parse_file(
             ),
             incomplete=True,
         )
-        return (), diagnostic
+        return (), (), diagnostic
 
-    visitor = _ImportVisitor(path, rules_by_module, local_modules)
+    visitor = _ImportVisitor(path, rules_by_module, project_modules)
     MetadataWrapper(module).visit(visitor)
-    return tuple(visitor.matches), None
+    return tuple(visitor.matches), tuple(visitor.inferences), None
+
+
+def _initial_location(relative_path: PurePosixPath) -> SourceLocation:
+    position = SourcePosition(line=1, column=1)
+    return SourceLocation(
+        path=relative_path,
+        region=SourceRegion(start=position, end=position),
+    )
+
+
+def _read_failure(
+    path: DiscoveredFile,
+    code: str,
+    category: DiagnosticCategory,
+    message: str,
+) -> tuple[None, Diagnostic]:
+    return None, Diagnostic(
+        code=code,
+        category=category,
+        message=message,
+        location=_initial_location(path.relative_path),
+        incomplete=True,
+    )
+
+
+def _read_source(path: DiscoveredFile) -> tuple[str | None, Diagnostic | None]:
+    """Open without following links and read at most the configured byte limit."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    file_descriptor = -1
+    try:
+        file_descriptor = os.open(path.absolute_path, flags)
+        file_status = os.fstat(file_descriptor)
+        if not stat.S_ISREG(file_status.st_mode):
+            return _read_failure(
+                path,
+                "PYA1004",
+                DiagnosticCategory.DISCOVERY,
+                "source entry is not a regular file",
+            )
+        if file_status.st_size > MAX_SOURCE_BYTES:
+            return _read_failure(
+                path,
+                "PYA1005",
+                DiagnosticCategory.DISCOVERY,
+                f"source file exceeds the {MAX_SOURCE_BYTES}-byte analysis limit",
+            )
+
+        data = bytearray()
+        while len(data) <= MAX_SOURCE_BYTES:
+            remaining = MAX_SOURCE_BYTES + 1 - len(data)
+            chunk = os.read(file_descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            data.extend(chunk)
+        if len(data) > MAX_SOURCE_BYTES:
+            return _read_failure(
+                path,
+                "PYA1005",
+                DiagnosticCategory.DISCOVERY,
+                f"source file exceeds the {MAX_SOURCE_BYTES}-byte analysis limit",
+            )
+    except OSError as error:
+        return _read_failure(
+            path,
+            "PYA1002",
+            DiagnosticCategory.ENCODING,
+            f"unable to read Python source ({type(error).__name__})",
+        )
+    finally:
+        if file_descriptor >= 0:
+            with suppress(OSError):
+                os.close(file_descriptor)
+
+    try:
+        source_bytes = io.BytesIO(bytes(data))
+        encoding, _ = tokenize.detect_encoding(source_bytes.readline)
+        source_bytes.seek(0)
+        with io.TextIOWrapper(source_bytes, encoding=encoding) as source_file:
+            return source_file.read(), None
+    except (LookupError, SyntaxError, UnicodeError) as error:
+        return _read_failure(
+            path,
+            "PYA1002",
+            DiagnosticCategory.ENCODING,
+            f"unable to read Python source ({type(error).__name__})",
+        )
 
 
 def _rules_by_module(registry: Registry) -> dict[str, tuple[Rule, ...]]:
@@ -302,6 +436,7 @@ def _findings(
                 subject=match.subject,
                 match_kind=match.matcher_kind,
                 match_confidence=match.confidence,
+                match_evidence=match.evidence,
                 impact=impact,
                 action_version=action_version,
                 events=tuple(
@@ -327,12 +462,27 @@ def _findings(
     )
 
 
+def _discovery_issue_diagnostic(issue: DiscoveryIssue) -> Diagnostic:
+    return Diagnostic(
+        code=issue.code,
+        category=DiagnosticCategory.DISCOVERY,
+        message=issue.message,
+        location=_initial_location(issue.relative_path),
+        incomplete=True,
+    )
+
+
 def scan(request: ScanRequest) -> ScanReport:
     """Scan Python source without importing, executing, or networking."""
     policy = Policy.parse(request.baseline_python, request.horizon_python)
     registry = load_registry(request.registry_source)
     try:
-        files = discover_python_files(request.root, request.paths)
+        root_discovery = discover_python_files(request.root, ())
+        discovery = (
+            root_discovery
+            if not request.paths or request.paths == (Path(),)
+            else discover_python_files(request.root, request.paths)
+        )
     except DiscoveryIncompleteError as error:
         return ScanReport(
             schema_version=1,
@@ -355,20 +505,30 @@ def scan(request: ScanRequest) -> ScanReport:
                     incomplete=True,
                 ),
             ),
+            inferences=(),
         )
-    local_modules = project_module_names(files)
+    project_modules = project_module_paths(
+        root_discovery.files,
+        root_discovery.issues,
+    )
     rules_by_module = _rules_by_module(registry)
 
     matches: list[StaticMatch] = []
-    diagnostics: list[Diagnostic] = []
+    inferences: list[AnalysisInference] = []
+    diagnostics = [_discovery_issue_diagnostic(issue) for issue in discovery.issues]
     analyzed = 0
-    for path in files:
-        file_matches, diagnostic = _parse_file(path, rules_by_module, local_modules)
+    for path in discovery.files:
+        file_matches, file_inferences, diagnostic = _parse_file(
+            path,
+            rules_by_module,
+            project_modules,
+        )
         if diagnostic is not None:
             diagnostics.append(diagnostic)
             continue
         analyzed += 1
         matches.extend(file_matches)
+        inferences.extend(file_inferences)
 
     findings = _findings(matches, registry, policy)
     return ScanReport(
@@ -379,7 +539,7 @@ def scan(request: ScanRequest) -> ScanReport:
         policy=policy,
         root_label=".",
         counts=ScanCounts(
-            files_discovered=len(files),
+            files_discovered=discovery.files_discovered,
             files_analyzed=analyzed,
             files_incomplete=len(diagnostics),
         ),
@@ -392,6 +552,18 @@ def scan(request: ScanRequest) -> ScanReport:
                     if diagnostic.location is not None
                     else "",
                     diagnostic.code,
+                ),
+            )
+        ),
+        inferences=tuple(
+            sorted(
+                inferences,
+                key=lambda inference: (
+                    inference.location.path.as_posix(),
+                    inference.location.region.start,
+                    inference.code,
+                    inference.kind,
+                    inference.message,
                 ),
             )
         ),

@@ -859,6 +859,8 @@ Build a project-module index from discovered source roots before analysing impor
 An internal `StaticMatch` contains:
 
 ```python
+EvidenceValue = str | tuple[str, ...]
+
 @dataclass(frozen=True)
 class StaticMatch:
     rule_id: str
@@ -870,10 +872,13 @@ class StaticMatch:
     confidence: MatchConfidence
     reachable_versions: frozenset[PythonMinor]
     usage_contexts: frozenset[UsageContext]
-    evidence: Mapping[str, JsonValue]
+    evidence: tuple[tuple[str, EvidenceValue], ...]
 ```
 
-`evidence` contains only structured, formatter-safe facts such as resolved qualified names and call keyword names. It must not contain LibCST objects.
+`evidence` contains only structured, formatter-safe facts such as resolved
+qualified names and call keyword names. M1 stores deterministic immutable
+key-value pairs and serializes them as a JSON mapping; it must not contain LibCST
+objects.
 
 ### 10.5 Matcher index
 
@@ -1006,6 +1011,7 @@ class Finding:
     subject: str
     match_kind: str
     match_confidence: MatchConfidence
+    match_evidence: tuple[tuple[str, EvidenceValue], ...]
     usage_contexts: tuple[UsageContext, ...]
     reachable_versions: tuple[PythonMinor, ...]
     states: tuple[FindingStateRange, ...]
@@ -1024,6 +1030,7 @@ class Finding:
 - file counts;
 - findings;
 - diagnostics;
+- analysis inferences and their provenance;
 - summary counts;
 - gate configuration and result.
 
@@ -1295,6 +1302,7 @@ Top-level shape:
   },
   "findings": [],
   "diagnostics": [],
+  "inferences": [],
   "gate": {"fail_on": "breaking", "new_only": false, "failed": true}
 }
 ```
@@ -1380,7 +1388,11 @@ tests/fixtures/rules/CPY0001/
 └── expected.json
 ```
 
-Each fixture declares expected confidence and reachable versions. A rule cannot be marked implemented without at least one negative fixture.
+M1 fixtures declare expected confidence, action version, and resolution evidence.
+From M3 onward, each fixture also declares reachable versions and usage contexts.
+A rule cannot be marked implemented without at least one negative fixture. Fixture
+manifests are executable contracts: tests validate their schema and compare every
+declared expectation rather than merely using them as lists of paths.
 
 ---
 
@@ -1798,7 +1810,7 @@ The project advances only when the preceding gate is met.
 
 - One registry rule flows through CLI, analyser, finding model, text, JSON, and tests.
 - An aliased import is detected.
-- A shadowed name is not detected as exact.
+- A call or string that merely mentions a module-rule subject is not detected as an import.
 - Output is deterministic.
 
 ### Gate B: useful static alpha
@@ -1883,12 +1895,18 @@ Deliverables:
 Acceptance:
 
 - direct, aliased, and from imports produce one high-confidence finding each;
-- a local `cgi.py` import resolved as a relative project module is not incorrectly treated as stdlib when resolution proves it local;
-- a shadowed name is not reported as an exact imported call;
+- a local `cgi.py` candidate prevents a high-confidence stdlib classification and its competing path is exposed as inference evidence;
+- a call or string that mentions `cgi` without importing it is not reported;
+- files above 2 MiB and non-regular source entries produce bounded incomplete-analysis diagnostics without being parsed;
 - line insertion does not change the fingerprint;
 - invalid YAML exits 2;
 - unparseable included source exits 3;
 - JSON output is deterministic.
+
+Qualified-reference and qualified-call shadowing remains an M2 acceptance
+criterion. M1 cannot demonstrate call-binding shadowing without implementing the
+M2 matcher framework, so its negative criterion is limited to the import syntax
+that its matcher can emit.
 
 ### M2 — Registry and matcher framework
 

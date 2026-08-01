@@ -1,13 +1,91 @@
 {
-  "negative": [
-    "negative/local_module/consumer.py",
-    "negative/shadowed_name.py",
-    "negative/string_only.py"
+  "cases": [
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.13",
+          "confidence": "high",
+          "impact": "breaking",
+          "resolution": "no-competing-project-module",
+          "rule_id": "CPY0001"
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "direct import",
+      "paths": ["positive/import_direct.py"],
+      "root": "."
+    },
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.13",
+          "confidence": "high",
+          "impact": "breaking",
+          "resolution": "no-competing-project-module",
+          "rule_id": "CPY0001"
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "aliased import",
+      "paths": ["positive/import_alias.py"],
+      "root": "."
+    },
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.13",
+          "confidence": "high",
+          "impact": "breaking",
+          "resolution": "no-competing-project-module",
+          "rule_id": "CPY0001"
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "from import",
+      "paths": ["positive/from_import.py"],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": ["PYA2001"],
+      "name": "local runtime module",
+      "paths": ["consumer.py"],
+      "root": "negative/local_module"
+    },
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.13",
+          "confidence": "high",
+          "impact": "breaking",
+          "resolution": "no-competing-project-module",
+          "rule_id": "CPY0001"
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "type stub is not runtime shadow",
+      "paths": ["consumer.py"],
+      "root": "resolution/stub_only"
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "unrelated call",
+      "paths": ["negative/unrelated_call.py"],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "string only",
+      "paths": ["negative/string_only.py"],
+      "root": "."
+    }
   ],
-  "positive": {
-    "positive/from_import.py": "high",
-    "positive/import_alias.py": "high",
-    "positive/import_direct.py": "high"
+  "policy": {
+    "baseline_python": "3.11",
+    "horizon_python": "3.13"
   },
-  "rule_id": "CPY0001"
+  "rule_id": "CPY0001",
+  "schema_version": 1
 }

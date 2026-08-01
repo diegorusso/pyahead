@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 from pyahead.analysis import ScanRequest, scan
-from pyahead.analysis.discovery import DiscoveryIncompleteError
+from pyahead.analysis.discovery import MAX_SOURCE_BYTES, DiscoveryIncompleteError
 from pyahead.model import ExitCode, Impact, MatchConfidence, ScanReport
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures/rules/CPY0001"
@@ -25,51 +25,172 @@ def _scan(root: Path, *paths: str, horizon: str = "3.13") -> ScanReport:
     )
 
 
+def _mapping(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    assert all(isinstance(key, str) for key in value)
+    return cast("dict[str, object]", value)
+
+
+def _sequence(value: object) -> list[object]:
+    assert isinstance(value, list)
+    return cast("list[object]", value)
+
+
+def _string(value: object) -> str:
+    assert isinstance(value, str)
+    return value
+
+
+def _string_list(value: object) -> list[str]:
+    values = _sequence(value)
+    assert all(isinstance(item, str) for item in values)
+    return cast("list[str]", values)
+
+
+def _finding_fixture_record(report: ScanReport) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for finding in report.findings:
+        evidence = dict(finding.match_evidence)
+        resolution = evidence.get("resolution")
+        assert isinstance(resolution, str)
+        records.append(
+            {
+                "action_version": str(finding.action_version),
+                "confidence": finding.match_confidence.value,
+                "impact": finding.impact.value,
+                "resolution": resolution,
+                "rule_id": finding.rule_id,
+            }
+        )
+    return records
+
+
 @pytest.mark.parametrize(
-    "fixture",
+    ("fixture", "bound_names"),
     [
-        "positive/import_direct.py",
-        "positive/import_alias.py",
-        "positive/from_import.py",
+        ("positive/import_direct.py", ("cgi",)),
+        ("positive/import_alias.py", ("legacy_cgi",)),
+        ("positive/from_import.py", ("FieldStorage",)),
     ],
 )
 def test_positive_import_fixtures_have_one_high_confidence_finding(
     fixture: str,
+    bound_names: tuple[str, ...],
 ) -> None:
     """Direct, alias, and from imports all identify the module exactly."""
     report = _scan(FIXTURE_ROOT, fixture)
 
     assert len(report.findings) == 1
     finding = report.findings[0]
+    evidence = dict(finding.match_evidence)
     assert finding.rule_id == "CPY0001"
     assert finding.match_confidence is MatchConfidence.HIGH
+    assert evidence["bound_names"] == bound_names
+    assert evidence["resolution"] == "no-competing-project-module"
     assert finding.impact is Impact.BREAKING
     assert str(finding.action_version) == "3.13"
     assert report.exit_code is ExitCode.FINDINGS
 
 
-def test_fixture_manifest_and_negative_fixtures_are_consistent() -> None:
-    """Every declared positive and negative fixture has its expected result."""
-    expected = cast(
-        "dict[str, object]",
-        json.loads((FIXTURE_ROOT / "expected.json").read_text(encoding="utf-8")),
+def test_one_import_statement_retains_every_binding(tmp_path: Path) -> None:
+    """Deduplication keeps deterministic evidence for repeated module aliases."""
+    (tmp_path / "legacy.py").write_text(
+        "import cgi as first, cgi as second\n",
+        encoding="utf-8",
     )
-    positives = cast("dict[str, str]", expected["positive"])
-    negatives = cast("list[str]", expected["negative"])
 
-    assert all(len(_scan(FIXTURE_ROOT, path).findings) == 1 for path in positives)
-    assert all(not _scan(FIXTURE_ROOT, path).findings for path in negatives[1:])
+    report = _scan(tmp_path)
+
+    assert len(report.findings) == 1
+    assert dict(report.findings[0].match_evidence)["bound_names"] == (
+        "first",
+        "second",
+    )
+
+
+def test_fixture_manifest_and_negative_fixtures_are_consistent() -> None:
+    """Every manifest value is schema-checked and compared with scan output."""
+    manifest = _mapping(
+        json.loads((FIXTURE_ROOT / "expected.json").read_text(encoding="utf-8"))
+    )
+    assert set(manifest) == {"cases", "policy", "rule_id", "schema_version"}
+    assert type(manifest["schema_version"]) is int
+    assert manifest["schema_version"] == 1
+    rule_id = _string(manifest["rule_id"])
+    policy = _mapping(manifest["policy"])
+    assert set(policy) == {"baseline_python", "horizon_python"}
+    baseline = _string(policy["baseline_python"])
+    horizon = _string(policy["horizon_python"])
+
+    case_names: set[str] = set()
+    for raw_case in _sequence(manifest["cases"]):
+        case = _mapping(raw_case)
+        assert set(case) == {
+            "expected_findings",
+            "expected_inference_codes",
+            "name",
+            "paths",
+            "root",
+        }
+        name = _string(case["name"])
+        assert name not in case_names
+        case_names.add(name)
+        case_root = FIXTURE_ROOT / _string(case["root"])
+        paths = _string_list(case["paths"])
+        assert case_root.is_dir()
+        assert all((case_root / path).is_file() for path in paths)
+
+        report = scan(
+            ScanRequest(
+                root=case_root,
+                baseline_python=baseline,
+                horizon_python=horizon,
+                paths=tuple(Path(path) for path in paths),
+            )
+        )
+        expected_findings: list[dict[str, str]] = []
+        for raw_finding in _sequence(case["expected_findings"]):
+            finding = _mapping(raw_finding)
+            assert set(finding) == {
+                "action_version",
+                "confidence",
+                "impact",
+                "resolution",
+                "rule_id",
+            }
+            record = {key: _string(value) for key, value in finding.items()}
+            assert record["rule_id"] == rule_id
+            expected_findings.append(record)
+
+        assert _finding_fixture_record(report) == expected_findings
+        assert [inference.code for inference in report.inferences] == _string_list(
+            case["expected_inference_codes"]
+        )
 
 
 def test_local_module_resolution_prevents_stdlib_false_positive() -> None:
-    """A proven project-root cgi module suppresses the stdlib interpretation."""
+    """A narrowed scan still indexes project modules from the complete root."""
     local_project = FIXTURE_ROOT / "negative/local_module"
 
-    report = _scan(local_project)
+    report = _scan(local_project, "consumer.py")
 
-    assert report.counts.files_analyzed == _TWO_FILES
+    assert report.counts.files_analyzed == 1
     assert report.findings == ()
+    assert [inference.code for inference in report.inferences] == ["PYA2001"]
+    assert dict(report.inferences[0].evidence)["candidate_paths"] == ("cgi.py",)
     assert report.exit_code is ExitCode.SUCCESS
+
+
+def test_type_stub_does_not_suppress_runtime_stdlib_finding() -> None:
+    """A .pyi candidate cannot prove that a runtime import is project-local."""
+    stub_project = FIXTURE_ROOT / "resolution/stub_only"
+
+    report = _scan(stub_project, "consumer.py")
+
+    assert len(report.findings) == 1
+    assert report.findings[0].match_confidence is MatchConfidence.HIGH
+    assert report.inferences == ()
+    assert report.exit_code is ExitCode.FINDINGS
 
 
 def test_policy_before_removal_reports_deprecation_without_failing() -> None:
@@ -154,6 +275,19 @@ def test_invalid_encoding_marks_scan_incomplete(tmp_path: Path) -> None:
 
     assert report.diagnostics[0].code == "PYA1002"
     assert str(tmp_path) not in report.diagnostics[0].message
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_oversized_source_is_incomplete_without_being_read(tmp_path: Path) -> None:
+    """The default byte limit skips source and cannot return a false clean scan."""
+    (tmp_path / "large.py").write_bytes(b"#" * (MAX_SOURCE_BYTES + 1))
+
+    report = _scan(tmp_path)
+
+    assert report.counts.files_discovered == 1
+    assert report.counts.files_analyzed == 0
+    assert report.counts.files_incomplete == 1
+    assert report.diagnostics[0].code == "PYA1005"
     assert report.exit_code is ExitCode.INCOMPLETE
 
 

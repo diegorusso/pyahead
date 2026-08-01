@@ -20,6 +20,11 @@ Exit code 1 means a breaking finding met the current fixed gate; 2 means invalid
 input, 3 means analysis was incomplete, and 4 means an internal failure. A clean
 exit is not proof of compatibility.
 
+M1 indexes conventional repository-root and `src/` runtime modules before
+classifying imports. Competing project modules are shown as analysis inferences
+instead of high-confidence standard-library findings. Source reads are limited
+to regular files no larger than 2 MiB; skipped entries make the scan incomplete.
+
 M1 deliberately has one registry rule and one matcher kind. It does not yet
 match qualified references or calls, evaluate version guards, respect project
 configuration or `.gitignore`, emit SARIF, manage baselines or suppressions,

@@ -112,6 +112,27 @@ def test_unexpected_failure_exits_four_without_exception_details(
     assert captured.err == "pyahead: PYA9000: unexpected internal error\n"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
+def test_non_regular_source_exits_three_without_blocking(tmp_path: Path) -> None:
+    """A repository FIFO is diagnosed in a bounded subprocess scan."""
+    os.mkfifo(tmp_path / "pipe.py")
+    command = [sys.executable, "-m", "pyahead", *_check_args("json")]
+
+    completed = subprocess.run(  # noqa: S603
+        command,
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        timeout=5,
+    )
+
+    assert completed.returncode == int(ExitCode.INCOMPLETE)
+    document = cast("dict[str, object]", json.loads(completed.stdout))
+    diagnostics = cast("list[dict[str, object]]", document["diagnostics"])
+    assert [diagnostic["code"] for diagnostic in diagnostics] == ["PYA1004"]
+    assert completed.stderr == b""
+
+
 def test_json_is_byte_deterministic_across_roots_and_processes(
     tmp_path: Path,
 ) -> None:
@@ -142,3 +163,32 @@ def test_json_is_byte_deterministic_across_roots_and_processes(
     assert first.stdout == second.stdout
     assert first.stderr == second.stderr == b""
     assert str(tmp_path).encode() not in first.stdout
+
+
+def test_inference_json_is_byte_deterministic_across_roots(
+    tmp_path: Path,
+) -> None:
+    """Resolution provenance contains only stable repository-relative data."""
+    roots = [tmp_path / "one", tmp_path / "two"]
+    for root in roots:
+        root.mkdir()
+        (root / "cgi.py").write_text("VALUE = 'local'\n", encoding="utf-8")
+        (root / "consumer.py").write_text("import cgi\n", encoding="utf-8")
+
+    arguments = _check_args("json")
+    arguments[1] = "consumer.py"
+    command = [sys.executable, "-m", "pyahead", *arguments]
+    outputs = [
+        subprocess.run(  # noqa: S603
+            command,
+            cwd=root,
+            check=False,
+            capture_output=True,
+        )
+        for root in roots
+    ]
+
+    assert [output.returncode for output in outputs] == [0, 0]
+    assert outputs[0].stdout == outputs[1].stdout
+    assert outputs[0].stderr == outputs[1].stderr == b""
+    assert str(tmp_path).encode() not in outputs[0].stdout

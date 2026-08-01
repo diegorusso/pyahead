@@ -3,7 +3,15 @@
 import json
 from typing import TypeAlias
 
-from pyahead.model import Diagnostic, Finding, Impact, ScanReport, SourceLocation
+from pyahead.model import (
+    AnalysisInference,
+    Diagnostic,
+    EvidenceValue,
+    Finding,
+    Impact,
+    ScanReport,
+    SourceLocation,
+)
 
 JsonScalar: TypeAlias = bool | int | str | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -29,6 +37,15 @@ def _location(location: SourceLocation) -> dict[str, JsonValue]:
     }
 
 
+def _evidence(
+    evidence: tuple[tuple[str, EvidenceValue], ...],
+) -> dict[str, JsonValue]:
+    return {
+        key: list(value) if isinstance(value, tuple) else value
+        for key, value in evidence
+    }
+
+
 def _finding(finding: Finding) -> dict[str, JsonValue]:
     return {
         "action_version": str(finding.action_version),
@@ -38,6 +55,7 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
         "location": _location(finding.location),
         "match": {
             "confidence": finding.match_confidence.value,
+            "evidence": _evidence(finding.match_evidence),
             "kind": finding.match_kind,
         },
         "registry_revision": finding.registry_revision,
@@ -58,6 +76,16 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             for event in finding.events
         ],
         "title": finding.title,
+    }
+
+
+def _inference(inference: AnalysisInference) -> dict[str, JsonValue]:
+    return {
+        "code": inference.code,
+        "evidence": _evidence(inference.evidence),
+        "kind": inference.kind,
+        "location": _location(inference.location),
+        "message": inference.message,
     }
 
 
@@ -104,6 +132,7 @@ def report_document(report: ScanReport) -> dict[str, JsonValue]:
             "failed": report.gate_failed,
             "new_only": False,
         },
+        "inferences": [_inference(item) for item in report.inferences],
         "policy": {
             "baseline_python": str(report.policy.baseline_python),
             "horizon_python": str(report.policy.horizon_python),

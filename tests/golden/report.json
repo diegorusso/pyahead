@@ -21,6 +21,18 @@
       },
       "match": {
         "confidence": "high",
+        "evidence": {
+          "bound_names": [
+            "cgi"
+          ],
+          "imported_module": "cgi",
+          "resolution": "no-competing-project-module",
+          "source_roots": [
+            ".",
+            "src"
+          ],
+          "syntax": "import"
+        },
         "kind": "module-import"
       },
       "registry_revision": "c197fd097ca2da044c700fc655b9dcc4a5ba5d04224441ce12318f96b66ce189",
@@ -63,6 +75,7 @@
     "failed": true,
     "new_only": false
   },
+  "inferences": [],
   "policy": {
     "baseline_python": "3.11",
     "horizon_python": "3.13",
