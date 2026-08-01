@@ -36,6 +36,16 @@ def _finding_lines(finding: Finding) -> list[str]:
         f"    Timeline: {timeline}",
         f"    Guidance: {finding.remediation.summary}",
     ]
+    if finding.remediation.documentation_url is not None:
+        lines.append(
+            f"    Remediation documentation: {finding.remediation.documentation_url}"
+        )
+    if finding.remediation.automation is not None:
+        automation = finding.remediation.automation
+        lines.append(
+            f"    Automation metadata: {automation.tool.value} {automation.rule} "
+            "(not invoked)"
+        )
     lines.extend(
         f"    Source: {source.title} — {source.url}" for source in finding.sources
     )

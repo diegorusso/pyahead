@@ -35,7 +35,7 @@
         },
         "kind": "module-import"
       },
-      "registry_revision": "c197fd097ca2da044c700fc655b9dcc4a5ba5d04224441ce12318f96b66ce189",
+      "registry_revision": "5d6fb848c77c8f8ee24960ba9aa04d14129017e930b7da20a2138f0bcb9b4a58",
       "remediation": {
         "summary": "Replace the specific cgi functionality in use. There is no single drop-in replacement for the complete module."
       },
@@ -91,7 +91,7 @@
   },
   "registry": {
     "release": "2026.07.31",
-    "revision": "c197fd097ca2da044c700fc655b9dcc4a5ba5d04224441ce12318f96b66ce189"
+    "revision": "5d6fb848c77c8f8ee24960ba9aa04d14129017e930b7da20a2138f0bcb9b4a58"
   },
   "scan": {
     "files_analyzed": 1,

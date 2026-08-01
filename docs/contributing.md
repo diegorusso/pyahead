@@ -4,6 +4,9 @@ Read [`design.md`](design.md) before making changes. Each contribution should
 implement or review one named milestone and should not include work assigned to
 later milestones.
 
+Registry changes must also follow the strict schema, source, timeline, matcher,
+and fixture conventions in [`registry-authoring.md`](registry-authoring.md).
+
 Set up the locked development environment and run the complete verification
 suite:
 

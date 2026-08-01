@@ -83,10 +83,36 @@ def test_project_module_names_support_root_src_and_packages(tmp_path: Path) -> N
     assert PurePosixPath("cgi.py") in {item.relative_path for item in result.files}
 
 
+def test_project_module_paths_include_implicit_namespace_package_parents(
+    tmp_path: Path,
+) -> None:
+    """Descendant modules make namespace parents possible local import origins."""
+    paths = [
+        tmp_path / "rootpkg/old.py",
+        tmp_path / "src/targetpkg/nested/old.py",
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    result = discover_python_files(tmp_path, ())
+    modules = project_module_paths(result.files, result.issues)
+
+    assert modules["rootpkg"] == (PurePosixPath("rootpkg/old.py"),)
+    assert modules["rootpkg.old"] == (PurePosixPath("rootpkg/old.py"),)
+    assert modules["targetpkg"] == (PurePosixPath("src/targetpkg/nested/old.py"),)
+    assert modules["targetpkg.nested"] == (
+        PurePosixPath("src/targetpkg/nested/old.py"),
+    )
+    assert modules["targetpkg.nested.old"] == (
+        PurePosixPath("src/targetpkg/nested/old.py"),
+    )
+
+
 def test_discovery_does_not_follow_file_symlinks_outside_root(
     tmp_path: Path,
 ) -> None:
-    """A directory scan silently excludes an explicitly unsafe file symlink."""
+    """An unsafe file alias remains incomplete project-module evidence."""
     outside = tmp_path.parent / "outside-target.py"
     outside.write_text("import cgi\n", encoding="utf-8")
     (tmp_path / "linked.py").symlink_to(outside)
@@ -94,7 +120,97 @@ def test_discovery_does_not_follow_file_symlinks_outside_root(
     result = discover_python_files(tmp_path, ())
 
     assert result.files == ()
-    assert result.issues == ()
+    issue_summary = [
+        (issue.relative_path.as_posix(), issue.code) for issue in result.issues
+    ]
+    assert issue_summary == [("linked.py", "PYA1004")]
+    assert project_module_paths(result.files, result.issues) == {
+        "linked": (PurePosixPath("linked.py"),)
+    }
+
+
+@pytest.mark.parametrize("target_location", ["internal", "outside"])
+def test_directory_symlink_is_not_traversed_but_remains_a_module_candidate(
+    tmp_path: Path,
+    target_location: str,
+) -> None:
+    """Internal and escaping directory aliases both prevent false certainty."""
+    project = tmp_path / "project"
+    project.mkdir()
+    target = (
+        tmp_path / "outside-package"
+        if target_location == "outside"
+        else project / "internal-package"
+    )
+    target.mkdir()
+    (target / "implementation.py").write_text("VALUE = 1\n", encoding="utf-8")
+    alias = project / "targetpkg"
+    try:
+        alias.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("the platform does not permit directory symlinks")
+
+    result = discover_python_files(project, ())
+    discovered_paths = {item.relative_path.as_posix() for item in result.files}
+
+    assert not any(path.startswith("targetpkg/") for path in discovered_paths)
+    assert [issue.relative_path.as_posix() for issue in result.issues] == ["targetpkg"]
+    assert project_module_paths(result.files, result.issues)["targetpkg"] == (
+        PurePosixPath("targetpkg"),
+    )
+    if target_location == "internal":
+        selected = discover_python_files(project, (Path("targetpkg"),))
+        assert selected.files == ()
+        assert [issue.relative_path.as_posix() for issue in selected.issues] == [
+            "targetpkg"
+        ]
+    else:
+        with pytest.raises(DiscoveryError):
+            discover_python_files(project, (Path("targetpkg"),))
+
+
+def test_symlinked_src_root_conservatively_competes_with_every_module(
+    tmp_path: Path,
+) -> None:
+    """Opaque contents under a conventional source root cannot produce certainty."""
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside-src"
+    outside.mkdir()
+    (outside / "targetpkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    try:
+        (project / "src").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("the platform does not permit directory symlinks")
+
+    result = discover_python_files(project, ())
+
+    assert project_module_paths(result.files, result.issues)["*"] == (
+        PurePosixPath("src"),
+    )
+
+
+def test_internal_file_symlink_preserves_logical_repository_path(
+    tmp_path: Path,
+) -> None:
+    """An internal file alias keeps its importable name while reads stay resolved."""
+    target = tmp_path / "internal/implementation.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 'local'\n", encoding="utf-8")
+    alias = tmp_path / "cgi.py"
+    try:
+        alias.symlink_to(target)
+    except OSError:
+        pytest.skip("the platform does not permit file symlinks")
+
+    result = discover_python_files(tmp_path, ())
+    files = {item.relative_path.as_posix(): item for item in result.files}
+
+    assert set(files) == {"cgi.py", "internal/implementation.py"}
+    assert files["cgi.py"].absolute_path == target.resolve()
+    assert project_module_paths(result.files, result.issues)["cgi"] == (
+        PurePosixPath("cgi.py"),
+    )
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")

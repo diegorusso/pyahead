@@ -47,6 +47,13 @@
     },
     {
       "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "medium literal dynamic import is below the default threshold",
+      "paths": ["positive/literal_dynamic_import.py"],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
       "expected_inference_codes": ["PYA2001"],
       "name": "local runtime module",
       "paths": ["consumer.py"],

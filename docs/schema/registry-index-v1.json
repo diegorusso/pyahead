@@ -1,0 +1,41 @@
+{
+  "$id": "https://pyahead.dev/schema/registry-index-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "release": {
+      "minLength": 1,
+      "pattern": "^(?:(?![\\s\\S]*[\\ud800-\\udfff])[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?:[\\s\\S]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])?)(?![\\s\\S])",
+      "type": "string"
+    },
+    "retired_ids": {
+      "default": [],
+      "items": {
+        "pattern": "^(?:CPY[0-9]{4})(?![\\s\\S])",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "rules": {
+      "items": {
+        "pattern": "^(?:(?:[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?/)*[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?\\.ya?ml)(?![\\s\\S])",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "release",
+    "rules"
+  ],
+  "title": "PyAhead registry index schema version 1",
+  "type": "object"
+}

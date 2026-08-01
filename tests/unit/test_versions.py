@@ -22,6 +22,12 @@ def test_python_minor_rejects_non_minor_forms(value: str) -> None:
         PythonMinor.parse(value)
 
 
+def test_python_minor_rejects_oversized_minor_without_raw_conversion_error() -> None:
+    """Untrusted digit runs fail through the stable validation exception."""
+    with pytest.raises(InvalidPythonMinorError):
+        PythonMinor.parse("3." + ("9" * 5_000))
+
+
 def test_python_minor_constructor_enforces_supported_major() -> None:
     """Direct construction cannot bypass the Python 3 invariant."""
     with pytest.raises(InvalidPythonMinorError):

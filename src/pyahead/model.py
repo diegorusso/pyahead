@@ -1,4 +1,4 @@
-"""Immutable domain models for the M1 vertical slice."""
+"""Immutable domain models for the static analyser and compatibility registry."""
 
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
@@ -8,6 +8,7 @@ from typing import Self, TypeAlias
 from pyahead.versions import PythonMinor
 
 EvidenceValue: TypeAlias = str | tuple[str, ...]
+LiteralValue: TypeAlias = bool | float | int | str | None
 
 
 class ConfigurationError(ValueError):
@@ -50,10 +51,64 @@ class RegistryCertainty(StrEnum):
 
 
 class ChangeEventKind(StrEnum):
-    """Compatibility event types represented in the seed registry."""
+    """Compatibility event types represented by registry schema version 1."""
 
     DEPRECATED = "deprecated"
     REMOVED = "removed"
+    SIGNATURE_CHANGED = "signature_changed"
+    BEHAVIOR_CHANGED = "behavior_changed"
+    SYNTAX_CHANGED = "syntax_changed"
+    SUPPORT_DROPPED = "support_dropped"
+
+
+class MatcherKind(StrEnum):
+    """Closed set of declarative matcher implementations."""
+
+    MODULE_IMPORT = "module-import"
+    QUALIFIED_REFERENCE = "qualified-reference"
+    QUALIFIED_CALL = "qualified-call"
+    CALL_SHAPE = "call-shape"
+    LITERAL_DYNAMIC_IMPORT = "literal-dynamic-import"
+    BUILTIN_PATTERN = "builtin-pattern"
+
+
+class ReferenceContext(StrEnum):
+    """Supported syntactic contexts for qualified references."""
+
+    READ = "read"
+    DECORATOR = "decorator"
+    BASE_CLASS = "base-class"
+    ANNOTATION = "annotation"
+
+
+class UsageContext(StrEnum):
+    """Registry contexts supported by the static alpha."""
+
+    RUNTIME = "runtime"
+    TYPING = "typing"
+
+
+class SubjectKind(StrEnum):
+    """Kinds of source subjects a rule may describe."""
+
+    MODULE = "module"
+    FUNCTION = "function"
+    CLASS = "class"
+    ATTRIBUTE = "attribute"
+    SYNTAX = "syntax"
+
+
+class AutomationTool(StrEnum):
+    """External tools whose verified automation may be documented."""
+
+    RUFF = "ruff"
+    PYUPGRADE = "pyupgrade"
+
+
+class BuiltinPattern(StrEnum):
+    """Whitelisted non-declarative matcher implementations."""
+
+    BOOL_BITWISE_INVERSION = "bool-bitwise-inversion"
 
 
 class DiagnosticCategory(StrEnum):
@@ -126,11 +181,77 @@ class Diagnostic:
 
 
 @dataclass(frozen=True)
-class RuleMatcher:
-    """A declarative matcher supported by the M1 engine."""
+class ModuleImportMatcher:
+    """Match an import of a module or one of its submodules."""
 
-    kind: str
+    kind: MatcherKind
     module: str
+
+
+@dataclass(frozen=True)
+class QualifiedReferenceMatcher:
+    """Match an exact import-derived reference."""
+
+    kind: MatcherKind
+    qualified_name: str
+    contexts: tuple[ReferenceContext, ...]
+
+
+@dataclass(frozen=True)
+class QualifiedCallMatcher:
+    """Match an exact import-derived callable used as ``Call.func``."""
+
+    kind: MatcherKind
+    qualified_name: str
+
+
+@dataclass(frozen=True)
+class LiteralArgumentPredicate:
+    """Require one positional or keyword argument to equal a literal."""
+
+    position: int | None
+    keyword: str | None
+    equals: LiteralValue
+
+
+@dataclass(frozen=True)
+class CallShapeMatcher:
+    """Match a qualified call whose statically visible arguments fit a shape."""
+
+    kind: MatcherKind
+    qualified_name: str
+    min_positional_args: int | None
+    max_positional_args: int | None
+    required_keywords: tuple[str, ...]
+    forbidden_keywords: tuple[str, ...]
+    literal_arguments: tuple[LiteralArgumentPredicate, ...]
+
+
+@dataclass(frozen=True)
+class LiteralDynamicImportMatcher:
+    """Match a whitelisted dynamic-import function with a literal module name."""
+
+    kind: MatcherKind
+    module: str
+    confidence: MatchConfidence
+
+
+@dataclass(frozen=True)
+class BuiltinPatternMatcher:
+    """Dispatch to one whitelisted syntax-pattern implementation."""
+
+    kind: MatcherKind
+    pattern: BuiltinPattern
+
+
+RuleMatcher: TypeAlias = (
+    ModuleImportMatcher
+    | QualifiedReferenceMatcher
+    | QualifiedCallMatcher
+    | CallShapeMatcher
+    | LiteralDynamicImportMatcher
+    | BuiltinPatternMatcher
+)
 
 
 @dataclass(frozen=True)
@@ -153,28 +274,59 @@ class SourceReference:
 
 
 @dataclass(frozen=True)
+class AutomationReference:
+    """Metadata for an existing external transformation; never an invocation."""
+
+    tool: AutomationTool
+    rule: str
+
+
+@dataclass(frozen=True)
 class Remediation:
     """Human-reviewed migration guidance."""
 
     summary: str
+    documentation_url: str | None = None
+    automation: AutomationReference | None = None
 
 
 @dataclass(frozen=True)
 class Rule:
-    """A minimal reviewed compatibility-registry rule."""
+    """A strict reviewed compatibility-registry rule."""
 
     id: str
+    aliases: tuple[str, ...]
     title: str
     summary: str
+    ecosystem: str
+    runtime: str
+    subject_kind: SubjectKind
     subject: str
-    contexts: tuple[str, ...]
+    contexts: tuple[UsageContext, ...]
     events: tuple[RuleEvent, ...]
-    on_deprecation: Impact
-    on_removal: Impact
+    event_impacts: tuple[tuple[ChangeEventKind, Impact], ...]
     matchers: tuple[RuleMatcher, ...]
     remediation: Remediation
     sources: tuple[SourceReference, ...]
     tags: tuple[str, ...]
+
+    def impact_for(self, event: ChangeEventKind) -> Impact:
+        """Return the explicitly authored impact for one event kind."""
+        for kind, impact in self.event_impacts:
+            if kind is event:
+                return impact
+        message = f"rule {self.id} has no impact for {event.value}"
+        raise ValueError(message)
+
+    @property
+    def on_deprecation(self) -> Impact:
+        """Retain the M1 convenience accessor for deprecation impact."""
+        return self.impact_for(ChangeEventKind.DEPRECATED)
+
+    @property
+    def on_removal(self) -> Impact:
+        """Retain the M1 convenience accessor for removal impact."""
+        return self.impact_for(ChangeEventKind.REMOVED)
 
 
 @dataclass(frozen=True)
@@ -183,7 +335,19 @@ class Registry:
 
     release: str
     revision: str
+    retired_ids: tuple[str, ...]
     rules: tuple[Rule, ...]
+
+    def find_rule(self, identifier: str) -> Rule | None:
+        """Resolve a canonical rule ID or an explicitly declared alias."""
+        return next(
+            (
+                rule
+                for rule in self.rules
+                if identifier == rule.id or identifier in rule.aliases
+            ),
+            None,
+        )
 
 
 @dataclass(frozen=True)
