@@ -15,7 +15,7 @@ before editing.
 - Do not add analyser, registry, Django, or hosted-service code before its
   milestone.
 
-Run the complete M0 verification suite from the repository root:
+Run the complete repository verification suite from the repository root:
 
 ```console
 uv sync

@@ -18,7 +18,10 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
 ]
-dependencies = []
+dependencies = [
+  "libcst>=1.8,<2",
+  "PyYAML>=6.0.2,<7",
+]
 
 [project.urls]
 Documentation = "https://github.com/diegorusso/pyahead/blob/main/docs/design.md"
@@ -34,6 +37,7 @@ dev = [
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
   "ruff>=0.11,<1",
+  "types-PyYAML>=6.0.12.20250516,<7",
 ]
 
 [tool.hatch.version]
@@ -70,6 +74,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]
+"tests/fixtures/**/*.py" = ["D100", "D103", "F401", "INP001"]
+"tests/golden/project/**/*.py" = ["D100", "F401", "INP001"]
 
 [tool.mypy]
 python_version = "3.11"
