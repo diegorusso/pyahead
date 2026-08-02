@@ -20,6 +20,8 @@ classifiers = [
 ]
 dependencies = [
   "libcst>=1.8,<2",
+  "packaging>=26.2,<27",
+  "pathspec>=1.1,<2",
   "PyYAML>=6.0.2,<7",
 ]
 

@@ -56,8 +56,9 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             "rule": automation.rule,
             "tool": automation.tool.value,
         }
-    return {
+    document: dict[str, JsonValue] = {
         "action_version": str(finding.action_version),
+        "baseline_status": finding.baseline_status.value,
         "enclosing_scope": finding.enclosing_scope,
         "fingerprint": finding.fingerprint,
         "impact": finding.impact.value,
@@ -68,6 +69,7 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             "kind": finding.match_kind,
         },
         "registry_revision": finding.registry_revision,
+        "removal_unscheduled": finding.removal_unscheduled,
         "reachable_versions": [str(version) for version in finding.reachable_versions],
         "remediation": remediation,
         "rule_id": finding.rule_id,
@@ -76,6 +78,7 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             for source in finding.sources
         ],
         "subject": finding.subject,
+        "suppressed": finding.suppression is not None,
         "states": [
             {
                 "from": str(state.from_python),
@@ -96,6 +99,14 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
         "title": finding.title,
         "usage_contexts": [context.value for context in finding.usage_contexts],
     }
+    if finding.suppression is not None:
+        suppression: dict[str, JsonValue] = {"kind": finding.suppression.kind.value}
+        if finding.suppression.reason is not None:
+            suppression["reason"] = finding.suppression.reason
+        if finding.suppression.pattern is not None:
+            suppression["pattern"] = finding.suppression.pattern
+        document["suppression"] = suppression
+    return document
 
 
 def _inference(inference: AnalysisInference) -> dict[str, JsonValue]:
@@ -127,36 +138,72 @@ def _versions(report: ScanReport) -> list[JsonValue]:
 
 def _summary(report: ScanReport) -> dict[str, JsonValue]:
     counts = {impact.value: 0 for impact in Impact}
+    suppressed = 0
+    new = 0
     for finding in report.findings:
+        if finding.suppression is not None:
+            suppressed += 1
+            continue
         counts[finding.impact.value] += 1
+        if finding.baseline_status.value == "new":
+            new += 1
     return {
         "breaking": counts[Impact.BREAKING.value],
         "deprecated": counts[Impact.DEPRECATED.value],
         "informational": counts[Impact.INFORMATIONAL.value],
-        "new": len(report.findings),
+        "new": new,
         "risk": counts[Impact.RISK.value],
-        "suppressed": 0,
+        "suppressed": suppressed,
     }
+
+
+def _configuration(report: ScanReport) -> dict[str, JsonValue]:
+    configuration = report.configuration
+    return {
+        "allow_incomplete": configuration.allow_incomplete,
+        "exclude": list(configuration.exclude),
+        "fail_new_only": configuration.fail_new_only,
+        "fail_on": configuration.fail_on.value,
+        "include": list(configuration.include),
+        "max_file_size_bytes": configuration.max_file_size_bytes,
+        "minimum_confidence": configuration.minimum_confidence.value,
+        "per_file_ignores": {
+            item.pattern: list(item.rule_ids) for item in configuration.per_file_ignores
+        },
+        "respect_gitignore": configuration.respect_gitignore,
+        "show_suppressed": configuration.show_suppressed,
+        "show_unscheduled": configuration.show_unscheduled,
+        "source_roots": list(configuration.source_roots),
+        "source_roots_provenance": configuration.source_roots_provenance,
+    }
+
+
+def _policy_provenance(report: ScanReport) -> dict[str, JsonValue]:
+    provenance: dict[str, JsonValue] = {
+        "baseline_python": report.policy_provenance.baseline_python,
+        "horizon_python": report.policy_provenance.horizon_python,
+    }
+    if report.policy_provenance.requires_python is not None:
+        provenance["requires_python"] = report.policy_provenance.requires_python
+    return provenance
 
 
 def report_document(report: ScanReport) -> dict[str, JsonValue]:
     """Build the JSON document without timestamps or absolute paths."""
     return {
+        "configuration": _configuration(report),
         "diagnostics": [_diagnostic(item) for item in report.diagnostics],
-        "findings": [_finding(item) for item in report.findings],
+        "findings": [_finding(item) for item in report.visible_findings],
         "gate": {
-            "fail_on": "breaking",
+            "fail_on": report.configuration.fail_on.value,
             "failed": report.gate_failed,
-            "new_only": False,
+            "new_only": report.configuration.fail_new_only,
         },
         "inferences": [_inference(item) for item in report.inferences],
         "policy": {
             "baseline_python": str(report.policy.baseline_python),
             "horizon_python": str(report.policy.horizon_python),
-            "provenance": {
-                "baseline_python": "command-line",
-                "horizon_python": "command-line",
-            },
+            "provenance": _policy_provenance(report),
             "versions": _versions(report),
         },
         "registry": {

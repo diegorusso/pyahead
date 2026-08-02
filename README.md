@@ -8,18 +8,43 @@ releases. The complete product and technical contract is in
 
 ## Status
 
-The repository is at milestone M3: version timelines and lexical reachability.
-It can scan Python source with the bundled `cgi` rule and render deterministic,
-grouped text or JSON with authoritative sources and one multi-state finding per
-matched construct:
+The repository is at milestone M4: project configuration and CI reports. It can
+scan Python source with the bundled `cgi` rule and render deterministic grouped
+text, JSON, or SARIF 2.1.0 with authoritative sources and one multi-state
+finding per matched construct:
 
 ```console
 pyahead check . --baseline-python 3.11 --horizon-python 3.13
 ```
 
-Exit code 1 means a breaking finding met the current fixed gate; 2 means invalid
-input, 3 means analysis was incomplete, and 4 means an internal failure. A clean
-exit is not proof of compatibility.
+Strict `[tool.pyahead]` configuration can supply the policy and discovery
+settings. When the baseline is omitted, PyAhead can infer the lowest supported
+registry minor from `[project].requires-python` and records that provenance in
+the report. Includes, excludes, hierarchical `.gitignore` rules, source roots,
+bounded file size, and the no-directory-symlink policy are deterministic. An
+explicit empty `source-roots` list is authoritative and disables project-module
+shadow inference; it does not fall back to conventional root and `src` layouts.
+
+CI can write a report atomically and adopt existing findings as a baseline:
+
+```console
+pyahead check --format sarif --output pyahead.sarif
+pyahead baseline create --output .pyahead-baseline.json
+pyahead check --baseline-file .pyahead-baseline.json --fail-new-only
+```
+
+Relative report-output, baseline-input, and baseline-creation paths are resolved
+beneath the selected project root, including when the command starts in a
+nested directory. Output paths that escape through `..` or a symlink are
+rejected.
+
+Inline `# pyahead: ignore[CPY0001] -- reason` comments and configured per-file
+ignores are rule-specific. Unknown rule IDs remain visible diagnostics rather
+than silently suppressing findings.
+
+Exit code 1 means an unsuppressed finding met the configured `fail-on` gate; 2
+means invalid input, 3 means analysis was incomplete, and 4 means an internal
+failure. A clean exit is not proof of compatibility.
 
 M1 indexes conventional repository-root and `src/` runtime modules before
 classifying imports. Competing project modules are shown as analysis inferences
@@ -43,11 +68,11 @@ pyahead registry list
 pyahead explain CPY0001
 ```
 
-M3 does not yet respect project configuration or `.gitignore`, emit SARIF,
-manage baselines or suppressions, execute target code, access the network while
-scanning, or provide a hosted service. Version helpers, user-defined constants,
-and general control flow outside the documented lexical guard grammar remain
-unknown. Those capabilities belong to later milestones in the design.
+M4 does not yet broaden the curated CPython registry, execute target code,
+access the network while scanning, or provide a hosted service. Version
+helpers, user-defined constants, and general control flow outside the
+documented lexical guard grammar remain unknown. Those capabilities belong to
+later milestones in the design.
 
 Milestone M1.5 adds repository development automation without changing those
 product capabilities. Maintainers can use the resumable, independently verified

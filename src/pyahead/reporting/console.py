@@ -37,11 +37,17 @@ def _finding_lines(finding: Finding) -> list[str]:
         )
         for state in finding.states
     )
+    annotations: list[str] = []
+    if finding.baseline_status.value == "existing":
+        annotations.append("baseline existing")
+    if finding.suppression is not None:
+        annotations.append(f"suppressed {finding.suppression.kind.value}")
+    annotation = f"; {'; '.join(annotations)}" if annotations else ""
     lines = [
         (
             f"  {finding.rule_id}  {path}:{start.line}:{start.column}  "
             f"{finding.subject} ({finding.impact.value}; "
-            f"{finding.match_confidence.value} confidence)"
+            f"{finding.match_confidence.value} confidence{annotation})"
         ),
         f"    {finding.title}",
         f"    Match evidence: {_evidence_text(finding.match_evidence)}",
@@ -54,6 +60,11 @@ def _finding_lines(finding: Finding) -> list[str]:
         f"    Timeline: {timeline}",
         f"    Guidance: {finding.remediation.summary}",
     ]
+    if finding.removal_unscheduled:
+        lines.insert(
+            -1,
+            "    Removal schedule: unscheduled (no authoritative removal event)",
+        )
     if finding.remediation.documentation_url is not None:
         lines.append(
             f"    Remediation documentation: {finding.remediation.documentation_url}"
@@ -64,6 +75,11 @@ def _finding_lines(finding: Finding) -> list[str]:
             f"    Automation metadata: {automation.tool.value} {automation.rule} "
             "(not invoked)"
         )
+    if finding.suppression is not None:
+        if finding.suppression.reason is not None:
+            lines.append(f"    Suppression reason: {finding.suppression.reason}")
+        if finding.suppression.pattern is not None:
+            lines.append(f"    Suppression pattern: {finding.suppression.pattern}")
     lines.extend(
         f"    Source: {source.title} — {source.url}" for source in finding.sources
     )
@@ -132,11 +148,27 @@ def render_text(report: ScanReport) -> str:
             f"{report.policy.horizon_python}"
         ),
         (f"Registry: {report.registry_release} ({report.registry_revision[:12]})"),
-        "",
     ]
+    provenance = report.policy_provenance
+    if (
+        provenance.baseline_python != "command-line"
+        or provenance.horizon_python != "command-line"
+    ):
+        lines.append(
+            "Policy provenance: "
+            f"baseline={provenance.baseline_python}; "
+            f"horizon={provenance.horizon_python}"
+        )
+        if provenance.requires_python is not None:
+            lines.append(
+                "Requires-Python declaration evaluated at minor granularity: "
+                f"{provenance.requires_python}"
+            )
+    lines.append("")
 
-    if report.findings:
-        lines.extend(_timeline_lines(report.findings))
+    visible_findings = report.visible_findings
+    if visible_findings:
+        lines.extend(_timeline_lines(visible_findings))
     else:
         lines.extend(
             [
@@ -146,7 +178,12 @@ def render_text(report: ScanReport) -> str:
         )
 
     if report.diagnostics:
-        lines.extend(["", "Incomplete analysis:"])
+        heading = (
+            "Incomplete analysis:"
+            if all(item.incomplete for item in report.diagnostics)
+            else "Diagnostics:"
+        )
+        lines.extend(["", heading])
         for diagnostic in report.diagnostics:
             lines.extend(_diagnostic_lines(diagnostic))
 
@@ -155,7 +192,10 @@ def render_text(report: ScanReport) -> str:
         for inference in report.inferences:
             lines.extend(_inference_lines(inference))
 
-    impact_counts = Counter(finding.impact.value for finding in report.findings)
+    active_findings = tuple(
+        finding for finding in report.findings if finding.suppression is None
+    )
+    impact_counts = Counter(finding.impact.value for finding in active_findings)
     impact_summary = ", ".join(
         f"{impact_counts[impact]} {impact}"
         for impact in ("breaking", "risk", "deprecated", "informational")
@@ -163,15 +203,27 @@ def render_text(report: ScanReport) -> str:
     )
     if not impact_summary:
         impact_summary = "none"
+    suppressed_count = len(report.findings) - len(active_findings)
+    suppression_summary = (
+        f"; {_plural(suppressed_count, 'finding')} suppressed"
+        if suppressed_count
+        else ""
+    )
     lines.extend(
         [
             "",
             (
-                f"Result: {_plural(len(report.findings), 'finding')} "
+                f"Result: {_plural(len(active_findings), 'finding')} "
                 f"({impact_summary}); "
                 f"{_plural(report.counts.files_analyzed, 'file')} analyzed; "
-                f"{_plural(report.counts.files_incomplete, 'file')} incomplete."
+                f"{_plural(report.counts.files_incomplete, 'file')} incomplete"
+                f"{suppression_summary}."
             ),
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def render_quiet_text(report: ScanReport) -> str:
+    """Render only the deterministic final result line."""
+    return render_text(report).splitlines()[-1] + "\n"

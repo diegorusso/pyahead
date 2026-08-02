@@ -104,6 +104,8 @@ def render_rule_explanation(registry: Registry, rule: Rule) -> str:
             f"  Python {event.python}: {event.kind.value}; impact={impact.value}; "
             f"certainty={event.certainty.value}; source={source.id}"
         )
+    if rule.removal_unscheduled:
+        lines.append("  Removal schedule: unscheduled (no authoritative removal event)")
     lines.extend(["", "Matchers:"])
     for matcher in rule.matchers:
         lines.append(f"  {matcher.kind.value}: {_matcher_details(matcher)}")

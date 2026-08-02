@@ -364,6 +364,8 @@ name = "pyahead"
 source = { editable = "." }
 dependencies = [
     { name = "libcst" },
+    { name = "packaging" },
+    { name = "pathspec" },
     { name = "pyyaml" },
 ]
 
@@ -380,6 +382,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "libcst", specifier = ">=1.8,<2" },
+    { name = "packaging", specifier = ">=26.2,<27" },
+    { name = "pathspec", specifier = ">=1.1,<2" },
     { name = "pyyaml", specifier = ">=6.0.2,<7" },
 ]
 
