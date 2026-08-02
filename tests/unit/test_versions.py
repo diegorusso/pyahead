@@ -3,7 +3,7 @@
 import pytest
 
 from pyahead.model import ConfigurationError, Policy
-from pyahead.versions import InvalidPythonMinorError, PythonMinor
+from pyahead.versions import InvalidPythonMinorError, PythonMinor, target_set
 
 
 def test_python_minor_is_canonical_and_orderable() -> None:
@@ -38,3 +38,26 @@ def test_policy_requires_a_non_decreasing_range() -> None:
     """A horizon before the baseline is invalid configuration."""
     with pytest.raises(ConfigurationError):
         Policy.parse("3.13", "3.12")
+
+
+def test_target_set_is_inclusive_and_minor_order_independent() -> None:
+    """Policy generation produces every target as an inspectable frozenset."""
+    policy = Policy.parse("3.11", "3.15")
+
+    assert policy.target_versions == target_set(
+        PythonMinor.parse("3.11"),
+        PythonMinor.parse("3.15"),
+    )
+    assert tuple(map(str, sorted(policy.target_versions))) == (
+        "3.11",
+        "3.12",
+        "3.13",
+        "3.14",
+        "3.15",
+    )
+
+
+def test_target_set_rejects_a_reverse_range() -> None:
+    """Direct generation cannot silently return an empty invalid policy."""
+    with pytest.raises(ValueError, match="must not precede"):
+        target_set(PythonMinor.parse("3.13"), PythonMinor.parse("3.12"))

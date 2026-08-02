@@ -6,8 +6,10 @@
           "action_version": "3.13",
           "confidence": "high",
           "impact": "breaking",
+          "reachable_versions": ["3.11", "3.12", "3.13"],
           "resolution": "no-competing-project-module",
-          "rule_id": "CPY0001"
+          "rule_id": "CPY0001",
+          "usage_contexts": ["runtime"]
         }
       ],
       "expected_inference_codes": [],
@@ -21,8 +23,10 @@
           "action_version": "3.13",
           "confidence": "high",
           "impact": "breaking",
+          "reachable_versions": ["3.11", "3.12", "3.13"],
           "resolution": "no-competing-project-module",
-          "rule_id": "CPY0001"
+          "rule_id": "CPY0001",
+          "usage_contexts": ["runtime"]
         }
       ],
       "expected_inference_codes": [],
@@ -36,8 +40,10 @@
           "action_version": "3.13",
           "confidence": "high",
           "impact": "breaking",
+          "reachable_versions": ["3.11", "3.12", "3.13"],
           "resolution": "no-competing-project-module",
-          "rule_id": "CPY0001"
+          "rule_id": "CPY0001",
+          "usage_contexts": ["runtime"]
         }
       ],
       "expected_inference_codes": [],
@@ -65,8 +71,10 @@
           "action_version": "3.13",
           "confidence": "high",
           "impact": "breaking",
+          "reachable_versions": ["3.11", "3.12", "3.13"],
           "resolution": "no-competing-project-module",
-          "rule_id": "CPY0001"
+          "rule_id": "CPY0001",
+          "usage_contexts": ["runtime"]
         }
       ],
       "expected_inference_codes": [],

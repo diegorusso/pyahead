@@ -15,11 +15,13 @@ from pyahead.model import (
     Impact,
     MatcherKind,
     RegistryCertainty,
+    ReleaseStatus,
 )
 from pyahead.registry import RegistryError, load_registry
 from pyahead.registry.loader import MAX_REGISTRY_FILE_BYTES
 from pyahead.registry.presentation import render_rule_explanation
 from pyahead.registry.schema import (
+    parse_release_metadata,
     registry_index_json_schema,
     registry_rule_json_schema,
     render_json_schema,
@@ -56,6 +58,11 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
     assert registry.release == "2026.07.31"
     assert len(registry.revision) == _SHA256_HEX_LENGTH
     assert len(registry.rules) == 1
+    assert [release.python.minor for release in registry.releases] == [14, 15]
+    assert [release.status for release in registry.releases] == [
+        ReleaseStatus.STABLE,
+        ReleaseStatus.PRERELEASE,
+    ]
     rule = registry.rules[0]
     assert rule.id == "CPY0001"
     assert rule.subject == "cgi"
@@ -80,7 +87,11 @@ def test_registry_revision_is_content_addressed(
     (registry_dir / "cpython").mkdir(parents=True)
     index = _BUNDLED_REGISTRY / "index.yaml"
     rule = _BUNDLED_REGISTRY / "cpython/CPY0001.yaml"
+    releases = _BUNDLED_REGISTRY / "releases.yaml"
     (registry_dir / "index.yaml").write_text(index.read_text(encoding="utf-8"))
+    (registry_dir / "releases.yaml").write_text(
+        releases.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     copied_rule = registry_dir / "cpython/CPY0001.yaml"
     copied_rule.write_text(rule.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -102,6 +113,86 @@ def test_registry_revision_is_content_addressed(
     assert first.revision == second.revision
     assert second.revision != third.revision
     assert first.rules == second.rules
+
+
+def test_release_metadata_changes_the_registry_revision(tmp_path: Path) -> None:
+    """Release presentation facts participate in content identity."""
+    registry_dir = tmp_path / "registry"
+    (registry_dir / "cpython").mkdir(parents=True)
+    for relative_path in (
+        Path("index.yaml"),
+        Path("releases.yaml"),
+        Path("cpython/CPY0001.yaml"),
+    ):
+        target = registry_dir / relative_path
+        target.write_text(
+            (_BUNDLED_REGISTRY / relative_path).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    before = load_registry(registry_dir)
+    release_path = registry_dir / "releases.yaml"
+    release_path.write_text(
+        release_path.read_text(encoding="utf-8").replace(
+            "status: prerelease", "status: planned"
+        ),
+        encoding="utf-8",
+    )
+    after = load_registry(registry_dir)
+
+    assert before.revision != after.revision
+    assert after.releases[-1].status is ReleaseStatus.PLANNED
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"schema_version": 1, "releases": []},
+        {
+            "schema_version": 1,
+            "releases": [{"python": "3.14.1", "status": "stable"}],
+        },
+        {
+            "schema_version": 1,
+            "releases": [{"python": "3.14", "status": "unknown"}],
+        },
+        {
+            "schema_version": 1,
+            "releases": [
+                {
+                    "python": "3.14",
+                    "status": "stable",
+                    "released_on": "2025-1-07",
+                }
+            ],
+        },
+        {
+            "schema_version": 1,
+            "releases": [
+                {
+                    "python": "3.14",
+                    "status": "stable",
+                    "source": "http://example.com/release",
+                }
+            ],
+        },
+        {
+            "schema_version": 1,
+            "releases": [
+                {"python": "3.15", "status": "prerelease"},
+                {"python": "3.14", "status": "stable"},
+            ],
+        },
+        {
+            "schema_version": 1,
+            "releases": [{"python": "3.14", "status": "stable", "unexpected": True}],
+        },
+    ],
+)
+def test_release_metadata_is_strict(document: dict[str, object]) -> None:
+    """Invalid, patch-level, unordered, or unknown release facts fail closed."""
+    with pytest.raises(RegistryError):
+        parse_release_metadata(document)
 
 
 @pytest.mark.parametrize(

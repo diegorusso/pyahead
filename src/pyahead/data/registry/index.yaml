@@ -1,5 +1,6 @@
 schema_version: 1
 release: "2026.07.31"
+releases: releases.yaml
 retired_ids: []
 rules:
   - cpython/CPY0001.yaml

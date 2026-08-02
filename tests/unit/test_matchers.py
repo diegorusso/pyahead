@@ -15,6 +15,7 @@ from pyahead.model import (
     BuiltinPattern,
     ExitCode,
     MatchConfidence,
+    Policy,
     ScanReport,
     StaticMatch,
 )
@@ -197,6 +198,7 @@ def _raw_case(
         selected.files[0],
         build_matcher_index(registry),
         project_module_paths(root_discovery.files, root_discovery.issues),
+        Policy.parse("3.11", "3.13").target_versions,
     )
     assert diagnostic is None
     return matches, inferences
@@ -716,6 +718,7 @@ def test_dynamic_import_supports_builtin_and_keyword_name(tmp_path: Path) -> Non
         root_discovery.files[0],
         build_matcher_index(load_registry(registry)),
         project_module_paths(root_discovery.files, root_discovery.issues),
+        Policy.parse("3.11", "3.13").target_versions,
     )
 
     assert diagnostic is None

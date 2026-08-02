@@ -47,8 +47,8 @@ def _string_list(value: object) -> list[str]:
     return cast("list[str]", values)
 
 
-def _finding_fixture_record(report: ScanReport) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
+def _finding_fixture_record(report: ScanReport) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
     for finding in report.findings:
         evidence = dict(finding.match_evidence)
         resolution = evidence.get("resolution")
@@ -59,7 +59,11 @@ def _finding_fixture_record(report: ScanReport) -> list[dict[str, str]]:
                 "confidence": finding.match_confidence.value,
                 "impact": finding.impact.value,
                 "resolution": resolution,
+                "reachable_versions": [
+                    str(version) for version in finding.reachable_versions
+                ],
                 "rule_id": finding.rule_id,
+                "usage_contexts": [context.value for context in finding.usage_contexts],
             }
         )
     return records
@@ -148,17 +152,27 @@ def test_fixture_manifest_and_negative_fixtures_are_consistent() -> None:
                 paths=tuple(Path(path) for path in paths),
             )
         )
-        expected_findings: list[dict[str, str]] = []
+        expected_findings: list[dict[str, object]] = []
         for raw_finding in _sequence(case["expected_findings"]):
             finding = _mapping(raw_finding)
             assert set(finding) == {
                 "action_version",
                 "confidence",
                 "impact",
+                "reachable_versions",
                 "resolution",
                 "rule_id",
+                "usage_contexts",
             }
-            record = {key: _string(value) for key, value in finding.items()}
+            record: dict[str, object] = {
+                "action_version": _string(finding["action_version"]),
+                "confidence": _string(finding["confidence"]),
+                "impact": _string(finding["impact"]),
+                "reachable_versions": _string_list(finding["reachable_versions"]),
+                "resolution": _string(finding["resolution"]),
+                "rule_id": _string(finding["rule_id"]),
+                "usage_contexts": _string_list(finding["usage_contexts"]),
+            }
             assert record["rule_id"] == rule_id
             expected_findings.append(record)
 
@@ -250,6 +264,47 @@ def test_fingerprint_changes_with_scope_path_and_ordinal(tmp_path: Path) -> None
     moved_source.write_text("import cgi\nimport cgi\n", encoding="utf-8")
     findings = _scan(tmp_path).findings
     assert findings[0].fingerprint != findings[1].fingerprint
+
+
+def test_reachability_filter_does_not_change_later_fingerprint(
+    tmp_path: Path,
+) -> None:
+    """Policy-only visibility changes preserve later syntactic ordinals."""
+    (tmp_path / "legacy.py").write_text(
+        "import sys\nif sys.version_info >= (3, 13):\n    import cgi\nimport cgi\n",
+        encoding="utf-8",
+    )
+
+    through_312 = _scan(tmp_path, horizon="3.12")
+    through_313 = _scan(tmp_path, horizon="3.13")
+
+    assert [finding.location.region.start.line for finding in through_312.findings] == [
+        4
+    ]
+    assert [finding.location.region.start.line for finding in through_313.findings] == [
+        3,
+        4,
+    ]
+    assert through_312.findings[0].fingerprint == through_313.findings[1].fingerprint
+
+
+def test_context_filter_preserves_occurrence_ordinal(tmp_path: Path) -> None:
+    """A typing-only syntactic match still precedes a runtime finding."""
+    source = tmp_path / "legacy.py"
+    source.write_text("import cgi\nimport cgi\n", encoding="utf-8")
+    expected_trailing = _scan(tmp_path).findings[1].fingerprint
+
+    source.write_text(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    import cgi\n"
+        "import cgi\n",
+        encoding="utf-8",
+    )
+    findings = _scan(tmp_path).findings
+
+    assert [finding.location.region.start.line for finding in findings] == [4]
+    assert findings[0].fingerprint == expected_trailing
 
 
 def test_unparseable_source_marks_scan_incomplete(tmp_path: Path) -> None:

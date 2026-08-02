@@ -36,12 +36,13 @@ are rejected before the data is trusted.
 
 ## Index and stable IDs
 
-`index.yaml` contains a release label, the ordered rule paths, and IDs reserved
-after retirement:
+`index.yaml` contains a release label, an optional release-metadata path, the
+ordered rule paths, and IDs reserved after retirement:
 
 ```yaml
 schema_version: 1
 release: "2026.07.31"
+releases: releases.yaml
 retired_ids: [CPY0099]
 rules:
   - cpython/CPY0001.yaml
@@ -57,6 +58,27 @@ Rule paths use canonical relative POSIX spelling: ASCII identifier-like path
 segments separated by one `/`, ending in `.yaml` or `.yml`. Absolute paths,
 dot segments, repeated separators, backslashes, whitespace, and control
 characters are invalid rather than normalized.
+
+When present, `releases` names a strict YAML document that contributes to the
+registry revision alongside the index and rules:
+
+```yaml
+schema_version: 1
+releases:
+  - python: "3.14"
+    status: stable
+    released_on: "2025-10-07"
+  - python: "3.15"
+    status: prerelease
+    expected_final_on: "2026-10-01"
+    source: "https://peps.python.org/pep-0790/"
+```
+
+Release records are strictly ordered and unique by Python minor. Allowed
+statuses are `eol`, `security`, `stable`, `prerelease`, and `planned`; dates use
+canonical `YYYY-MM-DD` form, and an optional source is a direct HTTPS URL.
+These facts are informative presentation data and never alter detection
+semantics.
 
 ## Sources and timelines
 

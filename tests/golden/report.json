@@ -35,7 +35,12 @@
         },
         "kind": "module-import"
       },
-      "registry_revision": "5d6fb848c77c8f8ee24960ba9aa04d14129017e930b7da20a2138f0bcb9b4a58",
+      "reachable_versions": [
+        "3.11",
+        "3.12",
+        "3.13"
+      ],
+      "registry_revision": "a5ef752664499b20dc02258db54adfa8c2a6312a4a9b220f14a566fd48097876",
       "remediation": {
         "summary": "Replace the specific cgi functionality in use. There is no single drop-in replacement for the complete module."
       },
@@ -50,6 +55,18 @@
           "id": "python-3.13-cgi",
           "title": "cgi — Common Gateway Interface support",
           "url": "https://docs.python.org/3.13/library/cgi.html"
+        }
+      ],
+      "states": [
+        {
+          "from": "3.11",
+          "state": "deprecated",
+          "through": "3.12"
+        },
+        {
+          "from": "3.13",
+          "state": "breaking",
+          "through": "3.13"
         }
       ],
       "subject": "cgi",
@@ -67,7 +84,10 @@
           "source": "python-3.13-cgi"
         }
       ],
-      "title": "The cgi module is removed"
+      "title": "The cgi module is removed",
+      "usage_contexts": [
+        "runtime"
+      ]
     }
   ],
   "gate": {
@@ -91,7 +111,7 @@
   },
   "registry": {
     "release": "2026.07.31",
-    "revision": "5d6fb848c77c8f8ee24960ba9aa04d14129017e930b7da20a2138f0bcb9b4a58"
+    "revision": "a5ef752664499b20dc02258db54adfa8c2a6312a4a9b220f14a566fd48097876"
   },
   "scan": {
     "files_analyzed": 1,
