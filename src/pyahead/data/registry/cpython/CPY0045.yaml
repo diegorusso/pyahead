@@ -1,0 +1,55 @@
+schema_version: 1
+id: CPY0045
+title: "BooleanOptionalAction legacy parameters are removed"
+summary: >-
+  The type, choices, and metavar parameters of argparse.BooleanOptionalAction are deprecated in Python 3.12 and removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: argparse.BooleanOptionalAction
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.14-removed
+  - event: signature_changed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: argparse.BooleanOptionalAction
+    required_keywords: [type]
+  - kind: call-shape
+    qualified_name: argparse.BooleanOptionalAction
+    required_keywords: [choices]
+  - kind: call-shape
+    qualified_name: argparse.BooleanOptionalAction
+    required_keywords: [metavar]
+  - kind: call-shape
+    qualified_name: argparse.BooleanOptionalAction
+    min_positional_args: 4
+
+remediation:
+  summary: >-
+    Remove the unsupported constructor parameters identified by the linked argparse release notes.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, signature-change, argparse]

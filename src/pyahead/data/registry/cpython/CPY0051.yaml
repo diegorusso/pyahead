@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0051
+title: "ctypes.ARRAY is deprecated"
+summary: >-
+  The undocumented ctypes.ARRAY helper is soft-deprecated in Python 3.13;
+  CPython does not publish a removal version.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: ctypes.ARRAY
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ctypes.ARRAY
+
+remediation:
+  summary: >-
+    Use the supported ctypes array construction syntax documented by CPython.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — New Deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
+
+tags: [stdlib, soft-deprecation, unscheduled-removal, ctypes]

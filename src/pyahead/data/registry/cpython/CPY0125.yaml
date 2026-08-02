@@ -1,0 +1,62 @@
+schema_version: 1
+id: CPY0125
+title: "Legacy threading aliases are deprecated"
+summary: >-
+  The camelCase threading aliases have been deprecated since Python 3.10.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: threading.currentThread
+
+timeline:
+  - event: deprecated
+    python: "3.10"
+    certainty: released
+    source: python-3.10-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: threading.currentThread
+  - kind: qualified-reference
+    qualified_name: threading.activeCount
+  - kind: qualified-reference
+    qualified_name: threading.Condition.notifyAll
+  - kind: qualified-reference
+    qualified_name: threading.Event.isSet
+  - kind: qualified-reference
+    qualified_name: threading.Thread.getName
+  - kind: qualified-reference
+    qualified_name: threading.Thread.setName
+  - kind: qualified-reference
+    qualified_name: threading.Thread.isDaemon
+  - kind: qualified-reference
+    qualified_name: threading.Thread.setDaemon
+  - kind: qualified-reference
+    qualified_name: threading.Timer.getName
+  - kind: qualified-reference
+    qualified_name: threading.Timer.setName
+  - kind: qualified-reference
+    qualified_name: threading.Timer.isDaemon
+  - kind: qualified-reference
+    qualified_name: threading.Timer.setDaemon
+
+remediation:
+  summary: >-
+    Use the snake_case functions, methods, and properties named by the linked documentation.
+  documentation_url: "https://docs.python.org/3.10/whatsnew/3.10.html#deprecated"
+  automation: null
+
+sources:
+  - id: python-3.10-deprecated
+    title: "What's New in Python 3.10 — Deprecated"
+    url: "https://docs.python.org/3.10/whatsnew/3.10.html#deprecated"
+
+tags: [stdlib, unscheduled-removal, threading, partial]

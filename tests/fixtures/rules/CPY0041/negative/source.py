@@ -1,0 +1,1 @@
+value = "importlib.abc.ResourceReader"

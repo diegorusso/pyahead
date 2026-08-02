@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0025
+title: "Legacy pkgutil importer classes are removed"
+summary: >-
+  pkgutil.ImpImporter and pkgutil.ImpLoader are removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: pkgutil.ImpImporter
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: pkgutil.ImpImporter
+  - kind: qualified-reference
+    qualified_name: pkgutil.ImpLoader
+
+remediation:
+  summary: >-
+    Remove use of the legacy importer classes and consult the importlib migration guidance in the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, imports]
+

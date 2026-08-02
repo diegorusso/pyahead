@@ -1,0 +1,75 @@
+schema_version: 1
+id: CPY0043
+title: "The asyncio child-watcher APIs are removed"
+summary: >-
+  The asyncio child-watcher classes and policy accessors are deprecated in Python 3.12 and removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: asyncio.AbstractChildWatcher
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.14-removed
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: asyncio.AbstractChildWatcher
+  - kind: qualified-reference
+    qualified_name: asyncio.SafeChildWatcher
+  - kind: qualified-reference
+    qualified_name: asyncio.FastChildWatcher
+  - kind: qualified-reference
+    qualified_name: asyncio.PidfdChildWatcher
+  - kind: qualified-reference
+    qualified_name: asyncio.MultiLoopChildWatcher
+  - kind: qualified-reference
+    qualified_name: asyncio.ThreadedChildWatcher
+  - kind: qualified-reference
+    qualified_name: asyncio.get_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.set_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.AbstractEventLoopPolicy.get_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.AbstractEventLoopPolicy.set_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.DefaultEventLoopPolicy.get_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.DefaultEventLoopPolicy.set_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.WindowsSelectorEventLoopPolicy.get_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.WindowsSelectorEventLoopPolicy.set_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.WindowsProactorEventLoopPolicy.get_child_watcher
+  - kind: qualified-reference
+    qualified_name: asyncio.WindowsProactorEventLoopPolicy.set_child_watcher
+
+remediation:
+  summary: >-
+    Remove explicit child-watcher management and follow the supported asyncio subprocess guidance.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, api-removal, asyncio]

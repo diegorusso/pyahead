@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0028
+title: "The tkinter.tix module is removed"
+summary: >-
+  The tkinter.tix module is removed in Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: tkinter.tix
+
+timeline:
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: module-import
+    module: tkinter.tix
+  - kind: literal-dynamic-import
+    module: tkinter.tix
+    confidence: medium
+
+remediation:
+  summary: >-
+    Remove use of tkinter.tix and consult the linked release notes before choosing a replacement UI component.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, module-removal, tkinter]
+

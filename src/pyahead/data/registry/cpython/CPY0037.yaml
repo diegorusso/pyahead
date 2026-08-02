@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0037
+title: "urllib.parse.Quoter is removed"
+summary: >-
+  The undocumented urllib.parse.Quoter API is deprecated in Python 3.11 and removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: urllib.parse.Quoter
+
+timeline:
+  - event: deprecated
+    python: "3.11"
+    certainty: released
+    source: python-3.14-removed
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: urllib.parse.Quoter
+
+remediation:
+  summary: >-
+    Remove use of this undocumented API and use only the supported quoting functions documented by urllib.parse.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, api-removal, urllib]
+

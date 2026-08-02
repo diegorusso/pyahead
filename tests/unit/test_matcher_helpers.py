@@ -1,5 +1,6 @@
 """Boundary tests for conservative matcher helper predicates."""
 
+from dataclasses import replace
 from typing import cast
 
 import libcst as cst
@@ -40,6 +41,8 @@ def _shape() -> CallShapeMatcher:
         qualified_name="targetpkg.call",
         min_positional_args=1,
         max_positional_args=1,
+        min_keyword_args=1,
+        max_keyword_args=1,
         required_keywords=("mode",),
         forbidden_keywords=("legacy",),
         literal_arguments=(
@@ -95,6 +98,7 @@ def test_literal_value_accepts_only_scalar_source_literals(
         'fn(1, 2, mode="text")',
         "fn(1)",
         'fn(1, mode="text", legacy=True)',
+        'fn(1, mode="text", extra=True)',
         'fn(1, mode="text", **options)',
         'fn(2, mode="text")',
         'fn(1, mode="binary")',
@@ -108,6 +112,43 @@ def test_call_shape_rejects_unknown_or_mismatched_arguments(source: str) -> None
 def test_call_shape_accepts_an_exact_shape() -> None:
     """Ordinary arguments satisfying all predicates match."""
     assert call_shape_matches(_call('fn(1, mode="text")'), _shape()) is True
+
+
+def test_minimum_keyword_count_accepts_proven_visible_keywords() -> None:
+    """Unknown **kwargs cannot reduce an already-proven visible minimum."""
+    matcher = replace(
+        _shape(),
+        min_positional_args=None,
+        max_positional_args=None,
+        min_keyword_args=1,
+        max_keyword_args=None,
+        required_keywords=(),
+        forbidden_keywords=(),
+        literal_arguments=(),
+    )
+
+    assert call_shape_matches(_call("fn(option=True)"), matcher) is True
+    assert call_shape_matches(_call("fn(option=True, **options)"), matcher) is True
+    assert call_shape_matches(_call("fn()"), matcher) is False
+    assert call_shape_matches(_call("fn(**options)"), matcher) is False
+
+
+def test_minimum_positional_count_accepts_proven_visible_arguments() -> None:
+    """Unknown *args cannot reduce an already-proven visible minimum."""
+    matcher = replace(
+        _shape(),
+        min_positional_args=1,
+        max_positional_args=None,
+        min_keyword_args=None,
+        max_keyword_args=None,
+        required_keywords=(),
+        forbidden_keywords=(),
+        literal_arguments=(),
+    )
+
+    assert call_shape_matches(_call("fn(1, *())"), matcher) is True
+    assert call_shape_matches(_call("fn(1, *items)"), matcher) is True
+    assert call_shape_matches(_call("fn(*items)"), matcher) is False
 
 
 @pytest.mark.parametrize(

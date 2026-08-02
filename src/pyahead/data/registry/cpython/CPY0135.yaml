@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0135
+title: "CodeType.co_lnotab is deprecated"
+summary: >-
+  types.CodeType.co_lnotab was deprecated in Python 3.10 by PEP 626 and began
+  emitting a DeprecationWarning in Python 3.12; no removal version is claimed.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: types.CodeType.co_lnotab
+
+timeline:
+  - event: deprecated
+    python: "3.10"
+    certainty: released
+    source: pep-0626
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: types.CodeType.co_lnotab
+
+remediation:
+  summary: >-
+    Use CodeType.co_lines() for line-number information as described by PEP 626.
+  documentation_url: "https://peps.python.org/pep-0626/"
+  automation: null
+
+sources:
+  - id: pep-0626
+    title: "PEP 626 — Precise line numbers for debugging and other tools"
+    url: "https://peps.python.org/pep-0626/"
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
+
+tags: [stdlib, deprecation, types, partial, unscheduled-removal]

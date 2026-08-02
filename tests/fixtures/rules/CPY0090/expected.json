@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "rule_id": "CPY0090",
+  "policy": {"baseline_python": "3.11", "horizon_python": "3.16"},
+  "cases": [
+    {
+      "name": "deprecated helper is positive",
+      "root": ".",
+      "paths": ["positive/source.py"],
+      "expected_findings": [{"rule_id": "CPY0090", "confidence": "high", "action_version": "3.16", "impact": "breaking", "resolution": "exact-import", "reachable_versions": ["3.11", "3.12", "3.13", "3.14", "3.15", "3.16"], "usage_contexts": ["runtime"]}],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "supported helper is negative",
+      "root": ".",
+      "paths": ["negative/source.py"],
+      "expected_findings": [],
+      "expected_inference_codes": []
+    }
+  ]
+}

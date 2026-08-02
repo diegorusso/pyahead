@@ -1,0 +1,53 @@
+schema_version: 1
+id: CPY0107
+title: "Keyword operands to functools.reduce are scheduled to fail"
+summary: >-
+  Passing function or sequence by keyword to the Python implementation of
+  functools.reduce is deprecated in Python 3.14 and scheduled to become
+  positional-only in Python 3.16.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: functools.reduce
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+  - event: signature_changed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: functools.reduce
+    required_keywords: [function]
+  - kind: call-shape
+    qualified_name: functools.reduce
+    required_keywords: [sequence]
+
+remediation:
+  summary: Pass function and sequence positionally.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#functools"
+  - id: python-deprecations
+    title: "Python deprecation index — Pending removal in Python 3.16"
+    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+
+tags: [stdlib, signature-change, functools]

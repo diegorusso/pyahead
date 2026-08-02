@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0131
+title: "EntryPoint tuple-style access is removed"
+summary: >-
+  The tuple-compatible interface of importlib.metadata.EntryPoint, including
+  subscription, is removed in Python 3.13; the rule detects explicit calls to
+  EntryPoint.__getitem__.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: importlib.metadata.EntryPoint.__getitem__
+
+timeline:
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: importlib.metadata.EntryPoint.__getitem__
+
+remediation:
+  summary: >-
+    Remove tuple-style access to EntryPoint objects and use the documented
+    EntryPoint attributes for the value the program needs.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, api-removal, importlib-metadata, partial]

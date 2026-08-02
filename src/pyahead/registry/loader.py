@@ -15,9 +15,16 @@ from typing import IO, Protocol, TypeAlias, cast
 
 import yaml
 
-from pyahead.model import PythonRelease, Registry, Rule
+from pyahead.model import (
+    CoverageDisposition,
+    CoverageManifest,
+    PythonRelease,
+    Registry,
+    Rule,
+)
 from pyahead.registry.schema import (
     RegistryError,
+    parse_coverage_manifest,
     parse_manifest,
     parse_release_metadata,
     parse_rule,
@@ -421,6 +428,58 @@ def _registry_digest(contents: Mapping[PurePosixPath, object]) -> str:
     return digest.hexdigest()
 
 
+def _validate_coverage(
+    manifests: tuple[CoverageManifest, ...],
+    rules: tuple[Rule, ...],
+) -> None:
+    """Resolve coverage references and require every curated rule to be owned."""
+    source_ids = tuple(manifest.source.id for manifest in manifests)
+    if len(set(source_ids)) != len(source_ids):
+        message = "coverage manifests must use unique source IDs"
+        raise RegistryError(message)
+
+    canonical_ids = frozenset(rule.id for rule in rules)
+    covered_ids: set[str] = set()
+    for manifest in manifests:
+        classified_keys = {entry.source_key for entry in manifest.entries}
+        audited_keys = set(manifest.source_keys)
+        unclassified = sorted(audited_keys.difference(classified_keys))
+        unknown_entries = sorted(classified_keys.difference(audited_keys))
+        if unclassified:
+            message = (
+                f"coverage source {manifest.source.id!r} has unclassified source "
+                f"entries: {', '.join(unclassified)}"
+            )
+            raise RegistryError(message)
+        if unknown_entries:
+            message = (
+                f"coverage source {manifest.source.id!r} classifies entries absent "
+                f"from its audited source-key census: {', '.join(unknown_entries)}"
+            )
+            raise RegistryError(message)
+        for entry in manifest.entries:
+            unknown = sorted(set(entry.rules).difference(canonical_ids))
+            if unknown:
+                message = (
+                    f"coverage source {manifest.source.id!r} entry "
+                    f"{entry.source_key!r} references unknown canonical rule(s): "
+                    f"{', '.join(unknown)}"
+                )
+                raise RegistryError(message)
+            if entry.disposition in {
+                CoverageDisposition.IMPLEMENTED,
+                CoverageDisposition.PARTIAL,
+            }:
+                covered_ids.update(entry.rules)
+    missing = sorted(canonical_ids.difference(covered_ids))
+    if manifests and missing:
+        message = (
+            "canonical registry rule(s) lack implemented or partial source "
+            f"coverage: {', '.join(missing)}"
+        )
+        raise RegistryError(message)
+
+
 def load_registry(source: Path | None = None) -> Registry:
     """Load the bundled registry or an explicit registry index safely."""
     if source is None:
@@ -461,10 +520,18 @@ def load_registry(source: Path | None = None) -> Registry:
         message = f"retired registry ID(s) cannot be reused: {', '.join(reused)}"
         raise RegistryError(message)
 
+    coverage: list[CoverageManifest] = []
+    for path in manifest.coverage_paths:
+        coverage_data = _load_mapping(files.read_text(path), path.as_posix())
+        contents[path] = coverage_data
+        coverage.append(parse_coverage_manifest(coverage_data, path.as_posix()))
+    _validate_coverage(tuple(coverage), tuple(rules))
+
     return Registry(
         release=manifest.release,
         revision=_registry_digest(contents),
         retired_ids=manifest.retired_ids,
         rules=tuple(rules),
         releases=releases,
+        coverage=tuple(coverage),
     )

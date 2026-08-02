@@ -1,0 +1,47 @@
+schema_version: 1
+id: CPY0023
+title: "The distutils package is removed"
+summary: >-
+  The standard-library distutils package is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: distutils
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: module-import
+    module: distutils
+  - kind: literal-dynamic-import
+    module: distutils
+    confidence: medium
+
+remediation:
+  summary: >-
+    Remove reliance on the standard-library distutils package and follow PEP 632's migration guidance.
+  documentation_url: "https://peps.python.org/pep-0632/"
+  automation: null
+
+sources:
+  - id: pep-0632
+    title: "PEP 632 — Deprecate distutils module"
+    url: "https://peps.python.org/pep-0632/"
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, module-removal]
+

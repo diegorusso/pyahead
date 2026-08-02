@@ -1,0 +1,56 @@
+schema_version: 1
+id: CPY0109
+title: "Legacy os process helpers are soft deprecated"
+summary: >-
+  os.popen and the os.spawn family are soft deprecated in Python 3.14
+  without a published removal version.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: os.popen
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: os.popen
+  - kind: qualified-reference
+    qualified_name: os.spawnl
+  - kind: qualified-reference
+    qualified_name: os.spawnle
+  - kind: qualified-reference
+    qualified_name: os.spawnlp
+  - kind: qualified-reference
+    qualified_name: os.spawnlpe
+  - kind: qualified-reference
+    qualified_name: os.spawnv
+  - kind: qualified-reference
+    qualified_name: os.spawnve
+  - kind: qualified-reference
+    qualified_name: os.spawnvp
+  - kind: qualified-reference
+    qualified_name: os.spawnvpe
+
+remediation:
+  summary: Use subprocess APIs for new process-launching code.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#os"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#os"
+
+tags: [stdlib, soft-deprecation, os]

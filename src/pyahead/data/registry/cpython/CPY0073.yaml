@@ -1,0 +1,142 @@
+schema_version: 1
+id: CPY0073
+title: "Legacy unittest APIs are removed"
+summary: >-
+  Deprecated unittest.TestCase aliases and related legacy loader features are removed in Python 3.12; PyAhead matches class-qualified references and explicit use_load_tests keywords.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: unittest.TestCase.assertEquals
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.failUnless
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.failIf
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.failUnlessEqual
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.failIfEqual
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.failUnlessAlmostEqual
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.failIfAlmostEqual
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.failUnlessRaises
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assertEquals
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assertNotEquals
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assertAlmostEquals
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assertNotAlmostEquals
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assertRegexpMatches
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assertNotRegexpMatches
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assertRaisesRegexp
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assertDictContainsSubset
+  - kind: qualified-reference
+    qualified_name: unittest.TestCase.assert_
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.failUnless
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.failIf
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.failUnlessEqual
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.failIfEqual
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.failUnlessAlmostEqual
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.failIfAlmostEqual
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.failUnlessRaises
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assertEquals
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assertNotEquals
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assertAlmostEquals
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assertNotAlmostEquals
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assertRegexpMatches
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assertNotRegexpMatches
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assertRaisesRegexp
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assertDictContainsSubset
+  - kind: qualified-reference
+    qualified_name: unittest.FunctionTestCase.assert_
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.failUnless
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.failIf
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.failUnlessEqual
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.failIfEqual
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.failUnlessAlmostEqual
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.failIfAlmostEqual
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.failUnlessRaises
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assertEquals
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assertNotEquals
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assertAlmostEquals
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assertNotAlmostEquals
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assertRegexpMatches
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assertNotRegexpMatches
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assertRaisesRegexp
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assertDictContainsSubset
+  - kind: qualified-reference
+    qualified_name: unittest.IsolatedAsyncioTestCase.assert_
+  - kind: qualified-reference
+    qualified_name: unittest._TextTestResult
+  - kind: call-shape
+    qualified_name: unittest.TestLoader.loadTestsFromModule
+    required_keywords: [use_load_tests]
+  - kind: call-shape
+    qualified_name: unittest.TestLoader.loadTestsFromModule
+    min_positional_args: 3
+
+remediation:
+  summary: >-
+    Use the supported unittest method names and loader signature listed in the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, unittest, partial]

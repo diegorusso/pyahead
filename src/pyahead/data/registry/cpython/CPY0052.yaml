@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0052
+title: "platform.java_ver is scheduled for removal"
+summary: >-
+  platform.java_ver is deprecated in Python 3.13 and scheduled for removal in Python 3.15.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: platform.java_ver
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: removed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: platform.java_ver
+
+remediation:
+  summary: >-
+    Remove reliance on the Jython-specific helper and consult the linked platform documentation.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#platform"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — platform deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#platform"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — platform removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#platform"
+
+tags: [stdlib, scheduled-removal, platform]

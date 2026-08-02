@@ -1,0 +1,121 @@
+schema_version: 1
+source:
+  id: python-3.14-deprecated
+  title: "What's New in Python 3.14 — New deprecations"
+  url: "https://docs.python.org/3.14/whatsnew/3.14.html#new-deprecations"
+  checked_on: "2026-08-02"
+
+source_keys:
+  - complex-real-imag-complex-values
+  - argparse-group-prefix-chars
+  - argparse-filetype
+  - asyncio-iscoroutinefunction
+  - asyncio-policy-system
+  - asyncio-abstract-event-loop-policy
+  - asyncio-default-event-loop-policy
+  - asyncio-windows-selector-event-loop-policy
+  - asyncio-windows-proactor-event-loop-policy
+  - asyncio-get-event-loop-policy
+  - asyncio-set-event-loop-policy
+  - codecs-open
+  - ctypes-structure-pack-layout
+  - ctypes-pointer-string
+  - ctypes-pointer-type-cache
+  - functools-reduce-keywords
+  - logging-handler-strm
+  - mimetypes-undotted-extension
+  - nturl2path-module
+  - os-popen-spawn
+  - pathlib-purepath-as-uri
+  - pdb-curframe-locals
+  - symtable-class-get-methods
+  - tkinter-variable-trace-methods
+  - urllib-parse-false-values
+  - cpython-c-api-deprecations
+
+entries:
+  - source_key: complex-real-imag-complex-values
+    disposition: not-statically-detectable
+    note: Proving the runtime type of constructor arguments requires type inference.
+  - source_key: argparse-group-prefix-chars
+    disposition: partial
+    rules: [CPY0105]
+    note: Explicit ArgumentParser-qualified calls are detected; arbitrary parser receivers require type inference.
+  - source_key: argparse-filetype
+    disposition: implemented
+    rules: [CPY0105]
+  - source_key: asyncio-iscoroutinefunction
+    disposition: duplicate
+    rules: [CPY0062]
+    note: The exact function and Python 3.16 schedule are represented by CPY0062.
+  - source_key: asyncio-policy-system
+    disposition: duplicate
+    rules: [CPY0042]
+    note: This parent bullet is decomposed into the six named API bullets below.
+  - source_key: asyncio-abstract-event-loop-policy
+    disposition: implemented
+    rules: [CPY0042]
+  - source_key: asyncio-default-event-loop-policy
+    disposition: implemented
+    rules: [CPY0042]
+  - source_key: asyncio-windows-selector-event-loop-policy
+    disposition: implemented
+    rules: [CPY0042]
+  - source_key: asyncio-windows-proactor-event-loop-policy
+    disposition: implemented
+    rules: [CPY0042]
+  - source_key: asyncio-get-event-loop-policy
+    disposition: implemented
+    rules: [CPY0042]
+  - source_key: asyncio-set-event-loop-policy
+    disposition: implemented
+    rules: [CPY0042]
+  - source_key: codecs-open
+    disposition: implemented
+    rules: [CPY0106]
+  - source_key: ctypes-structure-pack-layout
+    disposition: not-statically-detectable
+    note: The change depends on assignment values, target class inheritance, and host platform.
+  - source_key: ctypes-pointer-string
+    disposition: not-statically-detectable
+    note: The closed matcher schema cannot express an arbitrary source string literal.
+  - source_key: ctypes-pointer-type-cache
+    disposition: not-applicable
+    note: The underscored cache is an internal implementation detail outside the selected public Python API surface.
+  - source_key: functools-reduce-keywords
+    disposition: implemented
+    rules: [CPY0107]
+  - source_key: logging-handler-strm
+    disposition: not-statically-detectable
+    note: Recognizing custom handler constructor signatures requires class and inheritance analysis.
+  - source_key: mimetypes-undotted-extension
+    disposition: not-statically-detectable
+    note: The closed matcher schema cannot express the nonempty-string prefix condition.
+  - source_key: nturl2path-module
+    disposition: implemented
+    rules: [CPY0108]
+  - source_key: os-popen-spawn
+    disposition: implemented
+    rules: [CPY0109]
+  - source_key: pathlib-purepath-as-uri
+    disposition: partial
+    rules: [CPY0110]
+    note: Exact PurePath, PurePosixPath, and PureWindowsPath references are detected; arbitrary pure-path subclasses and instances require type inference.
+  - source_key: pdb-curframe-locals
+    disposition: partial
+    rules: [CPY0111]
+    note: Exact Pdb-qualified references are detected; arbitrary debugger receiver types require type inference.
+  - source_key: symtable-class-get-methods
+    disposition: partial
+    rules: [CPY0112]
+    note: Exact Class-qualified references are detected; arbitrary symbol-table receivers require type inference.
+  - source_key: tkinter-variable-trace-methods
+    disposition: partial
+    rules: [CPY0113]
+    note: Exact Variable and the four public typed Variable subclass references are detected; arbitrary subclass and instance receivers require type inference.
+  - source_key: urllib-parse-false-values
+    disposition: not-statically-detectable
+    note: Distinguishing allowed and deprecated false-valued runtime objects requires type and value inference.
+  - source_key: cpython-c-api-deprecations
+    disposition: c-api-roadmap
+    note: C symbols and headers are reserved for the separately designed C API roadmap.

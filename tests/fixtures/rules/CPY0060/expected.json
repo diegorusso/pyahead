@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "rule_id": "CPY0060",
+  "policy": {
+    "baseline_python": "3.11",
+    "horizon_python": "3.16"
+  },
+  "cases": [
+    {
+      "name": "representative positive",
+      "root": ".",
+      "paths": [
+        "positive/source.py"
+      ],
+      "expected_findings": [
+        {
+          "rule_id": "CPY0060",
+          "confidence": "high",
+          "action_version": "3.15",
+          "impact": "breaking",
+          "resolution": "exact-import",
+          "reachable_versions": [
+            "3.11",
+            "3.12",
+            "3.13",
+            "3.14",
+            "3.15",
+            "3.16"
+          ],
+          "usage_contexts": [
+            "runtime",
+            "typing"
+          ]
+        }
+      ],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "omitted fields with total are positive",
+      "root": ".",
+      "paths": ["positive_total/source.py"],
+      "expected_findings": [{"rule_id": "CPY0060", "confidence": "high", "action_version": "3.15", "impact": "breaking", "resolution": "exact-import", "reachable_versions": ["3.11", "3.12", "3.13", "3.14", "3.15", "3.16"], "usage_contexts": ["runtime", "typing"]}],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "explicit None fields are positive",
+      "root": ".",
+      "paths": ["positive_none/source.py"],
+      "expected_findings": [{"rule_id": "CPY0060", "confidence": "high", "action_version": "3.15", "impact": "breaking", "resolution": "exact-import", "reachable_versions": ["3.11", "3.12", "3.13", "3.14", "3.15", "3.16"], "usage_contexts": ["runtime", "typing"]}],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "explicit None fields with total are positive",
+      "root": ".",
+      "paths": ["positive_none_total/source.py"],
+      "expected_findings": [{"rule_id": "CPY0060", "confidence": "high", "action_version": "3.15", "impact": "breaking", "resolution": "exact-import", "reachable_versions": ["3.11", "3.12", "3.13", "3.14", "3.15", "3.16"], "usage_contexts": ["runtime", "typing"]}],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "syntactic lookalike is negative",
+      "root": ".",
+      "paths": [
+        "negative/source.py"
+      ],
+      "expected_findings": [],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "invalid keywords and expansions are negative",
+      "root": ".",
+      "paths": ["negative_shapes/source.py"],
+      "expected_findings": [],
+      "expected_inference_codes": []
+    }
+  ]
+}

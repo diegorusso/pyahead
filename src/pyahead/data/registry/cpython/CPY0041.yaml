@@ -1,0 +1,50 @@
+schema_version: 1
+id: CPY0041
+title: "Legacy importlib resource ABC exports are removed"
+summary: >-
+  importlib.abc.ResourceReader, Traversable, and TraversableResources are deprecated in Python 3.12 and removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: importlib.abc.ResourceReader
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.14-removed
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: importlib.abc.ResourceReader
+  - kind: qualified-reference
+    qualified_name: importlib.abc.Traversable
+  - kind: qualified-reference
+    qualified_name: importlib.abc.TraversableResources
+
+remediation:
+  summary: >-
+    Import the supported resource ABCs from importlib.resources.abc as documented by CPython.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, api-removal, imports]
+

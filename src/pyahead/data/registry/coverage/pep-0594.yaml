@@ -1,0 +1,101 @@
+schema_version: 1
+source:
+  id: pep-0594
+  title: "PEP 594 — Removing dead batteries from the standard library"
+  url: "https://peps.python.org/pep-0594/"
+  checked_on: "2026-08-02"
+
+source_keys:
+  - module-aifc
+  - module-asynchat
+  - module-asyncore
+  - module-audioop
+  - module-cgi
+  - module-cgitb
+  - module-chunk
+  - module-crypt
+  - module-imghdr
+  - module-mailcap
+  - module-msilib
+  - module-nis
+  - module-nntplib
+  - module-ossaudiodev
+  - module-pipes
+  - module-smtpd
+  - module-sndhdr
+  - module-spwd
+  - module-sunau
+  - module-telnetlib
+  - module-uu
+  - module-xdrlib
+
+entries:
+  - source_key: "module-aifc"
+    disposition: implemented
+    rules: [CPY0002]
+  - source_key: "module-asynchat"
+    disposition: implemented
+    rules: [CPY0003]
+  - source_key: "module-asyncore"
+    disposition: implemented
+    rules: [CPY0004]
+  - source_key: "module-audioop"
+    disposition: implemented
+    rules: [CPY0005]
+  - source_key: "module-cgi"
+    disposition: implemented
+    rules: [CPY0001]
+  - source_key: "module-cgitb"
+    disposition: implemented
+    rules: [CPY0006]
+  - source_key: "module-chunk"
+    disposition: implemented
+    rules: [CPY0007]
+  - source_key: "module-crypt"
+    disposition: implemented
+    rules: [CPY0008]
+  - source_key: "module-imghdr"
+    disposition: implemented
+    rules: [CPY0009]
+  - source_key: "module-mailcap"
+    disposition: implemented
+    rules: [CPY0010]
+  - source_key: "module-msilib"
+    disposition: implemented
+    rules: [CPY0011]
+  - source_key: "module-nis"
+    disposition: implemented
+    rules: [CPY0012]
+  - source_key: "module-nntplib"
+    disposition: implemented
+    rules: [CPY0013]
+  - source_key: "module-ossaudiodev"
+    disposition: implemented
+    rules: [CPY0014]
+  - source_key: "module-pipes"
+    disposition: implemented
+    rules: [CPY0015]
+  - source_key: "module-smtpd"
+    disposition: implemented
+    rules: [CPY0016]
+    note: >-
+      CPY0016 retains the PEP's 3.4.7, 3.5.4, and 3.6.1 source detail while
+      modeling the earliest supported minor boundary without invented patch precision.
+  - source_key: "module-sndhdr"
+    disposition: implemented
+    rules: [CPY0017]
+  - source_key: "module-spwd"
+    disposition: implemented
+    rules: [CPY0018]
+  - source_key: "module-sunau"
+    disposition: implemented
+    rules: [CPY0019]
+  - source_key: "module-telnetlib"
+    disposition: implemented
+    rules: [CPY0020]
+  - source_key: "module-uu"
+    disposition: implemented
+    rules: [CPY0021]
+  - source_key: "module-xdrlib"
+    disposition: implemented
+    rules: [CPY0022]

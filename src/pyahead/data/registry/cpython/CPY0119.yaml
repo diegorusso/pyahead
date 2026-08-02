@@ -1,0 +1,45 @@
+schema_version: 1
+id: CPY0119
+title: "SSL NPN methods are deprecated"
+summary: >-
+  ssl.SSLContext.set_npn_protocols and the SSLSocket and SSLObject
+  selected_npn_protocol methods have been deprecated since Python 3.10.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: ssl.SSLContext.set_npn_protocols
+
+timeline:
+  - event: deprecated
+    python: "3.10"
+    certainty: released
+    source: python-3.14-ssl
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ssl.SSLContext.set_npn_protocols
+  - kind: qualified-reference
+    qualified_name: ssl.SSLSocket.selected_npn_protocol
+  - kind: qualified-reference
+    qualified_name: ssl.SSLObject.selected_npn_protocol
+
+remediation:
+  summary: >-
+    Use the corresponding ALPN APIs instead.
+  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.SSLContext.set_npn_protocols"
+  automation: null
+
+sources:
+  - id: python-3.14-ssl
+    title: "Python 3.14 ssl documentation — deprecated NPN APIs"
+    url: "https://docs.python.org/3.14/library/ssl.html#ssl.SSLContext.set_npn_protocols"
+
+tags: [stdlib, unscheduled-removal, ssl, partial]

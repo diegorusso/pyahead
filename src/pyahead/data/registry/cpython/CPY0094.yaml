@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0094
+title: "shutil.rmtree onerror is deprecated"
+summary: >-
+  The onerror argument of shutil.rmtree is deprecated in Python 3.12 without
+  a published removal version; PyAhead detects explicit positional or keyword
+  arguments.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: shutil.rmtree
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.12-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: call-shape
+    qualified_name: shutil.rmtree
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: shutil.rmtree
+    required_keywords: [onerror]
+
+remediation:
+  summary: >-
+    Pass an onexc handler instead of onerror.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#shutil"
+  automation: null
+
+sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#shutil"
+
+tags: [stdlib, unscheduled-removal, shutil]

@@ -1,0 +1,70 @@
+schema_version: 1
+id: CPY0137
+title: "Legacy importlib loader methods are scheduled for removal"
+summary: >-
+  The load_module method exposed by public importlib loader ABCs and
+  implementations, including importlib.util.LazyLoader, is scheduled for
+  removal in Python 3.15; PyAhead detects exact class-qualified references
+  while leaving arbitrary loader receivers to later type inference.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: importlib.abc.Loader.load_module
+
+timeline:
+  - event: removed
+    python: "3.15"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: importlib.abc.Loader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.abc.ResourceLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.abc.InspectLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.abc.ExecutionLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.abc.FileLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.abc.SourceLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.BuiltinImporter.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.FrozenImporter.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.SourceFileLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.SourcelessFileLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.ExtensionFileLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.NamespaceLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.AppleFrameworkLoader.load_module
+  - kind: qualified-reference
+    qualified_name: importlib.util.LazyLoader.load_module
+
+remediation:
+  summary: >-
+    Implement and call exec_module, leaving module-loading boilerplate to the
+    import machinery.
+  documentation_url: "https://docs.python.org/3.14/library/importlib.html#importlib.abc.Loader.load_module"
+  automation: null
+
+sources:
+  - id: python-deprecations
+    title: "Python 3.14 deprecation index — pending removal in Python 3.15"
+    url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-python-3-15"
+
+tags: [stdlib, scheduled-removal, importlib, partial]

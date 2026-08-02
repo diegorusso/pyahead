@@ -3,6 +3,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "coverage": {
+      "default": [],
+      "items": {
+        "pattern": "^(?:(?:[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?/)*[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?\\.ya?ml)(?![\\s\\S])",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
     "release": {
       "minLength": 1,
       "pattern": "^(?:(?![\\s\\S]*[\\ud800-\\udfff])[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?:[\\s\\S]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])?)(?![\\s\\S])",

@@ -1,0 +1,53 @@
+schema_version: 1
+id: CPY0005
+title: "The audioop module is removed"
+summary: >-
+  The audioop standard-library module is deprecated in Python 3.11 and removed in Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: audioop
+
+timeline:
+  - event: deprecated
+    python: "3.11"
+    certainty: released
+    source: pep-0594
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: module-import
+    module: audioop
+  - kind: literal-dynamic-import
+    module: audioop
+    confidence: medium
+
+remediation:
+  summary: >-
+    Remove the dependency on audioop. Consult PEP 594 for the
+    module-specific alternatives and migration guidance.
+  documentation_url: "https://peps.python.org/pep-0594/"
+  automation: null
+
+sources:
+  - id: pep-0594
+    title: "PEP 594 — Removing dead batteries from the standard library"
+    url: "https://peps.python.org/pep-0594/"
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, module-removal, pep-594]
+

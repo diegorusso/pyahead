@@ -1,0 +1,47 @@
+schema_version: 1
+id: CPY0089
+title: "shutil.ExecError is scheduled for removal"
+summary: >-
+  The unused shutil.ExecError exception is deprecated in Python 3.14 and
+  scheduled for removal in Python 3.16.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: shutil.ExecError
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-deprecations
+  - event: removed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: shutil.ExecError
+
+remediation:
+  summary: >-
+    Remove references to the unused exception and handle exceptions raised by
+    the invoked operation directly.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+  automation: null
+
+sources:
+  - id: python-deprecations
+    title: "Python deprecation index — Pending removal in Python 3.16"
+    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+
+tags: [stdlib, scheduled-removal, shutil]

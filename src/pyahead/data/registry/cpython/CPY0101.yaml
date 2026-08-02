@@ -1,0 +1,79 @@
+schema_version: 1
+id: CPY0101
+title: "Legacy sqlite3 positional and keyword calls are scheduled to fail"
+summary: >-
+  Python 3.13 deprecates excess positional arguments to sqlite3.connect and
+  Connection, and keyword use for parameters becoming positional-only in
+  Python 3.15; PyAhead detects explicit argument shapes.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: sqlite3.connect
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: signature_changed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.13-deprecated
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: sqlite3.connect
+    min_positional_args: 2
+  - kind: call-shape
+    qualified_name: sqlite3.Connection
+    min_positional_args: 2
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.create_function
+    required_keywords: [name]
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.create_function
+    required_keywords: [narg]
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.create_function
+    required_keywords: [func]
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.create_aggregate
+    required_keywords: [name]
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.create_aggregate
+    required_keywords: [n_arg]
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.create_aggregate
+    required_keywords: [aggregate_class]
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.set_authorizer
+    required_keywords: [authorizer_callback]
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.set_progress_handler
+    required_keywords: [progress_handler]
+  - kind: call-shape
+    qualified_name: sqlite3.Connection.set_trace_callback
+    required_keywords: [trace_callback]
+
+remediation:
+  summary: >-
+    Pass connect options by keyword and pass callback-registration parameters
+    positionally as documented.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#sqlite3"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — New Deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#sqlite3"
+
+tags: [stdlib, signature-change, sqlite3, partial]

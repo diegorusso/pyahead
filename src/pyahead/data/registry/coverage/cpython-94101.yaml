@@ -1,0 +1,15 @@
+schema_version: 1
+source:
+  id: cpython-94101
+  title: "CPython issue 94101 — disallow SSLSession instantiation"
+  url: "https://github.com/python/cpython/issues/94101"
+  checked_on: "2026-08-02"
+
+# This narrowly scoped CPython issue tracks one behavior change.
+source_keys:
+  - ssl-sslsession-manual-construction
+
+entries:
+  - source_key: ssl-sslsession-manual-construction
+    disposition: implemented
+    rules: [CPY0076]

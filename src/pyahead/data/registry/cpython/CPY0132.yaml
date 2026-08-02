@@ -1,0 +1,45 @@
+schema_version: 1
+id: CPY0132
+title: "Undocumented opcode pseudo-instruction APIs are removed"
+summary: >-
+  opcode.is_pseudo, opcode.MIN_PSEUDO_OPCODE, and opcode.MAX_PSEUDO_OPCODE are
+  removed in Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: opcode.is_pseudo
+
+timeline:
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: opcode.is_pseudo
+  - kind: qualified-reference
+    qualified_name: opcode.MIN_PSEUDO_OPCODE
+  - kind: qualified-reference
+    qualified_name: opcode.MAX_PSEUDO_OPCODE
+
+remediation:
+  summary: >-
+    Remove dependencies on these undocumented opcode pseudo-instruction APIs.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, api-removal, opcode]

@@ -1,0 +1,52 @@
+schema_version: 1
+id: CPY0058
+title: "sysconfig.is_python_build check_home is scheduled for removal"
+summary: >-
+  The ignored check_home argument of sysconfig.is_python_build is deprecated in Python 3.12 and scheduled for removal in Python 3.15.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: sysconfig.is_python_build
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.14-deprecations
+  - event: signature_changed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: sysconfig.is_python_build
+    min_positional_args: 1
+  - kind: call-shape
+    qualified_name: sysconfig.is_python_build
+    required_keywords: [check_home]
+
+remediation:
+  summary: >-
+    Call sysconfig.is_python_build without the ignored check_home argument.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#sysconfig"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecations
+    title: "Python 3.14 deprecation index — Pending removal in Python 3.15"
+    url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-python-3-15"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — sysconfig removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#sysconfig"
+
+tags: [stdlib, signature-change, sysconfig]

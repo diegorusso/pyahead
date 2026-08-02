@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0115
+title: "importlib cache_from_source debug_override is deprecated"
+summary: >-
+  The debug_override parameter of importlib.util.cache_from_source has been deprecated since Python 3.5.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: importlib.util.cache_from_source
+
+timeline:
+  - event: deprecated
+    python: "3.5"
+    certainty: released
+    source: python-3.14-importlib
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: call-shape
+    qualified_name: importlib.util.cache_from_source
+    min_positional_args: 2
+  - kind: call-shape
+    qualified_name: importlib.util.cache_from_source
+    required_keywords: [debug_override]
+
+remediation:
+  summary: >-
+    Pass the optimization parameter instead of debug_override.
+  documentation_url: "https://docs.python.org/3.14/library/importlib.html#importlib.util.cache_from_source"
+  automation: null
+
+sources:
+  - id: python-3.14-importlib
+    title: "Python 3.14 importlib documentation — cache_from_source"
+    url: "https://docs.python.org/3.14/library/importlib.html#importlib.util.cache_from_source"
+
+tags: [stdlib, unscheduled-removal, importlib]

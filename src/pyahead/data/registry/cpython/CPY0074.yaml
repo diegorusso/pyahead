@@ -1,0 +1,60 @@
+schema_version: 1
+id: CPY0074
+title: "Legacy import finder APIs are removed"
+summary: >-
+  importlib.abc.Finder and legacy find_module or find_loader methods are removed in Python 3.12; PyAhead matches class-qualified references.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: importlib.abc.Finder
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: importlib.abc.Finder
+  - kind: qualified-reference
+    qualified_name: importlib.abc.Finder.find_module
+  - kind: qualified-reference
+    qualified_name: importlib.abc.MetaPathFinder.find_module
+  - kind: qualified-reference
+    qualified_name: importlib.abc.PathEntryFinder.find_loader
+  - kind: qualified-reference
+    qualified_name: importlib.abc.PathEntryFinder.find_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.FileFinder.find_loader
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.FileFinder.find_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.BuiltinImporter.find_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.FrozenImporter.find_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.PathFinder.find_module
+  - kind: qualified-reference
+    qualified_name: importlib.machinery.WindowsRegistryFinder.find_module
+
+remediation:
+  summary: >-
+    Use find_spec and the supported importlib protocols described by the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, imports, partial]

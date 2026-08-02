@@ -1,0 +1,248 @@
+schema_version: 1
+source:
+  id: python-3.12-removed
+  title: "What's New in Python 3.12 — Removed"
+  url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  checked_on: "2026-08-02"
+
+# The ordered keys are independently pinned by tests. Parent bullets and every
+# API-bearing nested bullet in the selected section receive their own entry.
+source_keys:
+  - pep-594-asynchat
+  - pep-594-asyncore
+  - configparser-legacy-apis
+  - configparser-parsingerror-filename
+  - configparser-safeconfigparser
+  - configparser-readfp
+  - distutils-package
+  - ensurepip-setuptools-provisioning
+  - enum-enummeta-getattr
+  - ftplib-ftp-tls-ssl-version
+  - gzip-gzipfile-filename
+  - hashlib-pbkdf2-pure-python-implementation
+  - importlib-cleanups
+  - importlib-module-repr
+  - importlib-util-legacy-helpers
+  - importlib-find-loader-find-module
+  - importlib-finder-imp-classes
+  - pkgutil-impimporter-imploader
+  - legacy-import-finder-apis
+  - legacy-importlib-helpers
+  - imp-module
+  - imp-no-replacement-apis
+  - imp-undocumented-functions
+  - imp-init-builtin
+  - imp-load-compiled
+  - imp-load-dynamic
+  - imp-load-package
+  - imp-lock-apis
+  - imp-find-module-constants
+  - io-openwrapper
+  - locale-format
+  - pep-594-smtpd
+  - sqlite3-undocumented-compatibility-apis
+  - sqlite3-enable-shared-cache
+  - sqlite3-optimized-unicode
+  - ssl-rand-pseudo-bytes
+  - ssl-match-hostname
+  - ssl-wrap-socket
+  - ssl-legacy-functions
+  - unittest-legacy-features
+  - unittest-testcase-method-aliases
+  - unittest-assert-dict-contains-subset
+  - unittest-load-tests-from-module-use-load-tests
+  - unittest-text-test-result-alias
+  - obsolete-webbrowser-backends
+  - element-copy
+  - zipimporter-find-loader-find-module
+  - documentation-suspicious-rule
+  - legacy-tls-configuration-surfaces
+  - jython-compatibility-hacks
+  - ctypes-broken-old-structure-semantics-flag
+
+entries:
+  - source_key: pep-594-asynchat
+    disposition: duplicate
+    rules: [CPY0003]
+    note: The authoritative module schedule is already classified from PEP 594.
+  - source_key: pep-594-asyncore
+    disposition: duplicate
+    rules: [CPY0004]
+    note: The authoritative module schedule is already classified from PEP 594.
+  - source_key: configparser-legacy-apis
+    disposition: partial
+    rules: [CPY0072]
+    note: This parent bullet is decomposed into the three API-bearing child entries below.
+  - source_key: configparser-parsingerror-filename
+    disposition: partial
+    rules: [CPY0072]
+    note: Explicit class-qualified access and statically bound constructor arguments are detected; arbitrary instance receivers are not inferred.
+  - source_key: configparser-safeconfigparser
+    disposition: implemented
+    rules: [CPY0072]
+  - source_key: configparser-readfp
+    disposition: partial
+    rules: [CPY0072]
+    note: Exact ConfigParser and RawConfigParser class-qualified references are detected; arbitrary receiver types are not inferred.
+  - source_key: distutils-package
+    disposition: implemented
+    rules: [CPY0023]
+  - source_key: ensurepip-setuptools-provisioning
+    disposition: dynamic-evidence-roadmap
+    note: Installed packaging tools and virtual-environment provisioning are environment evidence rather than Python-source compatibility.
+  - source_key: enum-enummeta-getattr
+    disposition: partial
+    rules: [CPY0129]
+    note: Exact EnumMeta and EnumType references are detected; arbitrary metaclass receiver types are not inferred.
+  - source_key: ftplib-ftp-tls-ssl-version
+    disposition: partial
+    rules: [CPY0083]
+    note: Exact FTP_TLS-qualified references are detected; arbitrary instance receiver types are not inferred.
+  - source_key: gzip-gzipfile-filename
+    disposition: partial
+    rules: [CPY0068]
+    note: Exact class-qualified references are detected; arbitrary instance receiver types are not inferred.
+  - source_key: hashlib-pbkdf2-pure-python-implementation
+    disposition: not-applicable
+    note: The public function remains available; only an internal fallback implementation was removed.
+  - source_key: importlib-cleanups
+    disposition: duplicate
+    rules: [CPY0025, CPY0074, CPY0084]
+    note: This parent bullet is decomposed into the four API-bearing child entries below.
+  - source_key: importlib-module-repr
+    disposition: implemented
+    rules: [CPY0084]
+  - source_key: importlib-util-legacy-helpers
+    disposition: implemented
+    rules: [CPY0084]
+  - source_key: importlib-find-loader-find-module
+    disposition: partial
+    rules: [CPY0074]
+    note: Named class-qualified finder methods are detected; arbitrary finder receiver types are not inferred.
+  - source_key: importlib-finder-imp-classes
+    disposition: implemented
+    rules: [CPY0025, CPY0074]
+  - source_key: pkgutil-impimporter-imploader
+    disposition: duplicate
+    rules: [CPY0025]
+    note: The exact classes are classified by the importlib cleanup child entry above.
+  - source_key: legacy-import-finder-apis
+    disposition: duplicate
+    rules: [CPY0074]
+    note: The exact finder methods are classified by the importlib cleanup child entry above.
+  - source_key: legacy-importlib-helpers
+    disposition: duplicate
+    rules: [CPY0084]
+    note: The exact helpers are classified by the importlib cleanup child entries above.
+  - source_key: imp-module
+    disposition: implemented
+    rules: [CPY0024]
+  - source_key: imp-no-replacement-apis
+    disposition: duplicate
+    rules: [CPY0024]
+    note: Importing the removed imp module is detected; the child bullets are retained separately for census completeness.
+  - source_key: imp-undocumented-functions
+    disposition: duplicate
+    rules: [CPY0024]
+    note: These functions can only be reached through the removed imp module, whose imports are detected by CPY0024.
+  - source_key: imp-init-builtin
+    disposition: duplicate
+    rules: [CPY0024]
+    note: This function can only be reached through the removed imp module.
+  - source_key: imp-load-compiled
+    disposition: duplicate
+    rules: [CPY0024]
+    note: This function can only be reached through the removed imp module.
+  - source_key: imp-load-dynamic
+    disposition: duplicate
+    rules: [CPY0024]
+    note: This function can only be reached through the removed imp module.
+  - source_key: imp-load-package
+    disposition: duplicate
+    rules: [CPY0024]
+    note: This function can only be reached through the removed imp module.
+  - source_key: imp-lock-apis
+    disposition: duplicate
+    rules: [CPY0024]
+    note: These functions can only be reached through the removed imp module.
+  - source_key: imp-find-module-constants
+    disposition: duplicate
+    rules: [CPY0024]
+    note: These constants can only be reached through the removed imp module.
+  - source_key: io-openwrapper
+    disposition: implemented
+    rules: [CPY0069]
+  - source_key: locale-format
+    disposition: implemented
+    rules: [CPY0066]
+  - source_key: pep-594-smtpd
+    disposition: duplicate
+    rules: [CPY0016]
+    note: The authoritative deprecation and removal schedule is already classified from PEP 594.
+  - source_key: sqlite3-undocumented-compatibility-apis
+    disposition: duplicate
+    rules: [CPY0070]
+    note: This parent bullet is decomposed into the two API-bearing child entries below.
+  - source_key: sqlite3-enable-shared-cache
+    disposition: implemented
+    rules: [CPY0070]
+  - source_key: sqlite3-optimized-unicode
+    disposition: implemented
+    rules: [CPY0070]
+  - source_key: ssl-rand-pseudo-bytes
+    disposition: implemented
+    rules: [CPY0026]
+  - source_key: ssl-match-hostname
+    disposition: implemented
+    rules: [CPY0067]
+  - source_key: ssl-wrap-socket
+    disposition: implemented
+    rules: [CPY0026]
+  - source_key: ssl-legacy-functions
+    disposition: duplicate
+    rules: [CPY0026, CPY0067]
+    note: The three separate SSL removal bullets are classified individually above.
+  - source_key: unittest-legacy-features
+    disposition: partial
+    rules: [CPY0073]
+    note: This parent bullet is decomposed into the four API-bearing child entries below.
+  - source_key: unittest-testcase-method-aliases
+    disposition: partial
+    rules: [CPY0073]
+    note: Exact TestCase and stdlib-defined subclass aliases are detected; arbitrary user-defined TestCase subclasses and instances are not inferred.
+  - source_key: unittest-assert-dict-contains-subset
+    disposition: partial
+    rules: [CPY0073]
+    note: Exact TestCase and stdlib-defined subclass references are detected; arbitrary user-defined TestCase subclasses and instances are not inferred.
+  - source_key: unittest-load-tests-from-module-use-load-tests
+    disposition: partial
+    rules: [CPY0073]
+    note: Explicit class-qualified calls with the removed keyword are detected; arbitrary loader receiver types are not inferred.
+  - source_key: unittest-text-test-result-alias
+    disposition: implemented
+    rules: [CPY0073]
+  - source_key: obsolete-webbrowser-backends
+    disposition: partial
+    rules: [CPY0086]
+    note: Explicit literal controller selection is detected; default discovery, executable state, and browser versions require host evidence.
+  - source_key: element-copy
+    disposition: partial
+    rules: [CPY0078]
+    note: Exact class-qualified references are detected; arbitrary Element receiver types are not inferred.
+  - source_key: zipimporter-find-loader-find-module
+    disposition: partial
+    rules: [CPY0077]
+    note: Exact class-qualified references are detected; arbitrary zipimporter receiver types are not inferred.
+  - source_key: documentation-suspicious-rule
+    disposition: not-applicable
+    note: Documentation build configuration and tooling are outside Python-source compatibility analysis.
+  - source_key: legacy-tls-configuration-surfaces
+    disposition: partial
+    rules: [CPY0082]
+    note: Statically bound arguments on exact imported constructors and class-qualified calls are detected; arbitrary bound receiver types are not inferred.
+  - source_key: jython-compatibility-hacks
+    disposition: not-applicable
+    note: This is an internal standard-library implementation cleanup, not a public Python API removal.
+  - source_key: ctypes-broken-old-structure-semantics-flag
+    disposition: not-applicable
+    note: The removed underscored compatibility flag was a private implementation detail outside the selected public API surface.

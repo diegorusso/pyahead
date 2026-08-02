@@ -1,0 +1,60 @@
+schema_version: 1
+id: CPY0127
+title: "Legacy urllib.parse helpers are deprecated"
+summary: >-
+  The legacy split and conversion helpers in urllib.parse have been deprecated since Python 3.8.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: urllib.parse.splitattr
+
+timeline:
+  - event: deprecated
+    python: "3.8"
+    certainty: released
+    source: cpython-3.14-urllib-parse
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splitattr
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splithost
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splitnport
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splitpasswd
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splitport
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splitquery
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splittag
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splittype
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splituser
+  - kind: qualified-reference
+    qualified_name: urllib.parse.splitvalue
+  - kind: qualified-reference
+    qualified_name: urllib.parse.to_bytes
+
+remediation:
+  summary: >-
+    Use urllib.parse.urlparse, parse_qsl, and direct encoding as appropriate.
+  documentation_url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-future-versions"
+  automation: null
+
+sources:
+  - id: cpython-3.14-urllib-parse
+    title: "CPython 3.14 urllib.parse implementation — deprecation warnings"
+    url: "https://github.com/python/cpython/blob/v3.14.0/Lib/urllib/parse.py"
+
+tags: [stdlib, unscheduled-removal, urllib]

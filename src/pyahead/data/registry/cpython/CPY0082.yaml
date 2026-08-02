@@ -1,0 +1,113 @@
+schema_version: 1
+id: CPY0082
+title: "Legacy TLS configuration parameters are removed"
+summary: >-
+  Deprecated key-file, certificate-file, and hostname-check parameters on standard-library TLS clients are removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: http.client.HTTPSConnection
+
+timeline:
+  - event: signature_changed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: ftplib.FTP_TLS
+    required_keywords: [keyfile]
+  - kind: call-shape
+    qualified_name: ftplib.FTP_TLS
+    required_keywords: [certfile]
+  - kind: call-shape
+    qualified_name: ftplib.FTP_TLS
+    min_positional_args: 5
+  - kind: call-shape
+    qualified_name: imaplib.IMAP4_SSL
+    required_keywords: [keyfile]
+  - kind: call-shape
+    qualified_name: imaplib.IMAP4_SSL
+    required_keywords: [certfile]
+  - kind: call-shape
+    qualified_name: imaplib.IMAP4_SSL
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: poplib.POP3_SSL
+    required_keywords: [keyfile]
+  - kind: call-shape
+    qualified_name: poplib.POP3_SSL
+    required_keywords: [certfile]
+  - kind: call-shape
+    qualified_name: poplib.POP3_SSL
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: smtplib.SMTP_SSL
+    required_keywords: [keyfile]
+  - kind: call-shape
+    qualified_name: smtplib.SMTP_SSL
+    required_keywords: [certfile]
+  - kind: call-shape
+    qualified_name: smtplib.SMTP_SSL
+    min_positional_args: 4
+  - kind: call-shape
+    qualified_name: smtplib.SMTP.starttls
+    required_keywords: [keyfile]
+  - kind: call-shape
+    qualified_name: smtplib.SMTP.starttls
+    required_keywords: [certfile]
+  - kind: call-shape
+    qualified_name: smtplib.SMTP.starttls
+    min_positional_args: 2
+  - kind: call-shape
+    qualified_name: smtplib.LMTP.starttls
+    required_keywords: [keyfile]
+  - kind: call-shape
+    qualified_name: smtplib.LMTP.starttls
+    required_keywords: [certfile]
+  - kind: call-shape
+    qualified_name: smtplib.LMTP.starttls
+    min_positional_args: 2
+  - kind: call-shape
+    qualified_name: smtplib.SMTP_SSL.starttls
+    required_keywords: [keyfile]
+  - kind: call-shape
+    qualified_name: smtplib.SMTP_SSL.starttls
+    required_keywords: [certfile]
+  - kind: call-shape
+    qualified_name: smtplib.SMTP_SSL.starttls
+    min_positional_args: 2
+  - kind: call-shape
+    qualified_name: http.client.HTTPSConnection
+    required_keywords: [key_file]
+  - kind: call-shape
+    qualified_name: http.client.HTTPSConnection
+    required_keywords: [cert_file]
+  - kind: call-shape
+    qualified_name: http.client.HTTPSConnection
+    required_keywords: [check_hostname]
+  - kind: call-shape
+    qualified_name: http.client.HTTPSConnection
+    min_positional_args: 3
+
+remediation:
+  summary: >-
+    Remove the legacy parameters and follow the linked release notes for each client's supported SSL-context configuration.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, signature-change, tls, partial-receiver-coverage]

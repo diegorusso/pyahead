@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0075
+title: "shlex.split no longer accepts None"
+summary: >-
+  Passing None as the first argument to shlex.split becomes invalid in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: shlex.split
+
+timeline:
+  - event: behavior_changed
+    python: "3.12"
+    certainty: released
+    source: cpython-94352
+
+impact:
+  on_behavior_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: shlex.split
+    literal_arguments:
+      - position: 0
+        equals: null
+  - kind: call-shape
+    qualified_name: shlex.split
+    literal_arguments:
+      - keyword: s
+        equals: null
+
+remediation:
+  summary: >-
+    Pass an explicit string to shlex.split.
+  documentation_url: "https://github.com/python/cpython/issues/94352"
+  automation: null
+
+sources:
+  - id: cpython-94352
+    title: "CPython issue 94352 — reject None in shlex.split"
+    url: "https://github.com/python/cpython/issues/94352"
+
+tags: [stdlib, behavior-change, shlex]

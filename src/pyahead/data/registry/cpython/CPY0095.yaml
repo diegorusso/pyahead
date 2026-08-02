@@ -1,0 +1,45 @@
+schema_version: 1
+id: CPY0095
+title: "Legacy sys last-exception attributes are deprecated"
+summary: >-
+  sys.last_type, sys.last_value, and sys.last_traceback are deprecated in
+  Python 3.12 without a published removal version.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: sys.last_type
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.12-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: sys.last_type
+  - kind: qualified-reference
+    qualified_name: sys.last_value
+  - kind: qualified-reference
+    qualified_name: sys.last_traceback
+
+remediation:
+  summary: >-
+    Read sys.last_exc instead.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#sys"
+  automation: null
+
+sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#sys"
+
+tags: [stdlib, unscheduled-removal, sys]

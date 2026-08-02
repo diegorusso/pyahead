@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "rule_id": "CPY0016",
+  "policy": {
+    "baseline_python": "3.11",
+    "horizon_python": "3.11"
+  },
+  "cases": [
+    {
+      "name": "representative positive",
+      "root": ".",
+      "paths": [
+        "positive/source.py"
+      ],
+      "expected_findings": [
+        {
+          "rule_id": "CPY0016",
+          "confidence": "high",
+          "action_version": "3.11",
+          "impact": "deprecated",
+          "resolution": "no-competing-project-module",
+          "reachable_versions": [
+            "3.11"
+          ],
+          "usage_contexts": [
+            "runtime"
+          ]
+        }
+      ],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "syntactic lookalike is negative",
+      "root": ".",
+      "paths": [
+        "negative/source.py"
+      ],
+      "expected_findings": [],
+      "expected_inference_codes": []
+    }
+  ]
+}

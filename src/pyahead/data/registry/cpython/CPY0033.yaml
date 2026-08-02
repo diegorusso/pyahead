@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0033
+title: "urlopen legacy TLS parameters are removed"
+summary: >-
+  The cafile, capath, and cadefault parameters of urllib.request.urlopen are removed in Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: urllib.request.urlopen
+
+timeline:
+  - event: signature_changed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: urllib.request.urlopen
+    required_keywords: [cafile]
+  - kind: call-shape
+    qualified_name: urllib.request.urlopen
+    required_keywords: [capath]
+  - kind: call-shape
+    qualified_name: urllib.request.urlopen
+    required_keywords: [cadefault]
+
+remediation:
+  summary: >-
+    Update the call using the supported TLS configuration described by urllib.request and the linked release notes.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, signature-change, urllib]
+

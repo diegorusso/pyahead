@@ -1,0 +1,58 @@
+schema_version: 1
+id: CPY0064
+title: "Legacy AST constant node classes are removed"
+summary: >-
+  ast.Num, ast.Str, ast.Bytes, ast.NameConstant, and ast.Ellipsis were
+  documentation-deprecated in Python 3.8, began emitting runtime warnings in
+  Python 3.12, and are removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: ast.Num
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.12-deprecated
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ast.Num
+  - kind: qualified-reference
+    qualified_name: ast.Str
+  - kind: qualified-reference
+    qualified_name: ast.Bytes
+  - kind: qualified-reference
+    qualified_name: ast.NameConstant
+  - kind: qualified-reference
+    qualified_name: ast.Ellipsis
+
+remediation:
+  summary: >-
+    Use ast.Constant as directed by the linked AST migration notes.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, deprecation, api-removal, ast]

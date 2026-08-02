@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0112
+title: "symtable.Class.get_methods is scheduled for removal"
+summary: >-
+  symtable.Class.get_methods is deprecated in Python 3.14 and scheduled for
+  removal in Python 3.16; exact class-qualified references are detected.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: symtable.Class.get_methods
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+  - event: removed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: symtable.Class.get_methods
+
+remediation:
+  summary: Stop relying on this method and inspect supported symbol-table APIs.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#symtable"
+  - id: python-deprecations
+    title: "Python deprecation index — Pending removal in Python 3.16"
+    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+
+tags: [stdlib, scheduled-removal, symtable, partial]

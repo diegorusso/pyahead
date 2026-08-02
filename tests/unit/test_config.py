@@ -276,7 +276,7 @@ def test_missing_authoritative_baseline_fails(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("baseline", "horizon"),
-    [("3.10", "3.13"), ("3.11", "3.16")],
+    [("3.10", "3.13"), ("3.11", "3.17")],
 )
 def test_explicit_policy_must_stay_in_registry_window(
     tmp_path: Path,
@@ -286,7 +286,7 @@ def test_explicit_policy_must_stay_in_registry_window(
     """Explicit precedence never implies unsupported registry coverage."""
     _write_project(tmp_path)
 
-    with pytest.raises(ConfigurationError, match=r"3\.11 through 3\.15"):
+    with pytest.raises(ConfigurationError, match=r"3\.11 through 3\.16"):
         resolve_configuration(
             tmp_path,
             load_registry(),

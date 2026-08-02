@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0079
+title: "typing.io and typing.re are removed"
+summary: >-
+  The deprecated typing.io and typing.re namespaces are removed in Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime, typing]
+
+subject:
+  kind: attribute
+  name: typing.io
+
+timeline:
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: typing.io
+  - kind: qualified-reference
+    qualified_name: typing.re
+
+remediation:
+  summary: >-
+    Import the underlying IO and regular-expression types from their supported modules as described by the typing documentation.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, api-removal, typing]
+

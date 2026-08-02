@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0092
+title: "Lowercase calendar month constants are deprecated"
+summary: >-
+  calendar.January and calendar.February are deprecated in Python 3.12
+  without a published removal version.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: calendar.January
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.12-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: calendar.January
+  - kind: qualified-reference
+    qualified_name: calendar.February
+
+remediation:
+  summary: >-
+    Use calendar.JANUARY and calendar.FEBRUARY.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#calendar"
+  automation: null
+
+sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#calendar"
+
+tags: [stdlib, unscheduled-removal, calendar]

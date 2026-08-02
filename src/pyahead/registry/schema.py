@@ -19,6 +19,10 @@ from pyahead.model import (
     BuiltinPatternMatcher,
     CallShapeMatcher,
     ChangeEventKind,
+    CoverageDisposition,
+    CoverageEntry,
+    CoverageManifest,
+    CoverageSource,
     Impact,
     LiteralArgumentPredicate,
     LiteralDynamicImportMatcher,
@@ -113,6 +117,7 @@ class RegistryManifest:
 
     release: str
     rule_paths: tuple[PurePosixPath, ...]
+    coverage_paths: tuple[PurePosixPath, ...]
     retired_ids: tuple[str, ...]
     release_path: PurePosixPath | None
 
@@ -251,7 +256,7 @@ def parse_manifest(data: object, context: str = "index.yaml") -> RegistryManifes
         manifest,
         context,
         required=frozenset({"schema_version", "release", "rules"}),
-        optional=frozenset({"releases", "retired_ids"}),
+        optional=frozenset({"coverage", "releases", "retired_ids"}),
     )
     _schema_version(manifest["schema_version"], context)
     raw_paths = _sequence(manifest["rules"], f"{context}.rules")
@@ -265,6 +270,15 @@ def parse_manifest(data: object, context: str = "index.yaml") -> RegistryManifes
     if len(set(paths)) != len(paths):
         message = f"{context}.rules must not contain duplicates"
         raise RegistryError(message)
+    coverage_paths = tuple(
+        _safe_rule_path(item, f"{context}.coverage[{index}]")
+        for index, item in enumerate(
+            _sequence(manifest.get("coverage", []), f"{context}.coverage")
+        )
+    )
+    if len(set(coverage_paths)) != len(coverage_paths):
+        message = f"{context}.coverage must not contain duplicates"
+        raise RegistryError(message)
     retired_ids = tuple(
         _rule_id(item, f"{context}.retired_ids[{index}]")
         for index, item in enumerate(
@@ -274,15 +288,137 @@ def parse_manifest(data: object, context: str = "index.yaml") -> RegistryManifes
     if len(set(retired_ids)) != len(retired_ids):
         message = f"{context}.retired_ids must not contain duplicates"
         raise RegistryError(message)
+    release_path = (
+        _safe_rule_path(manifest["releases"], f"{context}.releases")
+        if "releases" in manifest
+        else None
+    )
+    all_paths = (*paths, *coverage_paths)
+    if release_path is not None:
+        all_paths = (*all_paths, release_path)
+    if len(set(all_paths)) != len(all_paths):
+        message = f"{context} registry file paths must be unique across sections"
+        raise RegistryError(message)
     return RegistryManifest(
         release=_string(manifest["release"], f"{context}.release"),
         rule_paths=paths,
+        coverage_paths=coverage_paths,
         retired_ids=retired_ids,
-        release_path=(
-            _safe_rule_path(manifest["releases"], f"{context}.releases")
-            if "releases" in manifest
+        release_path=release_path,
+    )
+
+
+_RULE_BACKED_COVERAGE = frozenset(
+    {
+        CoverageDisposition.IMPLEMENTED,
+        CoverageDisposition.PARTIAL,
+        CoverageDisposition.DUPLICATE,
+    }
+)
+_NOTE_REQUIRED_COVERAGE = frozenset(
+    disposition
+    for disposition in CoverageDisposition
+    if disposition is not CoverageDisposition.IMPLEMENTED
+)
+
+
+def parse_coverage_manifest(
+    data: object,
+    context: str = "coverage.yaml",
+) -> CoverageManifest:
+    """Validate one closed authoritative-source coverage manifest."""
+    document = _mapping(data, context)
+    _fields(
+        document,
+        context,
+        required=frozenset({"schema_version", "source", "source_keys", "entries"}),
+    )
+    _schema_version(document["schema_version"], context)
+
+    source_context = f"{context}.source"
+    source_data = _mapping(document["source"], source_context)
+    _fields(
+        source_data,
+        source_context,
+        required=frozenset({"id", "title", "url", "checked_on"}),
+    )
+    source_id = _string(source_data["id"], f"{source_context}.id")
+    if _SOURCE_ID_RE.fullmatch(source_id) is None:
+        message = f"{source_context}.id must be a lowercase source ID"
+        raise RegistryError(message)
+    source = CoverageSource(
+        id=source_id,
+        title=_string(source_data["title"], f"{source_context}.title"),
+        url=_https_url(source_data["url"], f"{source_context}.url"),
+        checked_on=_date(source_data["checked_on"], f"{source_context}.checked_on"),
+    )
+
+    source_keys = _unique_strings(
+        document["source_keys"],
+        f"{context}.source_keys",
+        allow_empty=False,
+    )
+
+    raw_entries = _sequence(document["entries"], f"{context}.entries")
+    if not raw_entries:
+        message = f"{context}.entries must not be empty"
+        raise RegistryError(message)
+    entries: list[CoverageEntry] = []
+    for index, value in enumerate(raw_entries):
+        entry_context = f"{context}.entries[{index}]"
+        entry_data = _mapping(value, entry_context)
+        _fields(
+            entry_data,
+            entry_context,
+            required=frozenset({"source_key", "disposition"}),
+            optional=frozenset({"rules", "note"}),
+        )
+        disposition = _enum_value(
+            entry_data["disposition"],
+            CoverageDisposition,
+            f"{entry_context}.disposition",
+        )
+        rules = tuple(
+            _rule_id(item, f"{entry_context}.rules[{rule_index}]")
+            for rule_index, item in enumerate(
+                _sequence(entry_data.get("rules", []), f"{entry_context}.rules")
+            )
+        )
+        if len(set(rules)) != len(rules):
+            message = f"{entry_context}.rules must not contain duplicates"
+            raise RegistryError(message)
+        if disposition in _RULE_BACKED_COVERAGE and not rules:
+            message = f"{entry_context} requires at least one canonical rule ID"
+            raise RegistryError(message)
+        if disposition not in _RULE_BACKED_COVERAGE and rules:
+            message = f"{entry_context} cannot reference rules for this disposition"
+            raise RegistryError(message)
+        note = (
+            _string(entry_data["note"], f"{entry_context}.note")
+            if "note" in entry_data
             else None
-        ),
+        )
+        if disposition in _NOTE_REQUIRED_COVERAGE and note is None:
+            message = f"{entry_context} requires a note for this disposition"
+            raise RegistryError(message)
+        entries.append(
+            CoverageEntry(
+                source_key=_string(
+                    entry_data["source_key"], f"{entry_context}.source_key"
+                ),
+                disposition=disposition,
+                rules=rules,
+                note=note,
+            )
+        )
+    keys = tuple(entry.source_key for entry in entries)
+    if len(set(keys)) != len(keys):
+        message = f"{context}.entries must use unique source_key values"
+        raise RegistryError(message)
+    return CoverageManifest(
+        source=source,
+        source_keys=source_keys,
+        entries=tuple(entries),
     )
 
 
@@ -537,6 +673,8 @@ _CALL_SHAPE_FIELDS = frozenset(
     {
         "min_positional_args",
         "max_positional_args",
+        "min_keyword_args",
+        "max_keyword_args",
         "required_keywords",
         "forbidden_keywords",
         "literal_arguments",
@@ -660,13 +798,39 @@ def _parse_call_shape(
         message = f"{context} must declare at least one call-shape predicate"
         raise RegistryError(message)
     minimum, maximum = _call_shape_bounds(matcher, context)
+    min_keyword_args = (
+        _integer(
+            matcher["min_keyword_args"],
+            f"{context}.min_keyword_args",
+            minimum=1,
+        )
+        if "min_keyword_args" in matcher
+        else None
+    )
+    max_keyword_args = (
+        _integer(matcher["max_keyword_args"], f"{context}.max_keyword_args")
+        if "max_keyword_args" in matcher
+        else None
+    )
+    if (
+        min_keyword_args is not None
+        and max_keyword_args is not None
+        and min_keyword_args > max_keyword_args
+    ):
+        message = f"{context} minimum keyword count exceeds its maximum"
+        raise RegistryError(message)
     required_keywords, forbidden_keywords = _call_shape_keywords(matcher, context)
+    if max_keyword_args is not None and len(required_keywords) > max_keyword_args:
+        message = f"{context} requires more keywords than its maximum allows"
+        raise RegistryError(message)
     literal_arguments = _call_shape_literals(
         matcher, context, forbidden_keywords, maximum
     )
     if (
         minimum is None
         and maximum is None
+        and min_keyword_args is None
+        and max_keyword_args is None
         and not required_keywords
         and not forbidden_keywords
         and not literal_arguments
@@ -680,6 +844,8 @@ def _parse_call_shape(
         ),
         min_positional_args=minimum,
         max_positional_args=maximum,
+        min_keyword_args=min_keyword_args,
+        max_keyword_args=max_keyword_args,
         required_keywords=required_keywords,
         forbidden_keywords=forbidden_keywords,
         literal_arguments=literal_arguments,
@@ -800,6 +966,8 @@ def _matcher_identity(matcher: RuleMatcher) -> tuple[object, ...]:
             matcher.qualified_name,
             matcher.min_positional_args,
             matcher.max_positional_args,
+            matcher.min_keyword_args,
+            matcher.max_keyword_args,
             tuple(sorted(matcher.required_keywords)),
             tuple(sorted(matcher.forbidden_keywords)),
             tuple(
@@ -1013,6 +1181,15 @@ def registry_index_json_schema() -> JsonSchema:
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": False,
         "properties": {
+            "coverage": {
+                "default": [],
+                "items": {
+                    "pattern": _json_schema_exact_pattern(_RULE_PATH_PATTERN),
+                    "type": "string",
+                },
+                "type": "array",
+                "uniqueItems": True,
+            },
             "release": _trimmed_string_schema(),
             "retired_ids": {
                 "default": [],
@@ -1041,6 +1218,107 @@ def registry_index_json_schema() -> JsonSchema:
         "required": ["schema_version", "release", "rules"],
         "title": "PyAhead registry index schema version 1",
         "type": "object",
+    }
+
+
+def registry_coverage_json_schema() -> JsonSchema:
+    """Generate the structural JSON Schema for coverage manifests."""
+    rule_ids = {
+        "items": {
+            "pattern": _json_schema_exact_pattern(RULE_ID_PATTERN),
+            "type": "string",
+        },
+        "type": "array",
+        "uniqueItems": True,
+    }
+    rule_backed = [item.value for item in sorted(_RULE_BACKED_COVERAGE)]
+    note_required = [item.value for item in sorted(_NOTE_REQUIRED_COVERAGE)]
+    return {
+        "$id": "https://pyahead.dev/schema/registry-coverage-v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+            "entry": {
+                "additionalProperties": False,
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {
+                                "disposition": {"enum": rule_backed},
+                            },
+                            "required": ["disposition"],
+                        },
+                        "then": {
+                            "properties": {"rules": {**rule_ids, "minItems": 1}},
+                            "required": ["rules"],
+                        },
+                        "else": {
+                            "properties": {"rules": {**rule_ids, "maxItems": 0}},
+                        },
+                    },
+                    {
+                        "if": {
+                            "properties": {
+                                "disposition": {"enum": note_required},
+                            },
+                            "required": ["disposition"],
+                        },
+                        "then": {"required": ["note"]},
+                    },
+                ],
+                "properties": {
+                    "disposition": {
+                        "enum": [item.value for item in CoverageDisposition],
+                        "type": "string",
+                    },
+                    "note": _trimmed_string_schema(),
+                    "rules": rule_ids,
+                    "source_key": _trimmed_string_schema(),
+                },
+                "required": ["source_key", "disposition"],
+                "type": "object",
+            },
+        },
+        "additionalProperties": False,
+        "properties": {
+            "entries": {
+                "items": {"$ref": "#/$defs/entry"},
+                "minItems": 1,
+                "type": "array",
+            },
+            "schema_version": {"const": 1, "type": "integer"},
+            "source_keys": {
+                "items": _trimmed_string_schema(),
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "source": _object_schema(
+                {
+                    "checked_on": {
+                        "pattern": _json_schema_exact_pattern(
+                            r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
+                        ),
+                        "type": "string",
+                    },
+                    "id": {
+                        "pattern": _json_schema_exact_pattern(_SOURCE_ID_PATTERN),
+                        "type": "string",
+                    },
+                    "title": _trimmed_string_schema(),
+                    "url": _https_url_schema(),
+                },
+                ["id", "title", "url", "checked_on"],
+            ),
+        },
+        "required": ["schema_version", "source", "source_keys", "entries"],
+        "title": "PyAhead registry coverage schema version 1",
+        "type": "object",
+        "x-pyahead-semantic-validation": [
+            "source keys are unique within a manifest",
+            "every audited source key has exactly one classification entry",
+            "rule references resolve to canonical IDs",
+            "every canonical rule is classified by at least one selected source",
+        ],
     }
 
 
@@ -1133,7 +1411,9 @@ def _matcher_schemas() -> list[JsonSchema]:
                         "type": "array",
                         "uniqueItems": True,
                     },
+                    "max_keyword_args": {"minimum": 0, "type": "integer"},
                     "max_positional_args": {"minimum": 0, "type": "integer"},
+                    "min_keyword_args": {"minimum": 1, "type": "integer"},
                     "min_positional_args": {"minimum": 0, "type": "integer"},
                     "qualified_name": dotted_name,
                     "required_keywords": keyword_array,
@@ -1143,6 +1423,8 @@ def _matcher_schemas() -> list[JsonSchema]:
             "anyOf": [
                 {"required": ["min_positional_args"]},
                 {"required": ["max_positional_args"]},
+                {"required": ["min_keyword_args"]},
+                {"required": ["max_keyword_args"]},
                 {"required": ["required_keywords"]},
                 {"required": ["forbidden_keywords"]},
                 {"required": ["literal_arguments"]},
@@ -1366,15 +1648,19 @@ def render_json_schema(document: JsonSchema) -> str:
 
 
 def write_json_schemas(directory: Path) -> tuple[Path, Path]:
-    """Write both generated registry schemas to an existing directory."""
+    """Write generated schemas while preserving the M2 return contract."""
     directory.mkdir(parents=True, exist_ok=True)
     index_path = directory / "registry-index-v1.json"
     rule_path = directory / "registry-rule-v1.json"
+    coverage_path = directory / "registry-coverage-v1.json"
     index_path.write_text(
         render_json_schema(registry_index_json_schema()), encoding="utf-8"
     )
     rule_path.write_text(
         render_json_schema(registry_rule_json_schema()), encoding="utf-8"
+    )
+    coverage_path.write_text(
+        render_json_schema(registry_coverage_json_schema()), encoding="utf-8"
     )
     return index_path, rule_path
 

@@ -1,0 +1,56 @@
+schema_version: 1
+id: CPY0042
+title: "The asyncio event-loop policy APIs are scheduled for removal"
+summary: >-
+  The asyncio event-loop policy APIs are deprecated in Python 3.14 and scheduled for removal in Python 3.16.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: asyncio.get_event_loop_policy
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-deprecations
+  - event: removed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: asyncio.get_event_loop_policy
+  - kind: qualified-reference
+    qualified_name: asyncio.set_event_loop_policy
+  - kind: qualified-reference
+    qualified_name: asyncio.AbstractEventLoopPolicy
+  - kind: qualified-reference
+    qualified_name: asyncio.DefaultEventLoopPolicy
+  - kind: qualified-reference
+    qualified_name: asyncio.WindowsSelectorEventLoopPolicy
+  - kind: qualified-reference
+    qualified_name: asyncio.WindowsProactorEventLoopPolicy
+
+remediation:
+  summary: >-
+    Use asyncio.run or asyncio.Runner with loop_factory according to the linked asyncio migration guidance.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html"
+  automation: null
+
+sources:
+  - id: python-deprecations
+    title: "Python deprecation index"
+    url: "https://docs.python.org/3/deprecations/index.html"
+
+tags: [stdlib, scheduled-removal, asyncio]
+

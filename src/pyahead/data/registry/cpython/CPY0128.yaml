@@ -1,0 +1,40 @@
+schema_version: 1
+id: CPY0128
+title: "sys._clear_type_cache is deprecated"
+summary: >-
+  sys._clear_type_cache has been deprecated since Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: sys._clear_type_cache
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.14-sys
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: sys._clear_type_cache
+
+remediation:
+  summary: >-
+    Use sys._clear_internal_caches instead.
+  documentation_url: "https://docs.python.org/3.14/library/sys.html#sys._clear_type_cache"
+  automation: null
+
+sources:
+  - id: python-3.14-sys
+    title: "Python 3.14 sys documentation — _clear_type_cache"
+    url: "https://docs.python.org/3.14/library/sys.html#sys._clear_type_cache"
+
+tags: [stdlib, unscheduled-removal, sys]

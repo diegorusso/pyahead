@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0044
+title: "collections.abc.ByteString is deprecated"
+summary: >-
+  collections.abc.ByteString is deprecated in Python 3.12. Its scheduled
+  Python 3.17 removal is outside this registry's supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: collections.abc.ByteString
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.12-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: collections.abc.ByteString
+
+remediation:
+  summary: >-
+    Use the concrete bytes and bytearray types or the supported buffer abstractions described by CPython, according to the required semantics.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#pending-removal-in-python-3-17"
+  automation: null
+
+sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
+  - id: python-3.14-pending-3.17
+    title: "What's New in Python 3.14 — Pending removal in Python 3.17"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pending-removal-in-python-3-17"
+
+tags: [stdlib, scheduled-removal, collections, outside-window]

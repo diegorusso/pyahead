@@ -1,0 +1,305 @@
+schema_version: 1
+source:
+  id: python-3.13-removed
+  title: "What's New in Python 3.13 — Removed Modules And APIs"
+  url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed-modules-and-apis"
+  checked_on: "2026-08-02"
+
+# This ordered census includes every top-level bullet and every nested bullet
+# from the selected section. Tests pin it independently from this manifest.
+source_keys:
+  - pep-594-aifc
+  - pep-594-aifc-redistribution
+  - pep-594-audioop
+  - pep-594-audioop-redistribution
+  - pep-594-chunk
+  - pep-594-chunk-redistribution
+  - pep-594-cgi
+  - pep-594-cgitb
+  - pep-594-cgi-fieldstorage-guidance
+  - pep-594-cgi-parse-guidance
+  - pep-594-cgi-parse-header-guidance
+  - pep-594-cgi-parse-multipart-guidance
+  - pep-594-cgi-redistributions
+  - pep-594-crypt
+  - pep-594-crypt-bcrypt
+  - pep-594-crypt-argon2-cffi
+  - pep-594-crypt-legacycrypt
+  - pep-594-crypt-crypt-r
+  - pep-594-crypt-redistributions
+  - pep-594-imghdr
+  - pep-594-imghdr-redistribution
+  - pep-594-mailcap
+  - pep-594-mailcap-redistribution
+  - pep-594-msilib
+  - pep-594-nis
+  - pep-594-nntplib
+  - pep-594-nntplib-redistribution
+  - pep-594-ossaudiodev
+  - pep-594-pipes
+  - pep-594-pipes-redistribution
+  - pep-594-sndhdr
+  - pep-594-sndhdr-redistribution
+  - pep-594-spwd
+  - pep-594-sunau
+  - pep-594-sunau-redistribution
+  - pep-594-telnetlib
+  - pep-594-telnetlib-redistribution
+  - pep-594-uu
+  - pep-594-uu-redistribution
+  - pep-594-xdrlib
+  - pep-594-xdrlib-redistribution
+  - lib2to3-and-2to3
+  - classmethod-wrapped-descriptors
+  - frame-clear-suspended
+  - configparser-legacyinterpolation
+  - importlib-metadata-entrypoint-subscript
+  - locale-resetlocale
+  - opcode-enable-specialization
+  - opcode-pseudo-apis
+  - optparse-soft-deprecation-reversed
+  - pathlib-path-context-manager
+  - re-template-apis
+  - tkinter-tix
+  - turtle-rawturtle-settiltangle
+  - typing-io-re
+  - typing-typeddict-keyword-fields
+  - unittest-loader-functions
+  - unittest-find-test-cases
+  - unittest-make-suite
+  - unittest-get-test-case-names
+  - unittest-load-tests-from-module-guidance
+  - unittest-load-tests-from-test-case-guidance
+  - unittest-get-test-case-names-guidance
+  - unittest-testprogram-usageexit
+  - urllib-request-urlopen-tls-keywords
+  - webbrowser-macosx
+  - webbrowser-macosxosascript-name
+
+entries:
+  - source_key: pep-594-aifc
+    disposition: duplicate
+    rules: [CPY0002]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-aifc-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-audioop
+    disposition: duplicate
+    rules: [CPY0005]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-audioop-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-chunk
+    disposition: duplicate
+    rules: [CPY0007]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-chunk-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-cgi
+    disposition: duplicate
+    rules: [CPY0001]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-cgitb
+    disposition: duplicate
+    rules: [CPY0006]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-cgi-fieldstorage-guidance
+    disposition: not-applicable
+    note: This nested bullet supplies migration guidance for the removed modules, not a separate schedule.
+  - source_key: pep-594-cgi-parse-guidance
+    disposition: not-applicable
+    note: This nested bullet supplies migration guidance for the removed modules, not a separate schedule.
+  - source_key: pep-594-cgi-parse-header-guidance
+    disposition: not-applicable
+    note: This nested bullet supplies migration guidance for the removed modules, not a separate schedule.
+  - source_key: pep-594-cgi-parse-multipart-guidance
+    disposition: not-applicable
+    note: This nested bullet supplies migration guidance for the removed modules, not a separate schedule.
+  - source_key: pep-594-cgi-redistributions
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-crypt
+    disposition: duplicate
+    rules: [CPY0008]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-crypt-bcrypt
+    disposition: not-applicable
+    note: This nested bullet lists an alternative and makes no separate removal claim.
+  - source_key: pep-594-crypt-argon2-cffi
+    disposition: not-applicable
+    note: This nested bullet lists an alternative and makes no separate removal claim.
+  - source_key: pep-594-crypt-legacycrypt
+    disposition: not-applicable
+    note: This nested bullet lists an alternative and makes no separate removal claim.
+  - source_key: pep-594-crypt-crypt-r
+    disposition: not-applicable
+    note: This nested bullet lists an alternative and makes no separate removal claim.
+  - source_key: pep-594-crypt-redistributions
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-imghdr
+    disposition: duplicate
+    rules: [CPY0009]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-imghdr-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-mailcap
+    disposition: duplicate
+    rules: [CPY0010]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-mailcap-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-msilib
+    disposition: duplicate
+    rules: [CPY0011]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-nis
+    disposition: duplicate
+    rules: [CPY0012]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-nntplib
+    disposition: duplicate
+    rules: [CPY0013]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-nntplib-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-ossaudiodev
+    disposition: duplicate
+    rules: [CPY0014]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-pipes
+    disposition: duplicate
+    rules: [CPY0015]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-pipes-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-sndhdr
+    disposition: duplicate
+    rules: [CPY0017]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-sndhdr-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-spwd
+    disposition: duplicate
+    rules: [CPY0018]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-sunau
+    disposition: duplicate
+    rules: [CPY0019]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-sunau-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-telnetlib
+    disposition: duplicate
+    rules: [CPY0020]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-telnetlib-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-uu
+    disposition: duplicate
+    rules: [CPY0021]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-uu-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: pep-594-xdrlib
+    disposition: duplicate
+    rules: [CPY0022]
+    note: The authoritative module schedule is classified from PEP 594.
+  - source_key: pep-594-xdrlib-redistribution
+    disposition: not-applicable
+    note: This nested bullet is migration guidance, not a separate removed Python API.
+  - source_key: lib2to3-and-2to3
+    disposition: partial
+    rules: [CPY0027]
+    note: Python imports of lib2to3 are detected; shell invocation of 2to3 is outside Python-source analysis.
+  - source_key: classmethod-wrapped-descriptors
+    disposition: not-statically-detectable
+    note: Proving descriptor behavior across stacked decorators requires semantic class analysis.
+  - source_key: frame-clear-suspended
+    disposition: not-statically-detectable
+    note: Whether frame.clear raises depends on suspended runtime state, which cannot be proved from the call spelling alone.
+  - source_key: configparser-legacyinterpolation
+    disposition: implemented
+    rules: [CPY0030]
+  - source_key: importlib-metadata-entrypoint-subscript
+    disposition: partial
+    rules: [CPY0131]
+    note: Explicit EntryPoint.__getitem__ references are detected; ordinary subscription requires a future subscription matcher and receiver inference.
+  - source_key: locale-resetlocale
+    disposition: implemented
+    rules: [CPY0029]
+  - source_key: opcode-enable-specialization
+    disposition: not-applicable
+    note: The undocumented field was moved to a private module and was not intended as public API.
+  - source_key: opcode-pseudo-apis
+    disposition: implemented
+    rules: [CPY0132]
+  - source_key: optparse-soft-deprecation-reversed
+    disposition: not-applicable
+    note: This bullet reverses a soft deprecation and introduces no compatibility break to report.
+  - source_key: pathlib-path-context-manager
+    disposition: not-statically-detectable
+    note: Identifying the runtime type of a with-statement context expression requires type inference.
+  - source_key: re-template-apis
+    disposition: implemented
+    rules: [CPY0032]
+  - source_key: tkinter-tix
+    disposition: implemented
+    rules: [CPY0028]
+  - source_key: turtle-rawturtle-settiltangle
+    disposition: partial
+    rules: [CPY0036]
+    note: Exact RawTurtle, RawPen, Turtle, and Pen references are detected; arbitrary subclass and instance receivers are not inferred.
+  - source_key: typing-io-re
+    disposition: implemented
+    rules: [CPY0079]
+  - source_key: typing-typeddict-keyword-fields
+    disposition: partial
+    rules: [CPY0136]
+    note: Explicit keyword-field forms are detected; expanded keyword mappings are conservatively left unknown.
+  - source_key: unittest-loader-functions
+    disposition: duplicate
+    rules: [CPY0031]
+    note: This parent bullet is decomposed into its three removed functions and three guidance bullets below.
+  - source_key: unittest-find-test-cases
+    disposition: implemented
+    rules: [CPY0031]
+  - source_key: unittest-make-suite
+    disposition: implemented
+    rules: [CPY0031]
+  - source_key: unittest-get-test-case-names
+    disposition: implemented
+    rules: [CPY0031]
+  - source_key: unittest-load-tests-from-module-guidance
+    disposition: not-applicable
+    note: This nested bullet is replacement guidance, not a separate removal.
+  - source_key: unittest-load-tests-from-test-case-guidance
+    disposition: not-applicable
+    note: This nested bullet is replacement guidance, not a separate removal.
+  - source_key: unittest-get-test-case-names-guidance
+    disposition: not-applicable
+    note: This nested bullet is replacement guidance, not a separate removal.
+  - source_key: unittest-testprogram-usageexit
+    disposition: implemented
+    rules: [CPY0035]
+  - source_key: urllib-request-urlopen-tls-keywords
+    disposition: implemented
+    rules: [CPY0033]
+  - source_key: webbrowser-macosx
+    disposition: implemented
+    rules: [CPY0034]
+  - source_key: webbrowser-macosxosascript-name
+    disposition: partial
+    rules: [CPY0080]
+    note: Exact class-qualified references are detected; arbitrary controller receiver types are not inferred.

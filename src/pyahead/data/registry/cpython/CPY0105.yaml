@@ -1,0 +1,45 @@
+schema_version: 1
+id: CPY0105
+title: "Deprecated argparse resource and group APIs are used"
+summary: >-
+  argparse.FileType and the prefix_chars keyword of add_argument_group are
+  deprecated in Python 3.14 without a published removal version.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: argparse.FileType
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: argparse.FileType
+  - kind: call-shape
+    qualified_name: argparse.ArgumentParser.add_argument_group
+    required_keywords: [prefix_chars]
+
+remediation:
+  summary: >-
+    Manage resources after parsing and omit the undocumented group
+    prefix_chars argument.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#argparse"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#argparse"
+
+tags: [stdlib, unscheduled-removal, argparse, partial]

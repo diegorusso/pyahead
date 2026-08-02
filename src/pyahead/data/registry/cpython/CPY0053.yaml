@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0053
+title: "typing.no_type_check_decorator is scheduled for removal"
+summary: >-
+  typing.no_type_check_decorator is deprecated in Python 3.13 and scheduled for removal in Python 3.15.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime, typing]
+
+subject:
+  kind: function
+  name: typing.no_type_check_decorator
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: removed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: typing.no_type_check_decorator
+
+remediation:
+  summary: >-
+    Remove use of this deprecated decorator helper and consult the linked typing documentation.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#typing"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — typing deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#typing"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — typing removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#typing"
+
+tags: [stdlib, scheduled-removal, typing]

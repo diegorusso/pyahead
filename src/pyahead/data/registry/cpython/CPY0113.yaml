@@ -1,0 +1,69 @@
+schema_version: 1
+id: CPY0113
+title: "Legacy tkinter Variable trace methods are deprecated"
+summary: >-
+  tkinter.Variable.trace_variable, trace_vdelete, and trace_vinfo are
+  deprecated in Python 3.14 without a published removal version; exact
+  class-qualified references are detected.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: tkinter.Variable.trace_variable
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: tkinter.Variable.trace_variable
+  - kind: qualified-reference
+    qualified_name: tkinter.Variable.trace_vdelete
+  - kind: qualified-reference
+    qualified_name: tkinter.Variable.trace_vinfo
+  - kind: qualified-reference
+    qualified_name: tkinter.StringVar.trace_variable
+  - kind: qualified-reference
+    qualified_name: tkinter.StringVar.trace_vdelete
+  - kind: qualified-reference
+    qualified_name: tkinter.StringVar.trace_vinfo
+  - kind: qualified-reference
+    qualified_name: tkinter.IntVar.trace_variable
+  - kind: qualified-reference
+    qualified_name: tkinter.IntVar.trace_vdelete
+  - kind: qualified-reference
+    qualified_name: tkinter.IntVar.trace_vinfo
+  - kind: qualified-reference
+    qualified_name: tkinter.DoubleVar.trace_variable
+  - kind: qualified-reference
+    qualified_name: tkinter.DoubleVar.trace_vdelete
+  - kind: qualified-reference
+    qualified_name: tkinter.DoubleVar.trace_vinfo
+  - kind: qualified-reference
+    qualified_name: tkinter.BooleanVar.trace_variable
+  - kind: qualified-reference
+    qualified_name: tkinter.BooleanVar.trace_vdelete
+  - kind: qualified-reference
+    qualified_name: tkinter.BooleanVar.trace_vinfo
+
+remediation:
+  summary: Use trace_add, trace_remove, and trace_info respectively.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#tkinter"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#tkinter"
+
+tags: [stdlib, unscheduled-removal, tkinter, partial]

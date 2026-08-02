@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0122
+title: "Version-specific SSL protocol constants are deprecated"
+summary: >-
+  The version-specific ssl protocol constants have been deprecated since Python 3.6.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: ssl.PROTOCOL_SSLv3
+
+timeline:
+  - event: deprecated
+    python: "3.6"
+    certainty: released
+    source: python-3.14-ssl
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ssl.PROTOCOL_SSLv3
+  - kind: qualified-reference
+    qualified_name: ssl.PROTOCOL_TLSv1
+  - kind: qualified-reference
+    qualified_name: ssl.PROTOCOL_TLSv1_1
+  - kind: qualified-reference
+    qualified_name: ssl.PROTOCOL_TLSv1_2
+
+remediation:
+  summary: >-
+    Use PROTOCOL_TLS_CLIENT or PROTOCOL_TLS_SERVER and configure version bounds.
+  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.PROTOCOL_SSLv3"
+  automation: null
+
+sources:
+  - id: python-3.14-ssl
+    title: "Python 3.14 ssl documentation — version-specific protocols"
+    url: "https://docs.python.org/3.14/library/ssl.html#ssl.PROTOCOL_SSLv3"
+
+tags: [stdlib, unscheduled-removal, ssl]

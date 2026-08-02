@@ -1,0 +1,15 @@
+schema_version: 1
+source:
+  id: cpython-101773
+  title: "CPython issue 101773 — replace Fraction's private _normalize path"
+  url: "https://github.com/python/cpython/issues/101773"
+  checked_on: "2026-08-02"
+
+# This narrowly scoped CPython issue tracks one private signature change.
+source_keys:
+  - fractions-fraction-normalize
+
+entries:
+  - source_key: fractions-fraction-normalize
+    disposition: implemented
+    rules: [CPY0085]

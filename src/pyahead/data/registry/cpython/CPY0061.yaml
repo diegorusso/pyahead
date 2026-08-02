@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0061
+title: "Bitwise inversion of bool is scheduled to fail"
+summary: >-
+  Bitwise inversion of the True and False literals is deprecated in Python 3.12 and scheduled to raise an error in Python 3.16; the rule intentionally covers literal booleans only.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: syntax
+  name: bool-bitwise-inversion
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-deprecations
+  - event: behavior_changed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_behavior_change: breaking
+
+matchers:
+  - kind: builtin-pattern
+    pattern: bool-bitwise-inversion
+
+remediation:
+  summary: >-
+    Replace bitwise inversion with the Boolean operation intended by the program.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html"
+  automation: null
+
+sources:
+  - id: python-deprecations
+    title: "Python deprecation index"
+    url: "https://docs.python.org/3/deprecations/index.html"
+
+tags: [syntax, scheduled-change, partial]
+

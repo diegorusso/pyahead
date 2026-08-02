@@ -1,0 +1,1 @@
+value = "http.server.CGIHTTPRequestHandler"

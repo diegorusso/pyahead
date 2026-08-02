@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0067
+title: "ssl.match_hostname is removed"
+summary: >-
+  ssl.match_hostname is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: ssl.match_hostname
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ssl.match_hostname
+
+remediation:
+  summary: >-
+    Use supported SSLContext hostname verification as described by the linked SSL release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, ssl]
+

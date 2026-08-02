@@ -1,0 +1,57 @@
+schema_version: 1
+id: CPY0133
+title: "Additional pathlib path-constructor keyword arguments are removed"
+summary: >-
+  Passing additional keyword arguments to the built-in pathlib path classes is
+  rejected in Python 3.14 after earlier versions silently ignored them.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: pathlib.Path
+
+timeline:
+  - event: signature_changed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: pathlib.Path
+    min_keyword_args: 1
+  - kind: call-shape
+    qualified_name: pathlib.PurePath
+    min_keyword_args: 1
+  - kind: call-shape
+    qualified_name: pathlib.PurePosixPath
+    min_keyword_args: 1
+  - kind: call-shape
+    qualified_name: pathlib.PureWindowsPath
+    min_keyword_args: 1
+  - kind: call-shape
+    qualified_name: pathlib.PosixPath
+    min_keyword_args: 1
+  - kind: call-shape
+    qualified_name: pathlib.WindowsPath
+    min_keyword_args: 1
+
+remediation:
+  summary: >-
+    Pass only documented positional path segments to pathlib path constructors.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#pathlib"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — pathlib removals"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pathlib"
+
+tags: [stdlib, signature-change, pathlib, equivalent-spellings]

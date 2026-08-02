@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0078
+title: "Element.copy is removed"
+summary: >-
+  xml.etree.ElementTree.Element.copy is removed from the pure-Python implementation in Python 3.12; PyAhead matches class-qualified references.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: xml.etree.ElementTree.Element.copy
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: xml.etree.ElementTree.Element.copy
+
+remediation:
+  summary: >-
+    Use copy.copy as directed by the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, xml, partial]
+

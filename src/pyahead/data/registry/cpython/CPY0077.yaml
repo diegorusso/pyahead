@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0077
+title: "Legacy zipimporter finder methods are removed"
+summary: >-
+  zipimport.zipimporter.find_loader and find_module are removed in Python 3.12; PyAhead matches class-qualified references.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: zipimport.zipimporter.find_module
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: zipimport.zipimporter.find_loader
+  - kind: qualified-reference
+    qualified_name: zipimport.zipimporter.find_module
+
+remediation:
+  summary: >-
+    Use zipimporter.find_spec as directed by the linked import-system release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, imports, partial]
+

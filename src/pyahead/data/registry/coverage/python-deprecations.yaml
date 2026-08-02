@@ -1,0 +1,448 @@
+schema_version: 1
+source:
+  id: python-deprecations
+  title: "Python 3.14 deprecation index — reviewed Python-level census"
+  url: "https://docs.python.org/3.14/deprecations/index.html"
+  checked_on: "2026-08-02"
+
+source_keys:
+  - pending-3.15-import-cached
+  - pending-3.15-import-package
+  - pending-3.15-ctypes-setpointertype
+  - pending-3.15-http-server-cgi-handler
+  - pending-3.15-http-server-cgi-flag
+  - pending-3.15-importlib-load-module
+  - pending-3.15-pathlib-is-reserved
+  - pending-3.15-platform-java-ver
+  - pending-3.15-sysconfig-is-python-build-check-home
+  - pending-3.15-threading-rlock-arguments
+  - pending-3.15-types-co-lnotab
+  - pending-3.15-typing-namedtuple-keyword-fields
+  - pending-3.15-typing-typeddict-empty-forms
+  - pending-3.15-typing-no-type-check-decorator
+  - pending-3.15-wave-marker-methods
+  - pending-3.15-zipimport-load-module
+  - pending-3.16-import-loader
+  - pending-3.16-array-u-type-code
+  - pending-3.16-asyncio-iscoroutinefunction
+  - pending-3.16-asyncio-event-loop-policy
+  - pending-3.16-asyncio-abstract-event-loop-policy
+  - pending-3.16-asyncio-default-event-loop-policy
+  - pending-3.16-asyncio-windows-selector-event-loop-policy
+  - pending-3.16-asyncio-windows-proactor-event-loop-policy
+  - pending-3.16-asyncio-get-event-loop-policy
+  - pending-3.16-asyncio-set-event-loop-policy
+  - pending-3.16-bool-bitwise-inversion
+  - pending-3.16-functools-reduce-keywords
+  - pending-3.16-logging-handler-strm
+  - pending-3.16-mimetypes-undotted-extension
+  - pending-3.16-shutil-execerror
+  - pending-3.16-symtable-class-get-methods
+  - pending-3.16-sys-enablelegacywindowsfsencoding
+  - pending-3.16-sysconfig-expand-makefile-vars
+  - pending-3.16-tarfile-tarfile
+  - pending-3.17-collections-abc-bytestring
+  - pending-3.17-typing-union-generic-alias
+  - pending-3.17-typing-bytestring
+  - pending-3.18-decimal-n-format
+  - pending-3.19-ctypes-pack-layout
+  - future-argparse-nested-groups
+  - future-argparse-group-prefix-chars
+  - future-argparse-filetype
+  - future-generator-throw-three-arguments
+  - future-numeric-literals-adjacent-keywords
+  - future-index-int-non-int-return
+  - future-float-subclass-return
+  - future-complex-subclass-return
+  - future-complex-real-imag-complex-values
+  - future-calendar-january-february
+  - future-codecs-open
+  - future-code-co-lnotab
+  - future-datetime-naive-utc-methods
+  - future-gettext-noninteger-plurals
+  - future-importlib-cache-from-source-debug-override
+  - future-importlib-metadata-entrypoints-tuple-interface
+  - future-importlib-metadata-implicit-none
+  - future-logging-warn
+  - future-mailbox-stringio-text-mode
+  - future-os-register-at-fork-multithreaded
+  - future-pydoc-error-during-import-exc-info-tuple
+  - future-re-group-reference-rules
+  - future-sre-modules
+  - future-shutil-rmtree-onerror
+  - future-ssl-context-without-protocol
+  - future-ssl-npn-methods
+  - future-ssl-op-no-ssl-options
+  - future-ssl-op-no-tls-options
+  - future-ssl-protocol-sslv3
+  - future-ssl-protocol-tls
+  - future-ssl-protocol-tlsv1
+  - future-ssl-protocol-tlsv1-1
+  - future-ssl-protocol-tlsv1-2
+  - future-ssl-tlsversion-sslv3
+  - future-ssl-tlsversion-tlsv1
+  - future-ssl-tlsversion-tlsv1-1
+  - future-threading-condition-notifyall
+  - future-threading-event-isset
+  - future-threading-thread-daemon-methods
+  - future-threading-thread-name-methods
+  - future-threading-currentthread
+  - future-threading-activecount
+  - future-typing-text
+  - future-typing-union-generic-alias
+  - future-unittest-isolated-asyncio-return-value
+  - future-urllib-parse-splitattr
+  - future-urllib-parse-splithost
+  - future-urllib-parse-splitnport
+  - future-urllib-parse-splitpasswd
+  - future-urllib-parse-splitport
+  - future-urllib-parse-splitquery
+  - future-urllib-parse-splittag
+  - future-urllib-parse-splittype
+  - future-urllib-parse-splituser
+  - future-urllib-parse-splitvalue
+  - future-urllib-parse-to-bytes
+  - future-wsgiref-partial-write
+  - future-element-truth-testing
+  - future-sys-clear-type-cache
+  - c-api-sections
+
+entries:
+  - source_key: pending-3.15-import-cached
+    disposition: dynamic-evidence-roadmap
+    note: The fallback depends on runtime module-spec state rather than attribute spelling alone.
+  - source_key: pending-3.15-import-package
+    disposition: dynamic-evidence-roadmap
+    note: The fallback depends on runtime module-spec state rather than attribute spelling alone.
+  - source_key: pending-3.15-ctypes-setpointertype
+    disposition: implemented
+    rules: [CPY0050]
+  - source_key: pending-3.15-http-server-cgi-handler
+    disposition: implemented
+    rules: [CPY0054]
+  - source_key: pending-3.15-http-server-cgi-flag
+    disposition: not-applicable
+    note: Command-line invocations are outside Python-source matching.
+  - source_key: pending-3.15-importlib-load-module
+    disposition: partial
+    rules: [CPY0137]
+    note: >-
+      Exact class-qualified references across the public importlib.abc,
+      importlib.machinery, and importlib.util.LazyLoader forms are detected;
+      arbitrary loader receivers require type inference.
+  - source_key: pending-3.15-pathlib-is-reserved
+    disposition: partial
+    rules: [CPY0055]
+    note: Exact class-qualified references are detected; arbitrary PurePath receivers require type inference.
+  - source_key: pending-3.15-platform-java-ver
+    disposition: implemented
+    rules: [CPY0052]
+  - source_key: pending-3.15-sysconfig-is-python-build-check-home
+    disposition: implemented
+    rules: [CPY0058]
+  - source_key: pending-3.15-threading-rlock-arguments
+    disposition: partial
+    rules: [CPY0057]
+    note: Statically visible positional and explicit keyword arguments are detected; expanded keyword mappings remain unknown.
+  - source_key: pending-3.15-types-co-lnotab
+    disposition: partial
+    rules: [CPY0135]
+    note: Exact CodeType-qualified references are detected; arbitrary code-object receiver types require type inference. No removal date is claimed by the rule.
+  - source_key: pending-3.15-typing-namedtuple-keyword-fields
+    disposition: partial
+    rules: [CPY0059]
+    note: Explicit keyword fields are detected; expanded keyword mappings remain unknown.
+  - source_key: pending-3.15-typing-typeddict-empty-forms
+    disposition: duplicate
+    rules: [CPY0060]
+    note: Both empty functional forms are owned by the reviewed Python 3.13 deprecation source.
+  - source_key: pending-3.15-typing-no-type-check-decorator
+    disposition: implemented
+    rules: [CPY0053]
+  - source_key: pending-3.15-wave-marker-methods
+    disposition: partial
+    rules: [CPY0056]
+    note: Exact class-qualified references are detected; arbitrary wave reader and writer receivers require type inference.
+  - source_key: pending-3.15-zipimport-load-module
+    disposition: partial
+    rules: [CPY0114]
+    note: Exact zipimporter-qualified references are detected; arbitrary loader receivers require type inference.
+  - source_key: pending-3.16-import-loader
+    disposition: dynamic-evidence-roadmap
+    note: The fallback depends on runtime module-spec state rather than attribute spelling alone.
+  - source_key: pending-3.16-array-u-type-code
+    disposition: duplicate
+    rules: [CPY0097]
+    note: The literal type code and schedule are owned by the reviewed Python 3.13 deprecation source.
+  - source_key: pending-3.16-asyncio-iscoroutinefunction
+    disposition: implemented
+    rules: [CPY0062]
+  - source_key: pending-3.16-asyncio-event-loop-policy
+    disposition: implemented
+    rules: [CPY0042]
+  - source_key: pending-3.16-asyncio-abstract-event-loop-policy
+    disposition: duplicate
+    rules: [CPY0042]
+    note: This nested API bullet is represented by the parent policy-system rule.
+  - source_key: pending-3.16-asyncio-default-event-loop-policy
+    disposition: duplicate
+    rules: [CPY0042]
+    note: This nested API bullet is represented by the parent policy-system rule.
+  - source_key: pending-3.16-asyncio-windows-selector-event-loop-policy
+    disposition: duplicate
+    rules: [CPY0042]
+    note: This nested API bullet is represented by the parent policy-system rule.
+  - source_key: pending-3.16-asyncio-windows-proactor-event-loop-policy
+    disposition: duplicate
+    rules: [CPY0042]
+    note: This nested API bullet is represented by the parent policy-system rule.
+  - source_key: pending-3.16-asyncio-get-event-loop-policy
+    disposition: duplicate
+    rules: [CPY0042]
+    note: This nested API bullet is represented by the parent policy-system rule.
+  - source_key: pending-3.16-asyncio-set-event-loop-policy
+    disposition: duplicate
+    rules: [CPY0042]
+    note: This nested API bullet is represented by the parent policy-system rule.
+  - source_key: pending-3.16-bool-bitwise-inversion
+    disposition: partial
+    rules: [CPY0061]
+    note: Literal True and False operands are detected; general Boolean type inference is outside the static alpha.
+  - source_key: pending-3.16-functools-reduce-keywords
+    disposition: duplicate
+    rules: [CPY0107]
+    note: Explicit keyword operands and the schedule are owned by the reviewed Python 3.14 deprecation source.
+  - source_key: pending-3.16-logging-handler-strm
+    disposition: not-statically-detectable
+    note: Recognizing custom handler constructor signatures requires class and inheritance analysis.
+  - source_key: pending-3.16-mimetypes-undotted-extension
+    disposition: not-statically-detectable
+    note: The closed matcher schema cannot express the nonempty-string prefix condition.
+  - source_key: pending-3.16-shutil-execerror
+    disposition: implemented
+    rules: [CPY0089]
+  - source_key: pending-3.16-symtable-class-get-methods
+    disposition: duplicate
+    rules: [CPY0112]
+    note: The exact class-qualified references are owned by the reviewed Python 3.14 deprecation source.
+  - source_key: pending-3.16-sys-enablelegacywindowsfsencoding
+    disposition: duplicate
+    rules: [CPY0102]
+    note: The exact function and schedule are owned by the reviewed Python 3.13 deprecation source.
+  - source_key: pending-3.16-sysconfig-expand-makefile-vars
+    disposition: implemented
+    rules: [CPY0090]
+  - source_key: pending-3.16-tarfile-tarfile
+    disposition: duplicate
+    rules: [CPY0063]
+    note: The exact class-qualified reference is owned by the reviewed Python 3.13 deprecation source.
+  - source_key: pending-3.17-collections-abc-bytestring
+    disposition: partial
+    rules: [CPY0044]
+    note: The released deprecation is implemented; the Python 3.17 removal is outside the supported 3.11 through 3.16 window.
+  - source_key: pending-3.17-typing-union-generic-alias
+    disposition: not-applicable
+    note: The underscored class is a private implementation detail outside the selected public Python API surface.
+  - source_key: pending-3.17-typing-bytestring
+    disposition: partial
+    rules: [CPY0091]
+    note: The released deprecation is implemented; the Python 3.17 removal is outside the supported 3.11 through 3.16 window.
+  - source_key: pending-3.18-decimal-n-format
+    disposition: not-statically-detectable
+    note: Format-string semantic matching is outside the closed matcher schema.
+  - source_key: pending-3.19-ctypes-pack-layout
+    disposition: dynamic-evidence-roadmap
+    note: The change depends on assignment values, class layout, and host platform.
+  - source_key: future-argparse-nested-groups
+    disposition: not-statically-detectable
+    note: Proving that a group receiver was itself created from another group requires data-flow and receiver-type inference.
+  - source_key: future-argparse-group-prefix-chars
+    disposition: duplicate
+    rules: [CPY0105]
+    note: Explicit ArgumentParser-qualified calls are owned by the reviewed Python 3.14 deprecation source.
+  - source_key: future-argparse-filetype
+    disposition: duplicate
+    rules: [CPY0105]
+    note: The exact type converter is owned by the reviewed Python 3.14 deprecation source.
+  - source_key: future-generator-throw-three-arguments
+    disposition: not-statically-detectable
+    note: Proving an arbitrary receiver is a generator or asynchronous generator requires type inference.
+  - source_key: future-numeric-literals-adjacent-keywords
+    disposition: not-statically-detectable
+    note: This syntax pattern is not one of the closed built-in patterns supported by schema version 1.
+  - source_key: future-index-int-non-int-return
+    disposition: dynamic-evidence-roadmap
+    note: The deprecation depends on the runtime return value of user-defined methods.
+  - source_key: future-float-subclass-return
+    disposition: dynamic-evidence-roadmap
+    note: The deprecation depends on the runtime return value of a user-defined method.
+  - source_key: future-complex-subclass-return
+    disposition: dynamic-evidence-roadmap
+    note: The deprecation depends on the runtime return value of a user-defined method.
+  - source_key: future-complex-real-imag-complex-values
+    disposition: not-statically-detectable
+    note: Proving the runtime type of constructor arguments requires type inference.
+  - source_key: future-calendar-january-february
+    disposition: duplicate
+    rules: [CPY0092]
+    note: Both exact constants are owned by the reviewed Python 3.12 deprecation source.
+  - source_key: future-codecs-open
+    disposition: duplicate
+    rules: [CPY0106]
+    note: The exact function is owned by the reviewed Python 3.14 deprecation source.
+  - source_key: future-code-co-lnotab
+    disposition: partial
+    rules: [CPY0135]
+    note: Exact CodeType-qualified references are detected; arbitrary code-object receiver types require type inference. No future removal version is asserted.
+  - source_key: future-datetime-naive-utc-methods
+    disposition: duplicate
+    rules: [CPY0093]
+    note: Both exact datetime methods are owned by the reviewed Python 3.12 deprecation source.
+  - source_key: future-gettext-noninteger-plurals
+    disposition: not-statically-detectable
+    note: Determining the runtime numeric type passed to plural-selection APIs requires type inference.
+  - source_key: future-importlib-cache-from-source-debug-override
+    disposition: implemented
+    rules: [CPY0115]
+  - source_key: future-importlib-metadata-entrypoints-tuple-interface
+    disposition: dynamic-evidence-roadmap
+    note: Tuple-style operations depend on runtime EntryPoints values and data flow.
+  - source_key: future-importlib-metadata-implicit-none
+    disposition: dynamic-evidence-roadmap
+    note: Reliance on an implicit return value depends on runtime control flow and value use.
+  - source_key: future-logging-warn
+    disposition: partial
+    rules: [CPY0116]
+    note: Module and exact class-qualified references are detected; arbitrary logger receivers require type inference.
+  - source_key: future-mailbox-stringio-text-mode
+    disposition: not-statically-detectable
+    note: Determining mailbox input object and file-mode types requires runtime value and type inference.
+  - source_key: future-os-register-at-fork-multithreaded
+    disposition: dynamic-evidence-roadmap
+    note: The warning depends on whether the process is multithreaded at runtime.
+  - source_key: future-pydoc-error-during-import-exc-info-tuple
+    disposition: not-statically-detectable
+    note: The closed literal schema cannot distinguish arbitrary exception tuples from exception instances.
+  - source_key: future-re-group-reference-rules
+    disposition: not-statically-detectable
+    note: Regular-expression group-reference semantics are outside the closed matcher schema.
+  - source_key: future-sre-modules
+    disposition: implemented
+    rules: [CPY0117]
+  - source_key: future-shutil-rmtree-onerror
+    disposition: duplicate
+    rules: [CPY0094]
+    note: The deprecated keyword is owned by the reviewed Python 3.12 deprecation source.
+  - source_key: future-ssl-context-without-protocol
+    disposition: implemented
+    rules: [CPY0118]
+  - source_key: future-ssl-npn-methods
+    disposition: partial
+    rules: [CPY0119]
+    note: Exact SSLContext, SSLSocket, and SSLObject references are detected; arbitrary receivers require type inference.
+  - source_key: future-ssl-op-no-ssl-options
+    disposition: implemented
+    rules: [CPY0120]
+  - source_key: future-ssl-op-no-tls-options
+    disposition: implemented
+    rules: [CPY0121]
+  - source_key: future-ssl-protocol-sslv3
+    disposition: implemented
+    rules: [CPY0122]
+  - source_key: future-ssl-protocol-tls
+    disposition: implemented
+    rules: [CPY0123]
+  - source_key: future-ssl-protocol-tlsv1
+    disposition: implemented
+    rules: [CPY0122]
+  - source_key: future-ssl-protocol-tlsv1-1
+    disposition: implemented
+    rules: [CPY0122]
+  - source_key: future-ssl-protocol-tlsv1-2
+    disposition: implemented
+    rules: [CPY0122]
+  - source_key: future-ssl-tlsversion-sslv3
+    disposition: implemented
+    rules: [CPY0124]
+  - source_key: future-ssl-tlsversion-tlsv1
+    disposition: implemented
+    rules: [CPY0124]
+  - source_key: future-ssl-tlsversion-tlsv1-1
+    disposition: implemented
+    rules: [CPY0124]
+  - source_key: future-threading-condition-notifyall
+    disposition: partial
+    rules: [CPY0125]
+    note: Exact class-qualified references are detected; arbitrary Condition receivers require type inference.
+  - source_key: future-threading-event-isset
+    disposition: partial
+    rules: [CPY0125]
+    note: Exact class-qualified references are detected; arbitrary Event receivers require type inference.
+  - source_key: future-threading-thread-daemon-methods
+    disposition: partial
+    rules: [CPY0125]
+    note: Exact Thread and Timer references are detected; arbitrary Thread subclasses and instances require type inference.
+  - source_key: future-threading-thread-name-methods
+    disposition: partial
+    rules: [CPY0125]
+    note: Exact Thread and Timer references are detected; arbitrary Thread subclasses and instances require type inference.
+  - source_key: future-threading-currentthread
+    disposition: implemented
+    rules: [CPY0125]
+  - source_key: future-threading-activecount
+    disposition: implemented
+    rules: [CPY0125]
+  - source_key: future-typing-text
+    disposition: implemented
+    rules: [CPY0126]
+  - source_key: future-typing-union-generic-alias
+    disposition: not-applicable
+    note: The underscored class is a private implementation detail outside the selected public Python API surface.
+  - source_key: future-unittest-isolated-asyncio-return-value
+    disposition: not-statically-detectable
+    note: Proving a test-case method returns a non-None runtime value requires class, control-flow, and value analysis.
+  - source_key: future-urllib-parse-splitattr
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splithost
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splitnport
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splitpasswd
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splitport
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splitquery
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splittag
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splittype
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splituser
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-splitvalue
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-urllib-parse-to-bytes
+    disposition: implemented
+    rules: [CPY0127]
+  - source_key: future-wsgiref-partial-write
+    disposition: dynamic-evidence-roadmap
+    note: Partial-write behavior depends on the runtime stream implementation and returned write counts.
+  - source_key: future-element-truth-testing
+    disposition: not-statically-detectable
+    note: Identifying arbitrary Element values in Boolean contexts requires type inference.
+  - source_key: future-sys-clear-type-cache
+    disposition: implemented
+    rules: [CPY0128]
+  - source_key: c-api-sections
+    disposition: c-api-roadmap
+    note: The page's C API sections are outside the selected Python-level surface and reserved for the separately designed C API roadmap.

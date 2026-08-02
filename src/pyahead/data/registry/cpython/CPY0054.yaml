@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0054
+title: "CGIHTTPRequestHandler is scheduled for removal"
+summary: >-
+  http.server.CGIHTTPRequestHandler is deprecated in Python 3.13 and scheduled for removal in Python 3.15.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: http.server.CGIHTTPRequestHandler
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: removed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: http.server.CGIHTTPRequestHandler
+
+remediation:
+  summary: >-
+    Remove use of the CGI handler and choose a maintained server appropriate to the application's deployment model.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#http-server"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — http.server deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#http-server"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — http.server removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#http-server"
+
+tags: [stdlib, scheduled-removal, http]

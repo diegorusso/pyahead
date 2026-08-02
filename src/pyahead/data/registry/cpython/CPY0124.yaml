@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0124
+title: "Legacy TLSVersion members are deprecated"
+summary: >-
+  ssl.TLSVersion.SSLv3, TLSv1, and TLSv1_1 have been deprecated since Python 3.10.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: ssl.TLSVersion.SSLv3
+
+timeline:
+  - event: deprecated
+    python: "3.10"
+    certainty: released
+    source: python-3.14-ssl
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ssl.TLSVersion.SSLv3
+  - kind: qualified-reference
+    qualified_name: ssl.TLSVersion.TLSv1
+  - kind: qualified-reference
+    qualified_name: ssl.TLSVersion.TLSv1_1
+
+remediation:
+  summary: >-
+    Use TLSVersion.TLSv1_2 or TLSVersion.TLSv1_3 as appropriate.
+  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.TLSVersion"
+  automation: null
+
+sources:
+  - id: python-3.14-ssl
+    title: "Python 3.14 ssl documentation — TLSVersion"
+    url: "https://docs.python.org/3.14/library/ssl.html#ssl.TLSVersion"
+
+tags: [stdlib, unscheduled-removal, ssl]

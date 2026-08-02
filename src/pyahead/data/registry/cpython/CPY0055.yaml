@@ -1,0 +1,60 @@
+schema_version: 1
+id: CPY0055
+title: "PurePath.is_reserved is scheduled for removal"
+summary: >-
+  pathlib.PurePath.is_reserved is deprecated in Python 3.13 and scheduled for
+  removal in Python 3.15; PyAhead matches exact references across the built-in
+  pathlib path classes.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: pathlib.PurePath.is_reserved
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: removed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: pathlib.PurePath.is_reserved
+  - kind: qualified-reference
+    qualified_name: pathlib.PurePosixPath.is_reserved
+  - kind: qualified-reference
+    qualified_name: pathlib.PureWindowsPath.is_reserved
+  - kind: qualified-reference
+    qualified_name: pathlib.Path.is_reserved
+  - kind: qualified-reference
+    qualified_name: pathlib.PosixPath.is_reserved
+  - kind: qualified-reference
+    qualified_name: pathlib.WindowsPath.is_reserved
+
+remediation:
+  summary: >-
+    Use os.path.isreserved as directed by the linked pathlib documentation.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#pathlib"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — pathlib deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#pathlib"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — pathlib removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#pathlib"
+
+tags: [stdlib, scheduled-removal, pathlib, partial, equivalent-spellings]

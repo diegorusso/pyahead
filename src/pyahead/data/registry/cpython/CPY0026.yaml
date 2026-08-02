@@ -1,0 +1,42 @@
+schema_version: 1
+id: CPY0026
+title: "Legacy ssl APIs are removed"
+summary: >-
+  ssl.RAND_pseudo_bytes and ssl.wrap_socket are removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: ssl.wrap_socket
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ssl.RAND_pseudo_bytes
+  - kind: qualified-reference
+    qualified_name: ssl.wrap_socket
+
+remediation:
+  summary: >-
+    Remove use of the removed ssl APIs and follow the linked SSL migration guidance for the specific operation.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, ssl]

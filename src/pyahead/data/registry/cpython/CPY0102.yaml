@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0102
+title: "sys._enablelegacywindowsfsencoding is scheduled for removal"
+summary: >-
+  sys._enablelegacywindowsfsencoding is deprecated in Python 3.13 and
+  scheduled for removal in Python 3.16.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: sys._enablelegacywindowsfsencoding
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: removed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: sys._enablelegacywindowsfsencoding
+
+remediation:
+  summary: Use the PYTHONLEGACYWINDOWSFSENCODING environment variable when required.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — New Deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#sys"
+  - id: python-deprecations
+    title: "Python deprecation index — Pending removal in Python 3.16"
+    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+
+tags: [stdlib, scheduled-removal, sys]

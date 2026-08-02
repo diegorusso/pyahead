@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0070
+title: "Undocumented sqlite3 compatibility APIs are removed"
+summary: >-
+  sqlite3.enable_shared_cache and sqlite3.OptimizedUnicode are removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: sqlite3.enable_shared_cache
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: sqlite3.enable_shared_cache
+  - kind: qualified-reference
+    qualified_name: sqlite3.OptimizedUnicode
+
+remediation:
+  summary: >-
+    Remove use of these undocumented compatibility APIs and use supported sqlite3 interfaces.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, sqlite]
+

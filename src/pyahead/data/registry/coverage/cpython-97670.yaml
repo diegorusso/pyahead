@@ -1,0 +1,16 @@
+schema_version: 1
+source:
+  id: cpython-97670
+  title: "CPython issue 97670 — remove sys.getdxp"
+  url: "https://github.com/python/cpython/issues/97670"
+  checked_on: "2026-08-02"
+
+# This narrowly scoped CPython issue tracks one build-dependent removal.
+source_keys:
+  - sys-getdxp-special-build
+
+entries:
+  - source_key: sys-getdxp-special-build
+    disposition: partial
+    rules: [CPY0087]
+    note: Exact references are detected, but pre-removal availability depended on a specially configured interpreter build.
