@@ -1,6 +1,7 @@
-"""Deterministic plain-text rendering for M1 scan reports."""
+"""Deterministic plain-text rendering for static scan reports."""
 
 from collections import Counter
+from itertools import groupby
 
 from pyahead.model import (
     AnalysisInference,
@@ -25,14 +26,31 @@ def _finding_lines(finding: Finding) -> list[str]:
         f"{event.kind.value} in {event.python} ({event.certainty.value})"
         for event in finding.events
     )
+    states = "; ".join(
+        (
+            f"{state.state.value} on {state.from_python}"
+            if state.from_python == state.through_python
+            else (
+                f"{state.state.value} on {state.from_python} through "
+                f"{state.through_python}"
+            )
+        )
+        for state in finding.states
+    )
     lines = [
-        f"Python {finding.action_version} — {finding.impact.value}",
         (
             f"  {finding.rule_id}  {path}:{start.line}:{start.column}  "
-            f"{finding.subject} ({finding.match_confidence.value} confidence)"
+            f"{finding.subject} ({finding.impact.value}; "
+            f"{finding.match_confidence.value} confidence)"
         ),
         f"    {finding.title}",
         f"    Match evidence: {_evidence_text(finding.match_evidence)}",
+        f"    Reachable targets: {', '.join(map(str, finding.reachable_versions))}",
+        (
+            "    Usage contexts: "
+            f"{', '.join(context.value for context in finding.usage_contexts)}"
+        ),
+        f"    States: {states}",
         f"    Timeline: {timeline}",
         f"    Guidance: {finding.remediation.summary}",
     ]
@@ -75,6 +93,36 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}{suffix}"
 
 
+def _timeline_group_summary(findings: tuple[Finding, ...]) -> str:
+    impacts = {finding.impact for finding in findings}
+    if len(impacts) != 1:
+        return _plural(len(findings), "compatibility finding")
+    impact = next(iter(impacts))
+    nouns = {
+        "breaking": "upgrade blocker",
+        "deprecated": "deprecation debt item",
+        "informational": "informational finding",
+        "risk": "compatibility risk",
+    }
+    return _plural(len(findings), nouns[impact.value])
+
+
+def _timeline_lines(findings: tuple[Finding, ...]) -> list[str]:
+    lines: list[str] = []
+    for group_index, (version, grouped) in enumerate(
+        groupby(findings, key=lambda finding: finding.action_version)
+    ):
+        group = tuple(grouped)
+        if group_index:
+            lines.append("")
+        lines.append(f"Python {version} — {_timeline_group_summary(group)}")
+        for finding_index, finding in enumerate(group):
+            if finding_index:
+                lines.append("")
+            lines.extend(_finding_lines(finding))
+    return lines
+
+
 def render_text(report: ScanReport) -> str:
     """Render a stable, colour-free human report."""
     lines = [
@@ -88,10 +136,7 @@ def render_text(report: ScanReport) -> str:
     ]
 
     if report.findings:
-        for index, finding in enumerate(report.findings):
-            if index:
-                lines.append("")
-            lines.extend(_finding_lines(finding))
+        lines.extend(_timeline_lines(report.findings))
     else:
         lines.extend(
             [

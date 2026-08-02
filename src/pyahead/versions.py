@@ -43,3 +43,17 @@ class PythonMinor:
     def __str__(self) -> str:
         """Render the canonical minor version."""
         return f"{self.major}.{self.minor}"
+
+
+def target_set(
+    baseline: PythonMinor,
+    horizon: PythonMinor,
+) -> frozenset[PythonMinor]:
+    """Generate an inclusive set of Python minor targets."""
+    if horizon < baseline:
+        message = "horizon Python must not precede baseline Python"
+        raise ValueError(message)
+    return frozenset(
+        PythonMinor(major=baseline.major, minor=minor)
+        for minor in range(baseline.minor, horizon.minor + 1)
+    )

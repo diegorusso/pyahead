@@ -1,4 +1,4 @@
-"""Golden tests for deterministic M1 text and JSON reports."""
+"""Golden tests for deterministic text and JSON reports."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -24,7 +24,7 @@ def test_report_matches_golden_output(
     renderer: Callable[[ScanReport], str],
     expected_name: str,
 ) -> None:
-    """One seed rule flows through every public M1 report format."""
+    """One seed rule flows through every public report format."""
     report = scan(
         ScanRequest(
             root=PROJECT_ROOT,

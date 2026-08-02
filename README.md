@@ -8,9 +8,10 @@ releases. The complete product and technical contract is in
 
 ## Status
 
-The repository is at milestone M2: the registry and matcher framework. It can
-scan Python source with the bundled `cgi` rule and render deterministic text or
-JSON with authoritative timeline sources:
+The repository is at milestone M3: version timelines and lexical reachability.
+It can scan Python source with the bundled `cgi` rule and render deterministic,
+grouped text or JSON with authoritative sources and one multi-state finding per
+matched construct:
 
 ```console
 pyahead check . --baseline-python 3.11 --horizon-python 3.13
@@ -25,10 +26,16 @@ classifying imports. Competing project modules are shown as analysis inferences
 instead of high-confidence standard-library findings. Source reads are limited
 to regular files no larger than 2 MiB; skipped entries make the scan incomplete.
 
-The strict registry supports indexed module imports, qualified references and
-calls, call shapes, literal dynamic imports, and a fixed whitelist of built-in
-syntax patterns. Registry data can be validated, listed, and explained without
-scanning a repository:
+Common import-derived `sys.version_info` comparisons, three-valued Boolean
+guards, nested `if`/`elif` branches, `typing.TYPE_CHECKING`, and `.pyi` typing
+contexts narrow findings conservatively. Unknown conditions enter both
+branches, and patch-level guards remain unknown with a visible analysis
+inference rather than being rounded to a minor version.
+
+The strict registry supports release metadata, indexed module imports,
+qualified references and calls, call shapes, literal dynamic imports, and a
+fixed whitelist of built-in syntax patterns. Registry data can be validated,
+listed, and explained without scanning a repository:
 
 ```console
 pyahead registry validate
@@ -36,11 +43,11 @@ pyahead registry list
 pyahead explain CPY0001
 ```
 
-M2 does not yet evaluate version guards, propagate runtime-versus-typing
-contexts, respect project configuration or `.gitignore`, emit SARIF, manage
-baselines or suppressions, execute target code, access the network while
-scanning, or provide a hosted service. Those capabilities belong to later
-milestones in the design.
+M3 does not yet respect project configuration or `.gitignore`, emit SARIF,
+manage baselines or suppressions, execute target code, access the network while
+scanning, or provide a hosted service. Version helpers, user-defined constants,
+and general control flow outside the documented lexical guard grammar remain
+unknown. Those capabilities belong to later milestones in the design.
 
 Milestone M1.5 adds repository development automation without changing those
 product capabilities. Maintainers can use the resumable, independently verified

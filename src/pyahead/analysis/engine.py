@@ -1,4 +1,4 @@
-"""End-to-end M1 static-analysis pipeline."""
+"""End-to-end static-analysis pipeline."""
 
 import hashlib
 import io
@@ -61,11 +61,16 @@ from pyahead.analysis.matchers.qualified import (
     resolve_qualified_name_sources,
     terminal_name,
 )
+from pyahead.analysis.reachability import (
+    SYS_VERSION_INFO,
+    BranchReachability,
+    LexicalReachability,
+    branch_reachability,
+)
 from pyahead.model import (
     AnalysisInference,
     BuiltinPatternMatcher,
     CallShapeMatcher,
-    ChangeEventKind,
     Diagnostic,
     DiagnosticCategory,
     Finding,
@@ -77,15 +82,16 @@ from pyahead.model import (
     QualifiedCallMatcher,
     QualifiedReferenceMatcher,
     Registry,
-    Rule,
     ScanCounts,
     ScanReport,
     SourceLocation,
     SourcePosition,
     SourceRegion,
     StaticMatch,
+    UsageContext,
 )
 from pyahead.registry import load_registry
+from pyahead.timeline import derive_state_ranges
 from pyahead.versions import PythonMinor
 
 MAX_PARSE_NESTING = 200
@@ -94,7 +100,7 @@ MAX_CST_DEPTH = 256
 
 @dataclass(frozen=True)
 class ScanRequest:
-    """Explicit inputs to the public M1 scan API."""
+    """Explicit inputs to the public scan API."""
 
     root: Path
     baseline_python: str
@@ -151,14 +157,140 @@ class _MatcherVisitor(cst.CSTVisitor):
         path: DiscoveredFile,
         matcher_index: MatcherIndex,
         project_modules: dict[str, tuple[PurePosixPath, ...]],
+        target_versions: frozenset[PythonMinor],
     ) -> None:
         """Configure one coordinated read-only traversal."""
         self._path = path
         self._index = matcher_index
         self._project_modules = project_modules
         self._inference_keys: set[tuple[int, int, str]] = set()
+        self._guard_inference_keys: set[SourceLocation] = set()
+        initial_contexts = (
+            frozenset({UsageContext.TYPING})
+            if path.relative_path.suffix == ".pyi"
+            else frozenset({UsageContext.RUNTIME, UsageContext.TYPING})
+        )
+        self._reachability_stack = [
+            LexicalReachability(
+                versions=target_versions,
+                usage_contexts=initial_contexts,
+            )
+        ]
+        self._suite_reachability: dict[int, LexicalReachability] = {}
+        self._elif_reachability: dict[int, LexicalReachability] = {}
+        self._pushed_suites: set[int] = set()
+        self._pushed_ifs: set[int] = set()
         self.matches: list[StaticMatch] = []
         self.inferences: list[AnalysisInference] = []
+
+    @property
+    def _reachability(self) -> LexicalReachability:
+        return self._reachability_stack[-1]
+
+    def _matches_guard_name(
+        self,
+        node: cst.BaseExpression,
+        qualified_name: str,
+    ) -> bool:
+        names = self.get_metadata(QualifiedNameProvider, node, set())
+        resolution = resolve_qualified_name(names, qualified_name)
+        if resolution.confidence is not MatchConfidence.HIGH:
+            return False
+        if qualified_name == SYS_VERSION_INFO:
+            # ``sys`` is initialized as a built-in module before normal import
+            # path resolution, so a repository ``sys.py`` or ``sys`` package
+            # cannot compete with an import-derived guard reference.
+            return True
+        return not qualified_project_candidates(qualified_name, self._project_modules)
+
+    def _record_patch_guard_inference(self, node: cst.BaseExpression) -> None:
+        location = _location(
+            self._path,
+            self.get_metadata(PositionProvider, node),
+        )
+        if location in self._guard_inference_keys:
+            return
+        self._guard_inference_keys.add(location)
+        self.inferences.append(
+            AnalysisInference(
+                code="PYA2002",
+                kind="version-guard",
+                message=(
+                    "patch-level Python version guard is unsupported and was "
+                    "treated as unknown"
+                ),
+                location=location,
+                evidence=(
+                    ("guard_granularity", "patch"),
+                    ("reachability", "both-branches"),
+                ),
+            )
+        )
+
+    def _branches(self, node: cst.If) -> BranchReachability:
+        branches = branch_reachability(
+            node.test,
+            self._reachability,
+            self._matches_guard_name,
+        )
+        if branches.unsupported_patch:
+            self._record_patch_guard_inference(node.test)
+        return branches
+
+    def visit_If(self, node: cst.If) -> None:  # noqa: N802
+        """Assign conservative lexical states to ``if``/``elif`` branches."""
+        incoming = self._elif_reachability.get(id(node))
+        if incoming is not None:
+            self._reachability_stack.append(incoming)
+            self._pushed_ifs.add(id(node))
+        branches = self._branches(node)
+        self._suite_reachability[id(node.body)] = branches.if_true
+        if isinstance(node.orelse, cst.Else):
+            self._suite_reachability[id(node.orelse.body)] = branches.if_false
+        elif isinstance(node.orelse, cst.If):
+            self._elif_reachability[id(node.orelse)] = branches.if_false
+
+    def leave_If(self, original_node: cst.If) -> None:  # noqa: N802
+        """Restore the state active before an ``elif`` node."""
+        if id(original_node) in self._pushed_ifs:
+            self._pushed_ifs.remove(id(original_node))
+            self._reachability_stack.pop()
+
+    def _enter_suite(self, node: cst.BaseSuite) -> None:
+        branch = self._suite_reachability.get(id(node))
+        if branch is not None:
+            self._reachability_stack.append(branch)
+            self._pushed_suites.add(id(node))
+
+    def _leave_suite(self, node: cst.BaseSuite) -> None:
+        if id(node) in self._pushed_suites:
+            self._pushed_suites.remove(id(node))
+            self._reachability_stack.pop()
+
+    def visit_IndentedBlock(self, node: cst.IndentedBlock) -> None:  # noqa: N802
+        """Enter a multi-line branch suite."""
+        self._enter_suite(node)
+
+    def leave_IndentedBlock(  # noqa: N802
+        self,
+        original_node: cst.IndentedBlock,
+    ) -> None:
+        """Leave a multi-line branch suite."""
+        self._leave_suite(original_node)
+
+    def visit_SimpleStatementSuite(  # noqa: N802
+        self,
+        node: cst.SimpleStatementSuite,
+    ) -> None:
+        """Enter a one-line branch suite."""
+        self._enter_suite(node)
+
+    def leave_SimpleStatementSuite(  # noqa: N802
+        self,
+        original_node: cst.SimpleStatementSuite,
+    ) -> None:
+        """Leave a one-line branch suite."""
+        self._leave_suite(original_node)
 
     def _record_match(
         self,
@@ -167,6 +299,8 @@ class _MatcherVisitor(cst.CSTVisitor):
         confidence: MatchConfidence,
         evidence: tuple[tuple[str, str | tuple[str, ...]], ...],
     ) -> None:
+        reachability = self._reachability
+        # Empty lexical states still count toward syntactic fingerprint ordinals.
         location = _location(
             self._path,
             self.get_metadata(PositionProvider, node),
@@ -180,6 +314,8 @@ class _MatcherVisitor(cst.CSTVisitor):
                 enclosing_scope=_scope_name(scope),
                 subject=binding.rule.subject,
                 confidence=confidence,
+                reachable_versions=reachability.versions,
+                usage_contexts=reachability.usage_contexts,
                 evidence=evidence,
             )
         )
@@ -690,6 +826,7 @@ def _parse_file(
     path: DiscoveredFile,
     matcher_index: MatcherIndex,
     project_modules: dict[str, tuple[PurePosixPath, ...]],
+    target_versions: frozenset[PythonMinor],
 ) -> tuple[
     tuple[StaticMatch, ...],
     tuple[AnalysisInference, ...],
@@ -709,7 +846,12 @@ def _parse_file(
         msg = "parsed module is absent without a parse diagnostic"
         raise RuntimeError(msg)
 
-    visitor = _MatcherVisitor(path, matcher_index, project_modules)
+    visitor = _MatcherVisitor(
+        path,
+        matcher_index,
+        project_modules,
+        target_versions,
+    )
     try:
         MetadataWrapper(module).visit(visitor)
     except (RecursionError, cst.CSTValidationError, SyntaxError, ValueError) as error:
@@ -827,27 +969,6 @@ def _read_source(path: DiscoveredFile) -> tuple[str | None, Diagnostic | None]:
         )
 
 
-def _impact_for_policy(
-    rule: Rule,
-    policy: Policy,
-) -> tuple[Impact, PythonMinor] | None:
-    applicable = [
-        event for event in rule.events if event.python <= policy.horizon_python
-    ]
-    if not applicable:
-        return None
-    latest = max(
-        applicable,
-        key=lambda event: (
-            event.python,
-            event.kind is ChangeEventKind.REMOVED,
-        ),
-    )
-    impact = rule.impact_for(latest.kind)
-    action_version = max(latest.python, policy.baseline_python)
-    return impact, action_version
-
-
 def _fingerprint(match: StaticMatch, occurrence_ordinal: int) -> str:
     material = "\0".join(
         (
@@ -921,6 +1042,10 @@ def _deduplicate_matches(matches: list[StaticMatch]) -> tuple[StaticMatch, ...]:
             enclosing_scope=primary.enclosing_scope,
             subject=primary.subject,
             confidence=primary.confidence,
+            reachable_versions=(
+                primary.reachable_versions | secondary.reachable_versions
+            ),
+            usage_contexts=primary.usage_contexts | secondary.usage_contexts,
             evidence=tuple(evidence),
         )
     return tuple(deduplicated.values())
@@ -940,11 +1065,6 @@ def _findings(
             item.rule_id,
         ),
     ):
-        rule = rules[match.rule_id]
-        policy_impact = _impact_for_policy(rule, policy)
-        if policy_impact is None:
-            continue
-        impact, action_version = policy_impact
         ordinal_key = (
             match.location.path.as_posix(),
             match.rule_id,
@@ -953,6 +1073,26 @@ def _findings(
         )
         occurrence_ordinal = ordinals[ordinal_key]
         ordinals[ordinal_key] += 1
+        # Fingerprint identity is established before finding-emission filters.
+        rule = rules[match.rule_id]
+        usage_contexts = frozenset(rule.contexts).intersection(match.usage_contexts)
+        if not usage_contexts:
+            continue
+        states = derive_state_ranges(rule, match.reachable_versions)
+        if not states:
+            continue
+        impact = max(
+            (Impact(state.state.value) for state in states),
+            key=lambda value: {
+                Impact.INFORMATIONAL: 0,
+                Impact.DEPRECATED: 1,
+                Impact.RISK: 2,
+                Impact.BREAKING: 3,
+            }[value],
+        )
+        action_version = min(
+            state.from_python for state in states if state.state.value == impact.value
+        )
         findings.append(
             Finding(
                 fingerprint=_fingerprint(match, occurrence_ordinal),
@@ -964,6 +1104,11 @@ def _findings(
                 match_kind=match.matcher_kind,
                 match_confidence=match.confidence,
                 match_evidence=match.evidence,
+                usage_contexts=tuple(
+                    sorted(usage_contexts, key=lambda context: context.value)
+                ),
+                reachable_versions=tuple(sorted(match.reachable_versions)),
+                states=states,
                 impact=impact,
                 action_version=action_version,
                 events=tuple(
@@ -1049,6 +1194,7 @@ def scan(request: ScanRequest) -> ScanReport:
             path,
             matcher_index,
             project_modules,
+            policy.target_versions,
         )
         if diagnostic is not None:
             diagnostics.append(diagnostic)

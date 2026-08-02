@@ -1,0 +1,9 @@
+schema_version: 1
+releases:
+  - python: "3.14"
+    status: stable
+    released_on: "2025-10-07"
+  - python: "3.15"
+    status: prerelease
+    expected_final_on: "2026-10-01"
+    source: "https://peps.python.org/pep-0790/"

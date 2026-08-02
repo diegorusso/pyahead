@@ -5,7 +5,7 @@ from enum import IntEnum, StrEnum
 from pathlib import PurePosixPath
 from typing import Self, TypeAlias
 
-from pyahead.versions import PythonMinor
+from pyahead.versions import PythonMinor, target_set
 
 EvidenceValue: TypeAlias = str | tuple[str, ...]
 LiteralValue: TypeAlias = bool | float | int | str | None
@@ -27,6 +27,15 @@ class ExitCode(IntEnum):
 
 class Impact(StrEnum):
     """What happens if affected code executes on a target version."""
+
+    DEPRECATED = "deprecated"
+    RISK = "risk"
+    BREAKING = "breaking"
+    INFORMATIONAL = "informational"
+
+
+class FindingState(StrEnum):
+    """The compatibility state of one finding over target versions."""
 
     DEPRECATED = "deprecated"
     RISK = "risk"
@@ -88,6 +97,16 @@ class UsageContext(StrEnum):
     TYPING = "typing"
 
 
+class ReleaseStatus(StrEnum):
+    """Presentation status for a Python release metadata record."""
+
+    EOL = "eol"
+    SECURITY = "security"
+    STABLE = "stable"
+    PRERELEASE = "prerelease"
+    PLANNED = "planned"
+
+
 class SubjectKind(StrEnum):
     """Kinds of source subjects a rule may describe."""
 
@@ -112,7 +131,7 @@ class BuiltinPattern(StrEnum):
 
 
 class DiagnosticCategory(StrEnum):
-    """Diagnostic categories needed by the M1 scan path."""
+    """Diagnostic categories supported by the static scan path."""
 
     CONFIGURATION = "configuration"
     DISCOVERY = "discovery"
@@ -166,6 +185,11 @@ class Policy:
             baseline_python=PythonMinor.parse(baseline_python),
             horizon_python=PythonMinor.parse(horizon_python),
         )
+
+    @property
+    def target_versions(self) -> frozenset[PythonMinor]:
+        """Return every inclusive minor target in this policy."""
+        return target_set(self.baseline_python, self.horizon_python)
 
 
 @dataclass(frozen=True)
@@ -265,6 +289,17 @@ class RuleEvent:
 
 
 @dataclass(frozen=True)
+class PythonRelease:
+    """Informative presentation metadata for one Python minor release."""
+
+    python: PythonMinor
+    status: ReleaseStatus
+    released_on: str | None
+    expected_final_on: str | None
+    source: str | None
+
+
+@dataclass(frozen=True)
 class SourceReference:
     """An authoritative source attached to a registry rule."""
 
@@ -337,6 +372,7 @@ class Registry:
     revision: str
     retired_ids: tuple[str, ...]
     rules: tuple[Rule, ...]
+    releases: tuple[PythonRelease, ...] = ()
 
     def find_rule(self, identifier: str) -> Rule | None:
         """Resolve a canonical rule ID or an explicitly declared alias."""
@@ -360,6 +396,8 @@ class StaticMatch:
     enclosing_scope: str
     subject: str
     confidence: MatchConfidence
+    reachable_versions: frozenset[PythonMinor]
+    usage_contexts: frozenset[UsageContext]
     evidence: tuple[tuple[str, EvidenceValue], ...]
 
 
@@ -375,6 +413,15 @@ class AnalysisInference:
 
 
 @dataclass(frozen=True)
+class FindingStateRange:
+    """One contiguous version range sharing a compatibility state."""
+
+    from_python: PythonMinor
+    through_python: PythonMinor
+    state: FindingState
+
+
+@dataclass(frozen=True)
 class Finding:
     """A repository-specific match combined with rule and policy facts."""
 
@@ -387,6 +434,9 @@ class Finding:
     match_kind: str
     match_confidence: MatchConfidence
     match_evidence: tuple[tuple[str, EvidenceValue], ...]
+    usage_contexts: tuple[UsageContext, ...]
+    reachable_versions: tuple[PythonMinor, ...]
+    states: tuple[FindingStateRange, ...]
     impact: Impact
     action_version: PythonMinor
     events: tuple[RuleEvent, ...]
@@ -406,7 +456,7 @@ class ScanCounts:
 
 @dataclass(frozen=True)
 class ScanReport:
-    """Complete formatter-independent result of an M1 scan."""
+    """Complete formatter-independent static scan result."""
 
     schema_version: int
     tool_version: str

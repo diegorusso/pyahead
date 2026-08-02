@@ -1,4 +1,4 @@
-"""Deterministic JSON serialization for M1 scan reports."""
+"""Deterministic JSON serialization for static scan reports."""
 
 import json
 from typing import TypeAlias
@@ -68,6 +68,7 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             "kind": finding.match_kind,
         },
         "registry_revision": finding.registry_revision,
+        "reachable_versions": [str(version) for version in finding.reachable_versions],
         "remediation": remediation,
         "rule_id": finding.rule_id,
         "sources": [
@@ -75,6 +76,14 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             for source in finding.sources
         ],
         "subject": finding.subject,
+        "states": [
+            {
+                "from": str(state.from_python),
+                "state": state.state.value,
+                "through": str(state.through_python),
+            }
+            for state in finding.states
+        ],
         "timeline": [
             {
                 "certainty": event.certainty.value,
@@ -85,6 +94,7 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             for event in finding.events
         ],
         "title": finding.title,
+        "usage_contexts": [context.value for context in finding.usage_contexts],
     }
 
 
@@ -112,9 +122,7 @@ def _diagnostic(diagnostic: Diagnostic) -> dict[str, JsonValue]:
 
 
 def _versions(report: ScanReport) -> list[JsonValue]:
-    baseline = report.policy.baseline_python.minor
-    horizon = report.policy.horizon_python.minor
-    return [f"3.{minor}" for minor in range(baseline, horizon + 1)]
+    return [str(version) for version in sorted(report.policy.target_versions)]
 
 
 def _summary(report: ScanReport) -> dict[str, JsonValue]:
@@ -132,7 +140,7 @@ def _summary(report: ScanReport) -> dict[str, JsonValue]:
 
 
 def report_document(report: ScanReport) -> dict[str, JsonValue]:
-    """Build the M1 JSON document without timestamps or absolute paths."""
+    """Build the JSON document without timestamps or absolute paths."""
     return {
         "diagnostics": [_diagnostic(item) for item in report.diagnostics],
         "findings": [_finding(item) for item in report.findings],

@@ -6,6 +6,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 from itertools import pairwise
 from pathlib import Path, PurePosixPath
@@ -25,10 +26,12 @@ from pyahead.model import (
     MatchConfidence,
     MatcherKind,
     ModuleImportMatcher,
+    PythonRelease,
     QualifiedCallMatcher,
     QualifiedReferenceMatcher,
     ReferenceContext,
     RegistryCertainty,
+    ReleaseStatus,
     Remediation,
     Rule,
     RuleEvent,
@@ -111,6 +114,7 @@ class RegistryManifest:
     release: str
     rule_paths: tuple[PurePosixPath, ...]
     retired_ids: tuple[str, ...]
+    release_path: PurePosixPath | None
 
 
 def _mapping(value: object, context: str) -> Mapping[str, object]:
@@ -247,7 +251,7 @@ def parse_manifest(data: object, context: str = "index.yaml") -> RegistryManifes
         manifest,
         context,
         required=frozenset({"schema_version", "release", "rules"}),
-        optional=frozenset({"retired_ids"}),
+        optional=frozenset({"releases", "retired_ids"}),
     )
     _schema_version(manifest["schema_version"], context)
     raw_paths = _sequence(manifest["rules"], f"{context}.rules")
@@ -274,7 +278,95 @@ def parse_manifest(data: object, context: str = "index.yaml") -> RegistryManifes
         release=_string(manifest["release"], f"{context}.release"),
         rule_paths=paths,
         retired_ids=retired_ids,
+        release_path=(
+            _safe_rule_path(manifest["releases"], f"{context}.releases")
+            if "releases" in manifest
+            else None
+        ),
     )
+
+
+def _date(value: object, context: str) -> str:
+    text = _string(value, context)
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError as error:
+        message = f"{context} must be an ISO 8601 calendar date"
+        raise RegistryError(message) from error
+    if parsed.isoformat() != text:
+        message = f"{context} must use canonical YYYY-MM-DD form"
+        raise RegistryError(message)
+    return text
+
+
+def parse_release_metadata(
+    data: object,
+    context: str = "releases.yaml",
+) -> tuple[PythonRelease, ...]:
+    """Validate strict informative Python release metadata."""
+    document = _mapping(data, context)
+    _fields(
+        document,
+        context,
+        required=frozenset({"schema_version", "releases"}),
+    )
+    _schema_version(document["schema_version"], context)
+    raw_releases = _sequence(document["releases"], f"{context}.releases")
+    if not raw_releases:
+        message = f"{context}.releases must not be empty"
+        raise RegistryError(message)
+
+    releases: list[PythonRelease] = []
+    for index, value in enumerate(raw_releases):
+        release_context = f"{context}.releases[{index}]"
+        release = _mapping(value, release_context)
+        _fields(
+            release,
+            release_context,
+            required=frozenset({"python", "status"}),
+            optional=frozenset({"expected_final_on", "released_on", "source"}),
+        )
+        try:
+            python = PythonMinor.parse(
+                _string(release["python"], f"{release_context}.python")
+            )
+        except InvalidPythonMinorError as error:
+            message = f"{release_context}.python must be a Python minor such as '3.13'"
+            raise RegistryError(message) from error
+        releases.append(
+            PythonRelease(
+                python=python,
+                status=_enum_value(
+                    release["status"],
+                    ReleaseStatus,
+                    f"{release_context}.status",
+                ),
+                released_on=(
+                    _date(release["released_on"], f"{release_context}.released_on")
+                    if "released_on" in release
+                    else None
+                ),
+                expected_final_on=(
+                    _date(
+                        release["expected_final_on"],
+                        f"{release_context}.expected_final_on",
+                    )
+                    if "expected_final_on" in release
+                    else None
+                ),
+                source=(
+                    _https_url(release["source"], f"{release_context}.source")
+                    if "source" in release
+                    else None
+                ),
+            )
+        )
+    if any(
+        current.python >= following.python for current, following in pairwise(releases)
+    ):
+        message = f"{context}.releases must be strictly ordered by Python version"
+        raise RegistryError(message)
+    return tuple(releases)
 
 
 def _parse_scope(
@@ -930,6 +1022,10 @@ def registry_index_json_schema() -> JsonSchema:
                 },
                 "type": "array",
                 "uniqueItems": True,
+            },
+            "releases": {
+                "pattern": _json_schema_exact_pattern(_RULE_PATH_PATTERN),
+                "type": "string",
             },
             "rules": {
                 "items": {

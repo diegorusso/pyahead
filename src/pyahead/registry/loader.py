@@ -15,10 +15,11 @@ from typing import IO, Protocol, TypeAlias, cast
 
 import yaml
 
-from pyahead.model import Registry, Rule
+from pyahead.model import PythonRelease, Registry, Rule
 from pyahead.registry.schema import (
     RegistryError,
     parse_manifest,
+    parse_release_metadata,
     parse_rule,
 )
 
@@ -433,6 +434,19 @@ def load_registry(source: Path | None = None) -> Registry:
     )
     manifest = parse_manifest(manifest_data, manifest_path.as_posix())
     contents: dict[PurePosixPath, object] = {manifest_path: manifest_data}
+    releases: tuple[PythonRelease, ...]
+    if manifest.release_path is None:
+        releases = ()
+    else:
+        release_data = _load_mapping(
+            files.read_text(manifest.release_path),
+            manifest.release_path.as_posix(),
+        )
+        contents[manifest.release_path] = release_data
+        releases = parse_release_metadata(
+            release_data,
+            manifest.release_path.as_posix(),
+        )
     identities: dict[str, str] = {}
     rules: list[Rule] = []
     for path in manifest.rule_paths:
@@ -452,4 +466,5 @@ def load_registry(source: Path | None = None) -> Registry:
         revision=_registry_digest(contents),
         retired_ids=manifest.retired_ids,
         rules=tuple(rules),
+        releases=releases,
     )
