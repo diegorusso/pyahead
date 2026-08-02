@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0091
+title: "typing.ByteString is deprecated"
+summary: >-
+  typing.ByteString is deprecated since Python 3.9. Its scheduled Python 3.17
+  removal is outside this registry's supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime, typing]
+
+subject:
+  kind: class
+  name: typing.ByteString
+
+timeline:
+  - event: deprecated
+    python: "3.9"
+    certainty: released
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: typing.ByteString
+
+remediation:
+  summary: >-
+    Use bytes or collections.abc.Buffer according to the required semantics.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-17"
+  automation: null
+
+sources:
+  - id: python-deprecations
+    title: "Python deprecation index — Pending removal in Python 3.17"
+    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-17"
+
+tags: [stdlib, scheduled-removal, typing, outside-window]

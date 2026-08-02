@@ -348,7 +348,10 @@ def _project_requires_python(root: Path) -> str | None:
 
 def _registry_versions(registry: Registry) -> tuple[PythonMinor, ...]:
     versions = {release.python for release in registry.releases}
-    versions.update(event.python for rule in registry.rules for event in rule.events)
+    if not versions:
+        versions.update(
+            event.python for rule in registry.rules for event in rule.events
+        )
     if not versions:
         return ()
     first = min(versions)

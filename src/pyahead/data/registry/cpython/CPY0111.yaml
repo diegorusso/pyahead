@@ -1,0 +1,40 @@
+schema_version: 1
+id: CPY0111
+title: "pdb.Pdb.curframe_locals is deprecated"
+summary: >-
+  The undocumented pdb.Pdb.curframe_locals property is deprecated in Python
+  3.14 without a published removal version; exact class references are detected.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: pdb.Pdb.curframe_locals
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: pdb.Pdb.curframe_locals
+
+remediation:
+  summary: Read pdb.Pdb.curframe.f_locals when implementing a derived debugger.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#pdb"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pdb"
+
+tags: [stdlib, unscheduled-removal, pdb, partial]

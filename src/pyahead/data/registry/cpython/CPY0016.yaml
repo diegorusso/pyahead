@@ -1,0 +1,53 @@
+schema_version: 1
+id: CPY0016
+title: "The smtpd module is deprecated and removed"
+summary: >-
+  PEP 594 records smtpd deprecation messages in Python 3.4.7, 3.5.4, and
+  3.6.1; the standard-library module is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: smtpd
+
+timeline:
+  - event: deprecated
+    python: "3.4"
+    certainty: released
+    source: pep-0594
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: module-import
+    module: smtpd
+  - kind: literal-dynamic-import
+    module: smtpd
+    confidence: medium
+
+remediation:
+  summary: >-
+    Remove the dependency on smtpd. Consult PEP 594 for the
+    module-specific alternatives and migration guidance.
+  documentation_url: "https://peps.python.org/pep-0594/"
+  automation: null
+
+sources:
+  - id: pep-0594
+    title: "PEP 594 — Removing dead batteries from the standard library"
+    url: "https://peps.python.org/pep-0594/"
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, module-removal, pep-594]

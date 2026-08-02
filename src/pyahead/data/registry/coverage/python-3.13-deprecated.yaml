@@ -1,0 +1,129 @@
+schema_version: 1
+source:
+  id: python-3.13-deprecated
+  title: "What's New in Python 3.13 — New Deprecations"
+  url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
+  checked_on: "2026-08-02"
+
+source_keys:
+  - function-code-type-mismatch
+  - array-u-type-code
+  - ctypes-setpointertype
+  - ctypes-array
+  - decimal-n-format
+  - dis-have-argument
+  - gettext-noninteger-plurals
+  - glob-glob0-glob1
+  - http-server-cgi-handler
+  - http-server-cgi-command-flag
+  - mimetypes-guess-type-file-path
+  - re-positional-optional-arguments
+  - pathlib-purepath-is-reserved
+  - platform-java-ver
+  - pydoc-ispackage
+  - sqlite3-connect-positional
+  - sqlite3-create-function-keywords
+  - sqlite3-callback-keywords
+  - sys-enablelegacywindowsfsencoding
+  - tarfile-tarfile
+  - traceback-exc-type
+  - typing-namedtuple-keyword-fields
+  - typing-empty-functional-forms
+  - typing-no-type-check-decorator
+  - typing-anystr
+  - wave-marker-methods
+  - cpython-c-api-deprecations
+
+entries:
+  - source_key: function-code-type-mismatch
+    disposition: not-statically-detectable
+    note: Proving compatibility of assigned code-object and function runtime types requires type inference.
+  - source_key: array-u-type-code
+    disposition: implemented
+    rules: [CPY0097]
+  - source_key: ctypes-setpointertype
+    disposition: duplicate
+    rules: [CPY0050]
+    note: The exact function is represented by CPY0050.
+  - source_key: ctypes-array
+    disposition: implemented
+    rules: [CPY0051]
+  - source_key: decimal-n-format
+    disposition: not-statically-detectable
+    note: Format-string semantic matching is outside the closed matcher schema.
+  - source_key: dis-have-argument
+    disposition: implemented
+    rules: [CPY0098]
+  - source_key: gettext-noninteger-plurals
+    disposition: not-statically-detectable
+    note: Determining the runtime numeric type passed to plural-selection APIs requires type inference.
+  - source_key: glob-glob0-glob1
+    disposition: implemented
+    rules: [CPY0049]
+  - source_key: http-server-cgi-handler
+    disposition: duplicate
+    rules: [CPY0054]
+    note: The exact handler class is represented by CPY0054.
+  - source_key: http-server-cgi-command-flag
+    disposition: not-applicable
+    note: Command-line invocations are outside Python-source matching.
+  - source_key: mimetypes-guess-type-file-path
+    disposition: not-statically-detectable
+    note: Distinguishing a URL from an arbitrary file-path argument requires value semantics beyond literal equality.
+  - source_key: re-positional-optional-arguments
+    disposition: implemented
+    rules: [CPY0100]
+  - source_key: pathlib-purepath-is-reserved
+    disposition: duplicate
+    rules: [CPY0055]
+    note: Exact class-qualified references are represented by CPY0055.
+  - source_key: platform-java-ver
+    disposition: duplicate
+    rules: [CPY0052]
+    note: The exact function is represented by CPY0052.
+  - source_key: pydoc-ispackage
+    disposition: implemented
+    rules: [CPY0099]
+  - source_key: sqlite3-connect-positional
+    disposition: implemented
+    rules: [CPY0101]
+  - source_key: sqlite3-create-function-keywords
+    disposition: partial
+    rules: [CPY0101]
+    note: Explicit class-qualified calls are detected; arbitrary Connection receiver types are outside the static alpha.
+  - source_key: sqlite3-callback-keywords
+    disposition: partial
+    rules: [CPY0101]
+    note: Explicit class-qualified calls are detected; arbitrary Connection receiver types are outside the static alpha.
+  - source_key: sys-enablelegacywindowsfsencoding
+    disposition: implemented
+    rules: [CPY0102]
+  - source_key: tarfile-tarfile
+    disposition: partial
+    rules: [CPY0063]
+    note: Exact TarFile-qualified references are detected; arbitrary TarFile receiver types are outside the static alpha.
+  - source_key: traceback-exc-type
+    disposition: partial
+    rules: [CPY0103]
+    note: Exact class-qualified references are detected; arbitrary TracebackException receivers require type inference.
+  - source_key: typing-namedtuple-keyword-fields
+    disposition: partial
+    rules: [CPY0059]
+    note: Explicit keyword-field forms are detected; expanded keyword mappings remain unknown.
+  - source_key: typing-empty-functional-forms
+    disposition: implemented
+    rules: [CPY0059, CPY0060]
+  - source_key: typing-no-type-check-decorator
+    disposition: duplicate
+    rules: [CPY0053]
+    note: The exact decorator is represented by CPY0053.
+  - source_key: typing-anystr
+    disposition: implemented
+    rules: [CPY0104]
+  - source_key: wave-marker-methods
+    disposition: partial
+    rules: [CPY0056]
+    note: Exact class-qualified references are detected; arbitrary wave reader and writer receivers require type inference.
+  - source_key: cpython-c-api-deprecations
+    disposition: c-api-roadmap
+    note: C symbols and headers are reserved for the separately designed C API roadmap.

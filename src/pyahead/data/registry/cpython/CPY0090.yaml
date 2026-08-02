@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0090
+title: "sysconfig.expand_makefile_vars is scheduled for removal"
+summary: >-
+  sysconfig.expand_makefile_vars is deprecated in Python 3.14 and scheduled
+  for removal in Python 3.16.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: sysconfig.expand_makefile_vars
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-deprecations
+  - event: removed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: sysconfig.expand_makefile_vars
+
+remediation:
+  summary: >-
+    Stop using this undocumented helper and use supported sysconfig APIs.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+  automation: null
+
+sources:
+  - id: python-deprecations
+    title: "Python deprecation index — Pending removal in Python 3.16"
+    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+
+tags: [stdlib, scheduled-removal, sysconfig]

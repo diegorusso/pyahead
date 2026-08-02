@@ -1,0 +1,57 @@
+schema_version: 1
+id: CPY0072
+title: "Legacy configparser APIs are removed"
+summary: >-
+  configparser.SafeConfigParser, ConfigParser.readfp, and the
+  ParsingError.filename and MissingSectionHeaderError.filename attributes, and
+  the ParsingError filename argument, are removed in Python 3.12; method and
+  property matching is class-qualified.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: configparser.SafeConfigParser
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: configparser.SafeConfigParser
+  - kind: qualified-reference
+    qualified_name: configparser.ConfigParser.readfp
+  - kind: qualified-reference
+    qualified_name: configparser.RawConfigParser.readfp
+  - kind: qualified-reference
+    qualified_name: configparser.ParsingError.filename
+  - kind: qualified-reference
+    qualified_name: configparser.MissingSectionHeaderError.filename
+  - kind: call-shape
+    qualified_name: configparser.ParsingError
+    min_positional_args: 2
+  - kind: call-shape
+    qualified_name: configparser.ParsingError
+    required_keywords: [filename]
+
+remediation:
+  summary: >-
+    Use ConfigParser, ConfigParser.read_file, and supported ParsingError attributes as directed by the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, configparser, partial]

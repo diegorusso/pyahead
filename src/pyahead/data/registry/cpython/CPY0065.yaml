@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0065
+title: "Legacy ast.Constant value aliases are removed"
+summary: >-
+  The ast.Constant.n and ast.Constant.s aliases are removed in Python 3.14; PyAhead matches class-qualified references.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: ast.Constant.n
+
+timeline:
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ast.Constant.n
+  - kind: qualified-reference
+    qualified_name: ast.Constant.s
+
+remediation:
+  summary: >-
+    Use ast.Constant.value as directed by the linked AST migration notes.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, api-removal, ast, partial]
+

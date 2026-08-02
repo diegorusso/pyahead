@@ -89,6 +89,7 @@ from pyahead.model import (
     BaselineStatus,
     BuiltinPatternMatcher,
     CallShapeMatcher,
+    ChangeEventKind,
     ConfigurationError,
     Diagnostic,
     DiagnosticCategory,
@@ -759,7 +760,10 @@ class _MatcherVisitor(cst.CSTVisitor):
                         binding,
                         node,
                         MatchConfidence.HIGH,
-                        (("pattern", pattern.value),),
+                        (
+                            ("pattern", pattern.value),
+                            ("resolution", "builtin-pattern"),
+                        ),
                     )
 
 
@@ -1229,7 +1233,10 @@ def _findings(
         if not states:
             continue
         removal_unscheduled = rule.removal_unscheduled
-        if removal_unscheduled and not context.show_unscheduled:
+        deprecation_only = all(
+            event.kind is ChangeEventKind.DEPRECATED for event in rule.events
+        )
+        if removal_unscheduled and deprecation_only and not context.show_unscheduled:
             continue
         impact = max(
             (Impact(state.state.value) for state in states),

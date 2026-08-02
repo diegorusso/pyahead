@@ -8,10 +8,10 @@ releases. The complete product and technical contract is in
 
 ## Status
 
-The repository is at milestone M4: project configuration and CI reports. It can
-scan Python source with the bundled `cgi` rule and render deterministic grouped
-text, JSON, or SARIF 2.1.0 with authoritative sources and one multi-state
-finding per matched construct:
+The repository is at milestone M5: CPython registry curation. It can scan
+Python source with the bundled, source-linked CPython rules and render
+deterministic grouped text, JSON, or SARIF 2.1.0 with one multi-state finding
+per matched construct:
 
 ```console
 pyahead check . --baseline-python 3.11 --horizon-python 3.13
@@ -64,13 +64,22 @@ listed, and explained without scanning a repository:
 
 ```console
 pyahead registry validate
+pyahead registry coverage
 pyahead registry list
 pyahead explain CPY0001
 ```
 
-M4 does not yet broaden the curated CPython registry, execute target code,
-access the network while scanning, or provide a hosted service. Version
-helpers, user-defined constants, and general control flow outside the
+The M5 snapshot classifies selected entries from PEP 594, the Python 3.12,
+3.13, and 3.14 removal notes, and the centralized deprecation index. Coverage
+manifests distinguish implemented rules from partial receiver-type patterns,
+runtime-only evidence, C API roadmap work, duplicates, and entries outside the
+Python-source alpha. `registry coverage` reports these classifications and
+fails validation when a rule reference is missing or a curated rule has no
+implemented or partial source entry.
+
+M5 does not execute target code, access the network while scanning, infer
+general receiver types, analyse C extensions, or provide a hosted service.
+Version helpers, user-defined constants, and general control flow outside the
 documented lexical guard grammar remain unknown. Those capabilities belong to
 later milestones in the design.
 

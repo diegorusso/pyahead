@@ -1,0 +1,1 @@
+value = "gzip.GzipFile.filename"

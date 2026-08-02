@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0024
+title: "The imp module is removed"
+summary: >-
+  The imp module is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: imp
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: module-import
+    module: imp
+  - kind: literal-dynamic-import
+    module: imp
+    confidence: medium
+
+remediation:
+  summary: >-
+    Replace the required imp functionality using the supported importlib APIs documented by CPython.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, module-removal]
+

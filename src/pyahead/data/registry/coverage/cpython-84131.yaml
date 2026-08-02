@@ -1,0 +1,16 @@
+schema_version: 1
+source:
+  id: cpython-84131
+  title: "CPython issue 84131 — remove pathlib.Path.link_to"
+  url: "https://github.com/python/cpython/issues/84131"
+  checked_on: "2026-08-02"
+
+# This narrowly scoped CPython issue tracks one removal.
+source_keys:
+  - pathlib-path-link-to
+
+entries:
+  - source_key: pathlib-path-link-to
+    disposition: partial
+    rules: [CPY0071]
+    note: Exact Path, PosixPath, and WindowsPath class-qualified references are detected; arbitrary Path receivers are not inferred.

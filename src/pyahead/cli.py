@@ -15,11 +15,13 @@ from pyahead.model import (
     ConfigurationError,
     ExitCode,
     PerFileIgnore,
+    Registry,
     ScanReport,
 )
 from pyahead.output import OutputError, write_text_atomic
 from pyahead.registry import RegistryError, load_registry
 from pyahead.registry.presentation import (
+    render_registry_coverage,
     render_registry_list,
     render_rule_explanation,
 )
@@ -217,6 +219,10 @@ def _build_parser() -> ArgumentParser:
         "list", help="list canonical registry rules"
     )
     _registry_source_options(registry_list)
+    registry_coverage = registry_subparsers.add_parser(
+        "coverage", help="report authoritative-source coverage"
+    )
+    _registry_source_options(registry_coverage)
 
     explain = subparsers.add_parser("explain", help="explain one registry rule")
     explain.add_argument("rule_id", metavar="RULE_ID")
@@ -452,6 +458,13 @@ def _selected_registry_source(arguments: Namespace) -> Path | None:
     return option if option is not None else path
 
 
+def _render_registry_coverage(registry: Registry) -> str:
+    if not registry.coverage:
+        message = "registry declares no authoritative-source coverage manifests"
+        raise RegistryError(message)
+    return render_registry_coverage(registry)
+
+
 def _run_registry(arguments: Namespace) -> int:
     try:
         registry = load_registry(_selected_registry_source(arguments))
@@ -463,6 +476,8 @@ def _run_registry(arguments: Namespace) -> int:
             )
         elif arguments.registry_command == "list":
             rendered = render_registry_list(registry)
+        elif arguments.registry_command == "coverage":
+            rendered = _render_registry_coverage(registry)
         else:
             return int(ExitCode.INTERNAL_ERROR)
     except RegistryError as error:

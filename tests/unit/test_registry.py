@@ -29,6 +29,8 @@ from pyahead.registry.schema import (
 )
 
 _SHA256_HEX_LENGTH = 64
+_CURATED_RULE_COUNT = 133
+_COVERAGE_SOURCE_COUNT = 13
 _BUNDLED_REGISTRY = Path(__file__).parents[2] / "src/pyahead/data/registry"
 
 
@@ -57,12 +59,27 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
 
     assert registry.release == "2026.07.31"
     assert len(registry.revision) == _SHA256_HEX_LENGTH
-    assert len(registry.rules) == 1
-    assert [release.python.minor for release in registry.releases] == [14, 15]
+    assert len(registry.rules) == _CURATED_RULE_COUNT
+    assert [release.python.minor for release in registry.releases] == [
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+    ]
     assert [release.status for release in registry.releases] == [
+        ReleaseStatus.SECURITY,
+        ReleaseStatus.SECURITY,
+        ReleaseStatus.STABLE,
         ReleaseStatus.STABLE,
         ReleaseStatus.PRERELEASE,
+        ReleaseStatus.PLANNED,
     ]
+    assert len(registry.coverage) == _COVERAGE_SOURCE_COUNT
+    python_313 = registry.releases[2]
+    assert python_313.source == "https://peps.python.org/pep-0719/"
+    assert python_313.status is ReleaseStatus.STABLE
     rule = registry.rules[0]
     assert rule.id == "CPY0001"
     assert rule.subject == "cgi"
@@ -85,10 +102,15 @@ def test_registry_revision_is_content_addressed(
     """Changing registry content changes its stable revision digest."""
     registry_dir = tmp_path / "registry"
     (registry_dir / "cpython").mkdir(parents=True)
-    index = _BUNDLED_REGISTRY / "index.yaml"
     rule = _BUNDLED_REGISTRY / "cpython/CPY0001.yaml"
     releases = _BUNDLED_REGISTRY / "releases.yaml"
-    (registry_dir / "index.yaml").write_text(index.read_text(encoding="utf-8"))
+    (registry_dir / "index.yaml").write_text(
+        "schema_version: 1\n"
+        "release: test\n"
+        "releases: releases.yaml\n"
+        "rules: [cpython/CPY0001.yaml]\n",
+        encoding="utf-8",
+    )
     (registry_dir / "releases.yaml").write_text(
         releases.read_text(encoding="utf-8"), encoding="utf-8"
     )
@@ -119,11 +141,14 @@ def test_release_metadata_changes_the_registry_revision(tmp_path: Path) -> None:
     """Release presentation facts participate in content identity."""
     registry_dir = tmp_path / "registry"
     (registry_dir / "cpython").mkdir(parents=True)
-    for relative_path in (
-        Path("index.yaml"),
-        Path("releases.yaml"),
-        Path("cpython/CPY0001.yaml"),
-    ):
+    (registry_dir / "index.yaml").write_text(
+        "schema_version: 1\n"
+        "release: test\n"
+        "releases: releases.yaml\n"
+        "rules: [cpython/CPY0001.yaml]\n",
+        encoding="utf-8",
+    )
+    for relative_path in (Path("releases.yaml"), Path("cpython/CPY0001.yaml")):
         target = registry_dir / relative_path
         target.write_text(
             (_BUNDLED_REGISTRY / relative_path).read_text(encoding="utf-8"),

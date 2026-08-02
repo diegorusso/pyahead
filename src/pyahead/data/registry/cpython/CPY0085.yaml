@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0085
+title: "Fraction _normalize is removed"
+summary: >-
+  The private _normalize parameter of fractions.Fraction is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: fractions.Fraction
+
+timeline:
+  - event: signature_changed
+    python: "3.12"
+    certainty: released
+    source: cpython-101773
+
+impact:
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: fractions.Fraction
+    required_keywords: [_normalize]
+
+remediation:
+  summary: >-
+    Remove the private keyword and construct fractions using documented Fraction arguments.
+  documentation_url: "https://github.com/python/cpython/issues/101773"
+  automation: null
+
+sources:
+  - id: cpython-101773
+    title: "CPython issue 101773 — replace Fraction's private _normalize path"
+    url: "https://github.com/python/cpython/issues/101773"
+
+tags: [stdlib, signature-change, fractions]

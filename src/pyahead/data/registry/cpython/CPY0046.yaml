@@ -1,0 +1,50 @@
+schema_version: 1
+id: CPY0046
+title: "email.utils.localtime isdst is removed"
+summary: >-
+  The isdst parameter of email.utils.localtime is deprecated in Python 3.12 and removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: email.utils.localtime
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.14-removed
+  - event: signature_changed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: email.utils.localtime
+    min_positional_args: 2
+  - kind: call-shape
+    qualified_name: email.utils.localtime
+    required_keywords: [isdst]
+
+remediation:
+  summary: >-
+    Call email.utils.localtime without the removed isdst parameter.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, signature-change, email]
+

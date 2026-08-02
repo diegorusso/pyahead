@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0093
+title: "Naive UTC datetime constructors are deprecated"
+summary: >-
+  datetime.datetime.utcnow and datetime.datetime.utcfromtimestamp are
+  deprecated in Python 3.12 without a published removal version.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: datetime.datetime.utcnow
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.12-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: datetime.datetime.utcnow
+  - kind: qualified-reference
+    qualified_name: datetime.datetime.utcfromtimestamp
+
+remediation:
+  summary: >-
+    Construct timezone-aware UTC values with datetime.now or
+    datetime.fromtimestamp and datetime.UTC.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#datetime"
+  automation: null
+
+sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#datetime"
+
+tags: [stdlib, unscheduled-removal, datetime]

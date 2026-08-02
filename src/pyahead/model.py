@@ -131,6 +131,18 @@ class ReleaseStatus(StrEnum):
     PLANNED = "planned"
 
 
+class CoverageDisposition(StrEnum):
+    """Closed classification set for one authoritative-source entry."""
+
+    IMPLEMENTED = "implemented"
+    PARTIAL = "partial"
+    NOT_STATICALLY_DETECTABLE = "not-statically-detectable"
+    DYNAMIC_EVIDENCE_ROADMAP = "dynamic-evidence-roadmap"
+    C_API_ROADMAP = "c-api-roadmap"
+    DUPLICATE = "duplicate"
+    NOT_APPLICABLE = "not-applicable"
+
+
 class SubjectKind(StrEnum):
     """Kinds of source subjects a rule may describe."""
 
@@ -307,6 +319,8 @@ class CallShapeMatcher:
     qualified_name: str
     min_positional_args: int | None
     max_positional_args: int | None
+    min_keyword_args: int | None
+    max_keyword_args: int | None
     required_keywords: tuple[str, ...]
     forbidden_keywords: tuple[str, ...]
     literal_arguments: tuple[LiteralArgumentPredicate, ...]
@@ -358,6 +372,35 @@ class PythonRelease:
     released_on: str | None
     expected_final_on: str | None
     source: str | None
+
+
+@dataclass(frozen=True)
+class CoverageSource:
+    """One authoritative page selected for explicit registry curation."""
+
+    id: str
+    title: str
+    url: str
+    checked_on: str
+
+
+@dataclass(frozen=True)
+class CoverageEntry:
+    """The reviewed disposition of one stable entry on a selected source page."""
+
+    source_key: str
+    disposition: CoverageDisposition
+    rules: tuple[str, ...]
+    note: str | None
+
+
+@dataclass(frozen=True)
+class CoverageManifest:
+    """Complete classifications authored for one selected source page."""
+
+    source: CoverageSource
+    source_keys: tuple[str, ...]
+    entries: tuple[CoverageEntry, ...]
 
 
 @dataclass(frozen=True)
@@ -442,6 +485,7 @@ class Registry:
     retired_ids: tuple[str, ...]
     rules: tuple[Rule, ...]
     releases: tuple[PythonRelease, ...] = ()
+    coverage: tuple[CoverageManifest, ...] = ()
 
     def find_rule(self, identifier: str) -> Rule | None:
         """Resolve a canonical rule ID or an explicitly declared alias."""

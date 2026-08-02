@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0068
+title: "GzipFile.filename is removed"
+summary: >-
+  gzip.GzipFile.filename is removed in Python 3.12; PyAhead matches class-qualified references.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: gzip.GzipFile.filename
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: gzip.GzipFile.filename
+
+remediation:
+  summary: >-
+    Use gzip.GzipFile.name as directed by the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, gzip, partial]
+

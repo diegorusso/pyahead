@@ -1,0 +1,52 @@
+schema_version: 1
+id: CPY0004
+title: "The asyncore module is deprecated and removed"
+summary: >-
+  The asyncore standard-library module was deprecated in Python 3.6 and removed in Python 3.12 under PEP 594.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: asyncore
+
+timeline:
+  - event: deprecated
+    python: "3.6"
+    certainty: released
+    source: pep-0594
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: module-import
+    module: asyncore
+  - kind: literal-dynamic-import
+    module: asyncore
+    confidence: medium
+
+remediation:
+  summary: >-
+    Remove the dependency on asyncore. Consult PEP 594 for the
+    module-specific alternatives and migration guidance.
+  documentation_url: "https://peps.python.org/pep-0594/"
+  automation: null
+
+sources:
+  - id: pep-0594
+    title: "PEP 594 — Removing dead batteries from the standard library"
+    url: "https://peps.python.org/pep-0594/"
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, module-removal, pep-594]

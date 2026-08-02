@@ -97,12 +97,10 @@ def _positional_shape_matches(
     arguments: CallArguments,
     matcher: CallShapeMatcher,
 ) -> bool:
-    positional_count_is_needed = (
-        matcher.min_positional_args is not None
-        or matcher.max_positional_args is not None
-        or any(item.position is not None for item in matcher.literal_arguments)
+    expansion_makes_shape_unknown = matcher.max_positional_args is not None or any(
+        item.position is not None for item in matcher.literal_arguments
     )
-    if arguments.has_starred_positional and positional_count_is_needed:
+    if arguments.has_starred_positional and expansion_makes_shape_unknown:
         return False
     count = len(arguments.positional)
     return not (
@@ -123,7 +121,18 @@ def _keyword_shape_matches(
 ) -> bool:
     keyword_names = set(arguments.keywords)
     return (
-        set(matcher.required_keywords).issubset(keyword_names)
+        not (
+            matcher.min_keyword_args is not None
+            and len(keyword_names) < matcher.min_keyword_args
+        )
+        and not (
+            matcher.max_keyword_args is not None
+            and len(keyword_names) > matcher.max_keyword_args
+        )
+        and not (
+            arguments.has_starred_keywords and matcher.max_keyword_args is not None
+        )
+        and set(matcher.required_keywords).issubset(keyword_names)
         and not set(matcher.forbidden_keywords).intersection(keyword_names)
         and not (arguments.has_starred_keywords and matcher.forbidden_keywords)
     )

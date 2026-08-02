@@ -1,0 +1,52 @@
+schema_version: 1
+id: CPY0036
+title: "turtle.RawTurtle.settiltangle is removed"
+summary: >-
+  The RawTurtle.settiltangle method is deprecated in Python 3.11 and removed
+  in Python 3.13; PyAhead matches its public turtle class aliases and subclasses.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: turtle.RawTurtle.settiltangle
+
+timeline:
+  - event: deprecated
+    python: "3.11"
+    certainty: released
+    source: python-3.13-removed
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: turtle.RawTurtle.settiltangle
+  - kind: qualified-reference
+    qualified_name: turtle.RawPen.settiltangle
+  - kind: qualified-reference
+    qualified_name: turtle.Turtle.settiltangle
+  - kind: qualified-reference
+    qualified_name: turtle.Pen.settiltangle
+
+remediation:
+  summary: >-
+    Remove the obsolete method use and consult the supported turtle APIs in the linked documentation.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, api-removal, partial]

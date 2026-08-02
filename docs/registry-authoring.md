@@ -7,11 +7,12 @@ Python callable paths, unresolved sources, and inconsistent timelines fail
 validation.
 
 The generated structural schemas are
-[`schema/registry-index-v1.json`](schema/registry-index-v1.json) and
-[`schema/registry-rule-v1.json`](schema/registry-rule-v1.json). Runtime
-validation also enforces cross-file and ordered-timeline invariants that JSON
-Schema cannot express concisely. Regenerate the checked-in schemas after an
-intentional schema change:
+[`schema/registry-index-v1.json`](schema/registry-index-v1.json),
+[`schema/registry-rule-v1.json`](schema/registry-rule-v1.json), and
+[`schema/registry-coverage-v1.json`](schema/registry-coverage-v1.json).
+Runtime validation also enforces cross-file, coverage-ownership, and
+ordered-timeline invariants that JSON Schema cannot express concisely.
+Regenerate the checked-in schemas after an intentional schema change:
 
 ```console
 uv run python -c "from pathlib import Path; from pyahead.registry.schema import write_json_schemas; write_json_schemas(Path('docs/schema'))"
@@ -21,6 +22,7 @@ Then validate the complete bundled snapshot:
 
 ```console
 uv run pyahead registry validate
+uv run pyahead registry coverage
 uv run pyahead registry list
 uv run pyahead explain CPY0001
 ```
@@ -46,6 +48,8 @@ releases: releases.yaml
 retired_ids: [CPY0099]
 rules:
   - cpython/CPY0001.yaml
+coverage:
+  - coverage/pep-0594.yaml
 ```
 
 CPython rule IDs are `CPY` followed by four digits. A canonical ID must be
@@ -79,6 +83,62 @@ statuses are `eol`, `security`, `stable`, `prerelease`, and `planned`; dates use
 canonical `YYYY-MM-DD` form, and an optional source is a direct HTTPS URL.
 These facts are informative presentation data and never alter detection
 semantics.
+
+## Coverage manifests
+
+Every selected authoritative source has one file listed by `index.yaml` under
+`coverage`. The source identity, direct HTTPS URL, and review date are explicit,
+and each source entry has exactly one closed disposition:
+
+```yaml
+schema_version: 1
+source:
+  id: python-deprecations
+  title: "Python deprecation index"
+  url: "https://docs.python.org/3/deprecations/index.html"
+  checked_on: "2026-07-31"
+
+source_keys:
+  - pending-3.16-asyncio-event-loop-policy
+  - pending-3.16-tarfile-tarfile
+  - pending-c-api-entries
+
+entries:
+  - source_key: pending-3.16-asyncio-event-loop-policy
+    disposition: implemented
+    rules: [CPY0042]
+
+  - source_key: pending-3.16-tarfile-tarfile
+    disposition: partial
+    rules: [CPY0063]
+    note: >-
+      Exact class-qualified references are detected; arbitrary receiver types
+      are outside the static alpha.
+
+  - source_key: pending-c-api-entries
+    disposition: c-api-roadmap
+    note: >-
+      C symbols are reserved for the separately designed C API roadmap.
+```
+
+Allowed dispositions are `implemented`, `partial`,
+`not-statically-detectable`, `dynamic-evidence-roadmap`, `c-api-roadmap`,
+`duplicate`, and `not-applicable`. Implemented, partial, and duplicate entries
+must reference canonical rules. Every other disposition forbids rule references
+and requires a note; partial and duplicate entries require both rules and a
+note. `source_keys` is the independently audited census for the selected page;
+runtime validation requires every census key to have exactly one entry and
+rejects classifications absent from the census. It also rejects duplicate
+source IDs, duplicate source keys, unknown rule IDs, and any canonical rule
+with no implemented or partial source entry. Coverage files participate in the
+registry content digest. The bundled authoritative inventories are additionally
+pinned by independent count-and-digest regression constants, so removing a
+source key together with its entry cannot make the self-consistency check pass.
+
+`registry coverage` requires manifests rather than treating an uncurated custom
+registry as complete. Its disposition counts expose partial and out-of-scope
+work; zero unclassified entries never means that static analysis proves Python
+compatibility.
 
 ## Sources and timelines
 
@@ -139,21 +199,27 @@ Matches only when the exact imported callable is the function of a call:
 
 ```yaml
 - kind: qualified-call
-  qualified_name: locale.getdefaultlocale
+  qualified_name: example.deprecated_function
 ```
 
 ### Call shape
 
 A call shape adds conservative predicates. Positional bounds count only
 ordinary positional arguments. Required and forbidden keywords use explicit
-keyword arguments. A starred expansion prevents a match whenever it makes a
-predicate unknowable.
+keyword arguments. `min_keyword_args` and `max_keyword_args` bound all explicit
+keyword arguments; a maximum of zero proves that no keywords are present.
+Visible arguments can prove positional and keyword minima even when a starred
+expansion is present. A positional maximum or positional-literal location is
+unknown with `*args`; a keyword maximum or forbidden-keyword absence is unknown
+with `**kwargs`.
 
 ```yaml
 - kind: call-shape
   qualified_name: example.open_resource
   min_positional_args: 1
   max_positional_args: 2
+  min_keyword_args: 1
+  max_keyword_args: 1
   required_keywords: [mode]
   forbidden_keywords: [legacy]
   literal_arguments:

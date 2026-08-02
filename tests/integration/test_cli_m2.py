@@ -136,7 +136,7 @@ def test_registry_validate_and_list_use_the_bundled_snapshot(
     assert main(["registry", "validate"]) == int(ExitCode.SUCCESS)
     validated = capsys.readouterr()
     assert validated.out.startswith("Registry 2026.07.31 (")
-    assert validated.out.endswith(": 1 rule valid.\n")
+    assert validated.out.endswith(": 133 rules valid.\n")
     assert validated.err == ""
 
     assert main(["registry", "list"]) == int(ExitCode.SUCCESS)
@@ -144,6 +144,13 @@ def test_registry_validate_and_list_use_the_bundled_snapshot(
     assert "CPY0001  The cgi module is removed" in listed.out
     assert "Matchers: literal-dynamic-import, module-import" in listed.out
     assert listed.err == ""
+
+    assert main(["registry", "coverage"]) == int(ExitCode.SUCCESS)
+    coverage = capsys.readouterr()
+    assert "Sources: 13\n" in coverage.out
+    assert "Rules covered: 133/133\n" in coverage.out
+    assert coverage.out.endswith("Unclassified source entries: 0\n")
+    assert coverage.err == ""
 
 
 def test_explain_works_without_scanning(
@@ -323,7 +330,7 @@ def test_registry_source_forms_and_subcommand_help(
     """A source has one unambiguous spelling and bare registry prints help."""
     assert main(["registry"]) == int(ExitCode.SUCCESS)
     help_output = capsys.readouterr()
-    assert "{validate,list}" in help_output.out
+    assert "{validate,list,coverage}" in help_output.out
 
     assert main(
         [

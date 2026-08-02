@@ -1,9 +1,25 @@
 schema_version: 1
 releases:
+  - python: "3.11"
+    status: security
+    released_on: "2022-10-24"
+    source: "https://peps.python.org/pep-0664/"
+  - python: "3.12"
+    status: security
+    released_on: "2023-10-02"
+    source: "https://peps.python.org/pep-0693/"
+  - python: "3.13"
+    status: stable
+    released_on: "2024-10-07"
+    source: "https://peps.python.org/pep-0719/"
   - python: "3.14"
     status: stable
     released_on: "2025-10-07"
+    source: "https://peps.python.org/pep-0745/"
   - python: "3.15"
     status: prerelease
     expected_final_on: "2026-10-01"
     source: "https://peps.python.org/pep-0790/"
+  - python: "3.16"
+    status: planned
+    source: "https://docs.python.org/3/deprecations/index.html"

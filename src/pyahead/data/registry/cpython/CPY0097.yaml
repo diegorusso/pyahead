@@ -1,0 +1,51 @@
+schema_version: 1
+id: CPY0097
+title: "The array Unicode u type code is scheduled for removal"
+summary: >-
+  The array.array 'u' type code is deprecated at runtime in Python 3.13 and
+  scheduled for removal in Python 3.16; PyAhead detects a literal type code.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: array.array
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: removed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: array.array
+    literal_arguments:
+      - position: 0
+        equals: "u"
+
+remediation:
+  summary: Use the 'w' type code for Unicode characters.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — New Deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#array"
+  - id: python-deprecations
+    title: "Python deprecation index — Pending removal in Python 3.16"
+    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+
+tags: [stdlib, scheduled-removal, array]

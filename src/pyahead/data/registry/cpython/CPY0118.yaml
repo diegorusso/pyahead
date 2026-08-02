@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0118
+title: "SSLContext without a protocol is deprecated"
+summary: >-
+  Constructing ssl.SSLContext without a protocol argument has been deprecated since Python 3.10.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: ssl.SSLContext
+
+timeline:
+  - event: deprecated
+    python: "3.10"
+    certainty: released
+    source: python-3.14-ssl
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: call-shape
+    qualified_name: ssl.SSLContext
+    max_positional_args: 0
+    max_keyword_args: 0
+    forbidden_keywords: [protocol]
+
+remediation:
+  summary: >-
+    Pass ssl.PROTOCOL_TLS_CLIENT or ssl.PROTOCOL_TLS_SERVER explicitly.
+  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.SSLContext"
+  automation: null
+
+sources:
+  - id: python-3.14-ssl
+    title: "Python 3.14 ssl documentation — SSLContext"
+    url: "https://docs.python.org/3.14/library/ssl.html#ssl.SSLContext"
+
+tags: [stdlib, unscheduled-removal, ssl]

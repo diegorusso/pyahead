@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0116
+title: "logging.warn is deprecated"
+summary: >-
+  The logging warn function and methods have been deprecated since Python 3.3.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: logging.warn
+
+timeline:
+  - event: deprecated
+    python: "3.3"
+    certainty: released
+    source: python-3.14-deprecations
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: logging.warn
+  - kind: qualified-reference
+    qualified_name: logging.Logger.warn
+  - kind: qualified-reference
+    qualified_name: logging.LoggerAdapter.warn
+
+remediation:
+  summary: >-
+    Use logging.warning or the corresponding warning method.
+  documentation_url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-future-versions"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecations
+    title: "Python 3.14 deprecation index — logging.warn"
+    url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-future-versions"
+
+tags: [stdlib, unscheduled-removal, logging, partial]

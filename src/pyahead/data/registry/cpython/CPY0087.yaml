@@ -1,0 +1,40 @@
+schema_version: 1
+id: CPY0087
+title: "sys.getdxp is removed"
+summary: >-
+  The build-dependent sys.getdxp function is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: sys.getdxp
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: cpython-97670
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: sys.getdxp
+
+remediation:
+  summary: >-
+    Remove use of the function and consult the linked release notes for supported interpreter statistics mechanisms.
+  documentation_url: "https://github.com/python/cpython/issues/97670"
+  automation: null
+
+sources:
+  - id: cpython-97670
+    title: "CPython issue 97670 — remove sys.getdxp"
+    url: "https://github.com/python/cpython/issues/97670"
+
+tags: [stdlib, api-removal, sys, partial-build-coverage]

@@ -1,7 +1,10 @@
 """Deterministic human-readable registry and rule presentation."""
 
+from collections import Counter
+
 from pyahead.model import (
     CallShapeMatcher,
+    CoverageDisposition,
     LiteralDynamicImportMatcher,
     ModuleImportMatcher,
     QualifiedCallMatcher,
@@ -10,6 +13,63 @@ from pyahead.model import (
     Rule,
     RuleMatcher,
 )
+
+
+def render_registry_coverage(registry: Registry) -> str:
+    """Summarize complete authoritative-source classifications."""
+    entries = tuple(
+        entry for manifest in registry.coverage for entry in manifest.entries
+    )
+    source_keys = tuple(
+        source_key
+        for manifest in registry.coverage
+        for source_key in manifest.source_keys
+    )
+    classified_source_keys = {
+        (manifest.source.id, entry.source_key)
+        for manifest in registry.coverage
+        for entry in manifest.entries
+    }
+    audited_source_keys = {
+        (manifest.source.id, source_key)
+        for manifest in registry.coverage
+        for source_key in manifest.source_keys
+    }
+    unclassified_count = len(audited_source_keys - classified_source_keys)
+    counts = Counter(entry.disposition for entry in entries)
+    covered_rules = {
+        rule_id
+        for entry in entries
+        if entry.disposition
+        in {CoverageDisposition.IMPLEMENTED, CoverageDisposition.PARTIAL}
+        for rule_id in entry.rules
+    }
+    lines = [
+        f"Registry {registry.release} ({registry.revision[:12]}) coverage",
+        f"Sources: {len(registry.coverage)}",
+        f"Source entries: {len(source_keys)}",
+        "",
+    ]
+    for manifest in registry.coverage:
+        lines.append(
+            f"{manifest.source.id}  {len(manifest.entries)}/"
+            f"{len(manifest.source_keys)} entries  "
+            f"checked {manifest.source.checked_on}"
+        )
+        lines.append(f"  {manifest.source.url}")
+    lines.extend(["", "Dispositions:"])
+    lines.extend(
+        f"  {disposition.value}: {counts[disposition]}"
+        for disposition in CoverageDisposition
+    )
+    lines.extend(
+        [
+            "",
+            f"Rules covered: {len(covered_rules)}/{len(registry.rules)}",
+            f"Unclassified source entries: {unclassified_count}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def render_registry_list(registry: Registry) -> str:
@@ -29,6 +89,31 @@ def render_registry_list(registry: Registry) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _call_shape_details(matcher: CallShapeMatcher) -> str:
+    predicates: list[str] = []
+    if matcher.min_positional_args is not None:
+        predicates.append(f"min_positional_args={matcher.min_positional_args}")
+    if matcher.max_positional_args is not None:
+        predicates.append(f"max_positional_args={matcher.max_positional_args}")
+    if matcher.min_keyword_args is not None:
+        predicates.append(f"min_keyword_args={matcher.min_keyword_args}")
+    if matcher.max_keyword_args is not None:
+        predicates.append(f"max_keyword_args={matcher.max_keyword_args}")
+    if matcher.required_keywords:
+        predicates.append(f"required_keywords={','.join(matcher.required_keywords)}")
+    if matcher.forbidden_keywords:
+        predicates.append(f"forbidden_keywords={','.join(matcher.forbidden_keywords)}")
+    predicates.extend(
+        (
+            f"position[{predicate.position}]={predicate.equals!r}"
+            if predicate.position is not None
+            else f"keyword[{predicate.keyword}]={predicate.equals!r}"
+        )
+        for predicate in matcher.literal_arguments
+    )
+    return f"qualified_name={matcher.qualified_name}; {'; '.join(predicates)}"
+
+
 def _matcher_details(matcher: RuleMatcher) -> str:
     if isinstance(matcher, ModuleImportMatcher):
         return f"module={matcher.module}"
@@ -42,28 +127,7 @@ def _matcher_details(matcher: RuleMatcher) -> str:
     if isinstance(matcher, QualifiedCallMatcher):
         return f"qualified_name={matcher.qualified_name}"
     if isinstance(matcher, CallShapeMatcher):
-        predicates: list[str] = []
-        if matcher.min_positional_args is not None:
-            predicates.append(f"min_positional_args={matcher.min_positional_args}")
-        if matcher.max_positional_args is not None:
-            predicates.append(f"max_positional_args={matcher.max_positional_args}")
-        if matcher.required_keywords:
-            predicates.append(
-                f"required_keywords={','.join(matcher.required_keywords)}"
-            )
-        if matcher.forbidden_keywords:
-            predicates.append(
-                f"forbidden_keywords={','.join(matcher.forbidden_keywords)}"
-            )
-        predicates.extend(
-            (
-                f"position[{predicate.position}]={predicate.equals!r}"
-                if predicate.position is not None
-                else f"keyword[{predicate.keyword}]={predicate.equals!r}"
-            )
-            for predicate in matcher.literal_arguments
-        )
-        return f"qualified_name={matcher.qualified_name}; {'; '.join(predicates)}"
+        return _call_shape_details(matcher)
     if isinstance(matcher, LiteralDynamicImportMatcher):
         return f"module={matcher.module}; confidence={matcher.confidence.value}"
     return f"pattern={matcher.pattern.value}"

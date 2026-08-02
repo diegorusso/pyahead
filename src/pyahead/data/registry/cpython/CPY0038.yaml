@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0038
+title: "sqlite3 version metadata is removed"
+summary: >-
+  sqlite3.version and sqlite3.version_info are deprecated in Python 3.12 and removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: sqlite3.version
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.14-removed
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: sqlite3.version
+  - kind: qualified-reference
+    qualified_name: sqlite3.version_info
+
+remediation:
+  summary: >-
+    Remove reliance on the pysqlite package-version attributes; consult the sqlite3 documentation for supported version information.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, api-removal, sqlite]
+

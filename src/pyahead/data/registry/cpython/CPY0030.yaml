@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0030
+title: "configparser.LegacyInterpolation is removed"
+summary: >-
+  configparser.LegacyInterpolation is deprecated in Python 3.11 and removed in Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: configparser.LegacyInterpolation
+
+timeline:
+  - event: deprecated
+    python: "3.11"
+    certainty: released
+    source: python-3.13-removed
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: configparser.LegacyInterpolation
+
+remediation:
+  summary: >-
+    Select a supported configparser interpolation mode described by the linked documentation.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, api-removal, configparser]
+

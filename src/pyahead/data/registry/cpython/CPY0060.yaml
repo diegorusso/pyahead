@@ -1,0 +1,74 @@
+schema_version: 1
+id: CPY0060
+title: "Empty TypedDict functional forms are scheduled to fail"
+summary: >-
+  Omitting the fields argument or passing None to functional typing.TypedDict is deprecated in Python 3.13 and scheduled to become invalid in Python 3.15.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime, typing]
+
+subject:
+  kind: function
+  name: typing.TypedDict
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: signature_changed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: typing.TypedDict
+    min_positional_args: 1
+    max_positional_args: 1
+    max_keyword_args: 0
+  - kind: call-shape
+    qualified_name: typing.TypedDict
+    min_positional_args: 1
+    max_positional_args: 1
+    max_keyword_args: 1
+    required_keywords: [total]
+  - kind: call-shape
+    qualified_name: typing.TypedDict
+    min_positional_args: 2
+    max_positional_args: 2
+    max_keyword_args: 0
+    literal_arguments:
+      - position: 1
+        equals: null
+  - kind: call-shape
+    qualified_name: typing.TypedDict
+    min_positional_args: 2
+    max_positional_args: 2
+    max_keyword_args: 1
+    required_keywords: [total]
+    literal_arguments:
+      - position: 1
+        equals: null
+
+remediation:
+  summary: >-
+    Pass an explicit empty field dictionary or use class syntax as documented by typing.TypedDict.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#typing"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — typing deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#typing"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — typing removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#typing"
+
+tags: [stdlib, signature-change, typing]

@@ -227,6 +227,17 @@ def test_lone_unicode_surrogates_fail_runtime_and_generated_schema(
         {
             "kind": "call-shape",
             "qualified_name": "targetpkg.call",
+            "min_keyword_args": 2,
+            "max_keyword_args": 1,
+        },
+        {
+            "kind": "call-shape",
+            "qualified_name": "targetpkg.call",
+            "min_keyword_args": 0,
+        },
+        {
+            "kind": "call-shape",
+            "qualified_name": "targetpkg.call",
             "required_keywords": ["bad.name"],
         },
         {
@@ -662,6 +673,8 @@ def test_schema_supports_all_event_and_matcher_metadata_for_explanation() -> Non
             "qualified_name": "targetpkg.old",
             "min_positional_args": 1,
             "max_positional_args": 2,
+            "min_keyword_args": 1,
+            "max_keyword_args": 1,
             "required_keywords": ["mode"],
             "forbidden_keywords": ["legacy"],
             "literal_arguments": [
@@ -695,6 +708,8 @@ def test_schema_supports_all_event_and_matcher_metadata_for_explanation() -> Non
     assert "signature_changed; impact=breaking" in explanation
     assert "contexts=decorator,annotation" in explanation
     assert "min_positional_args=1" in explanation
+    assert "min_keyword_args=1" in explanation
+    assert "max_keyword_args=1" in explanation
     assert "required_keywords=mode" in explanation
     assert "position[0]=-1" in explanation
     assert "confidence=medium" in explanation
@@ -705,10 +720,11 @@ def test_schema_supports_all_event_and_matcher_metadata_for_explanation() -> Non
     assert registry.find_rule("CPY9999") is None
 
 
-def test_schema_generator_main_writes_both_documents(tmp_path: Path) -> None:
+def test_schema_generator_main_writes_all_documents(tmp_path: Path) -> None:
     """The documented generator entry function succeeds deterministically."""
     assert main([str(tmp_path)]) == 0
     assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "registry-coverage-v1.json",
         "registry-index-v1.json",
         "registry-rule-v1.json",
     ]

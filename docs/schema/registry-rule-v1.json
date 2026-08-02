@@ -104,6 +104,16 @@
             },
             {
               "required": [
+                "min_keyword_args"
+              ]
+            },
+            {
+              "required": [
+                "max_keyword_args"
+              ]
+            },
+            {
+              "required": [
                 "required_keywords"
               ]
             },
@@ -210,8 +220,16 @@
               "type": "array",
               "uniqueItems": true
             },
+            "max_keyword_args": {
+              "minimum": 0,
+              "type": "integer"
+            },
             "max_positional_args": {
               "minimum": 0,
+              "type": "integer"
+            },
+            "min_keyword_args": {
+              "minimum": 1,
               "type": "integer"
             },
             "min_positional_args": {
