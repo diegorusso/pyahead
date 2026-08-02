@@ -34,6 +34,30 @@ class Impact(StrEnum):
     INFORMATIONAL = "informational"
 
 
+class FailOn(StrEnum):
+    """Minimum finding impact that fails the CI gate."""
+
+    NEVER = "never"
+    BREAKING = "breaking"
+    RISK = "risk"
+    DEPRECATED = "deprecated"
+    ANY = "any"
+
+
+class BaselineStatus(StrEnum):
+    """Whether a finding fingerprint existed in the selected baseline."""
+
+    NEW = "new"
+    EXISTING = "existing"
+
+
+class SuppressionKind(StrEnum):
+    """Supported origins for an explicit finding suppression."""
+
+    INLINE = "inline"
+    PER_FILE = "per-file"
+
+
 class FindingState(StrEnum):
     """The compatibility state of one finding over target versions."""
 
@@ -138,6 +162,7 @@ class DiagnosticCategory(StrEnum):
     ENCODING = "encoding"
     PARSE = "parse"
     REGISTRY = "registry"
+    SUPPRESSION = "suppression"
     INTERNAL = "internal"
 
 
@@ -190,6 +215,42 @@ class Policy:
     def target_versions(self) -> frozenset[PythonMinor]:
         """Return every inclusive minor target in this policy."""
         return target_set(self.baseline_python, self.horizon_python)
+
+
+@dataclass(frozen=True)
+class PolicyProvenance:
+    """Stable sources for the two effective policy boundaries."""
+
+    baseline_python: str
+    horizon_python: str
+    requires_python: str | None = None
+
+
+@dataclass(frozen=True)
+class PerFileIgnore:
+    """One configured path pattern and its ignored canonical rule IDs."""
+
+    pattern: str
+    rule_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EffectiveConfiguration:
+    """Resolved M4 scan configuration exposed in every report."""
+
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    source_roots: tuple[str, ...] = (".", "src")
+    source_roots_provenance: str = "inferred:conventional-root-and-src-layout"
+    respect_gitignore: bool = True
+    minimum_confidence: MatchConfidence = MatchConfidence.HIGH
+    fail_on: FailOn = FailOn.BREAKING
+    show_unscheduled: bool = True
+    max_file_size_bytes: int = 2 * 1024 * 1024
+    per_file_ignores: tuple[PerFileIgnore, ...] = ()
+    fail_new_only: bool = False
+    show_suppressed: bool = False
+    allow_incomplete: bool = False
 
 
 @dataclass(frozen=True)
@@ -363,6 +424,14 @@ class Rule:
         """Retain the M1 convenience accessor for removal impact."""
         return self.impact_for(ChangeEventKind.REMOVED)
 
+    @property
+    def removal_unscheduled(self) -> bool:
+        """Whether a sourced deprecation has no authoritative removal event."""
+        kinds = frozenset(event.kind for event in self.events)
+        return (
+            ChangeEventKind.DEPRECATED in kinds and ChangeEventKind.REMOVED not in kinds
+        )
+
 
 @dataclass(frozen=True)
 class Registry:
@@ -413,6 +482,15 @@ class AnalysisInference:
 
 
 @dataclass(frozen=True)
+class Suppression:
+    """An explicit inline or configuration suppression applied to a finding."""
+
+    kind: SuppressionKind
+    reason: str | None = None
+    pattern: str | None = None
+
+
+@dataclass(frozen=True)
 class FindingStateRange:
     """One contiguous version range sharing a compatibility state."""
 
@@ -443,6 +521,9 @@ class Finding:
     remediation: Remediation
     sources: tuple[SourceReference, ...]
     registry_revision: str
+    removal_unscheduled: bool
+    suppression: Suppression | None = None
+    baseline_status: BaselineStatus = BaselineStatus.NEW
 
 
 @dataclass(frozen=True)
@@ -468,16 +549,53 @@ class ScanReport:
     findings: tuple[Finding, ...]
     diagnostics: tuple[Diagnostic, ...]
     inferences: tuple[AnalysisInference, ...]
+    configuration: EffectiveConfiguration = EffectiveConfiguration()
+    policy_provenance: PolicyProvenance = PolicyProvenance(
+        baseline_python="command-line",
+        horizon_python="command-line",
+    )
+
+    @property
+    def visible_findings(self) -> tuple[Finding, ...]:
+        """Return findings selected for normal formatter output."""
+        if self.configuration.show_suppressed:
+            return self.findings
+        return tuple(
+            finding for finding in self.findings if finding.suppression is None
+        )
 
     @property
     def gate_failed(self) -> bool:
-        """Return whether a finding meets the fixed M1 breaking gate."""
-        return any(finding.impact is Impact.BREAKING for finding in self.findings)
+        """Evaluate unsuppressed findings against the configured M4 gate."""
+        if self.configuration.fail_on is FailOn.NEVER:
+            return False
+        thresholds = {
+            FailOn.ANY: 0,
+            FailOn.DEPRECATED: 1,
+            FailOn.RISK: 2,
+            FailOn.BREAKING: 3,
+        }
+        impact_ranks = {
+            Impact.INFORMATIONAL: 0,
+            Impact.DEPRECATED: 1,
+            Impact.RISK: 2,
+            Impact.BREAKING: 3,
+        }
+        threshold = thresholds[self.configuration.fail_on]
+        return any(
+            finding.suppression is None
+            and (
+                not self.configuration.fail_new_only
+                or finding.baseline_status is BaselineStatus.NEW
+            )
+            and impact_ranks[finding.impact] >= threshold
+            for finding in self.findings
+        )
 
     @property
     def exit_code(self) -> ExitCode:
-        """Evaluate the M1 default gate and incomplete-scan precedence."""
-        if self.counts.files_incomplete:
+        """Evaluate incomplete-analysis precedence and the configured gate."""
+        if self.counts.files_incomplete and not self.configuration.allow_incomplete:
             return ExitCode.INCOMPLETE
         if self.gate_failed:
             return ExitCode.FINDINGS

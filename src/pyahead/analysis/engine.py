@@ -8,7 +8,7 @@ import tokenize
 from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 import libcst as cst
@@ -30,10 +30,12 @@ from libcst.metadata.scope_provider import Scope
 
 from pyahead import __version__
 from pyahead.analysis.discovery import (
-    MAX_SOURCE_BYTES,
     DiscoveredFile,
+    DiscoveryError,
     DiscoveryIncompleteError,
     DiscoveryIssue,
+    DiscoveryOptions,
+    DiscoveryResult,
     discover_python_files,
     project_module_paths,
 )
@@ -67,10 +69,27 @@ from pyahead.analysis.reachability import (
     LexicalReachability,
     branch_reachability,
 )
+from pyahead.analysis.suppressions import (
+    InlineSuppressionIndex,
+    PerFileSuppressionIndex,
+    bind_inline_suppressions,
+    collect_inline_suppressions,
+    index_inline_suppressions,
+    resolve_per_file_ignores,
+    suppression_for_finding,
+)
+from pyahead.baseline import load_baseline
+from pyahead.config import (
+    ConfigurationOverrides,
+    load_project_configuration,
+    resolve_configuration,
+)
 from pyahead.model import (
     AnalysisInference,
+    BaselineStatus,
     BuiltinPatternMatcher,
     CallShapeMatcher,
+    ConfigurationError,
     Diagnostic,
     DiagnosticCategory,
     Finding,
@@ -78,6 +97,7 @@ from pyahead.model import (
     LiteralDynamicImportMatcher,
     MatchConfidence,
     ModuleImportMatcher,
+    PerFileIgnore,
     Policy,
     QualifiedCallMatcher,
     QualifiedReferenceMatcher,
@@ -103,10 +123,45 @@ class ScanRequest:
     """Explicit inputs to the public scan API."""
 
     root: Path
-    baseline_python: str
-    horizon_python: str
+    baseline_python: str | None = None
+    horizon_python: str | None = None
     paths: tuple[Path, ...] = ()
     registry_source: Path | None = None
+    config_path: Path | None = None
+    include: tuple[str, ...] | None = None
+    exclude: tuple[str, ...] | None = None
+    source_roots: tuple[str, ...] | None = None
+    respect_gitignore: bool | None = None
+    minimum_confidence: str | MatchConfidence | None = None
+    fail_on: str | None = None
+    show_unscheduled: bool | None = None
+    max_file_size_bytes: int | None = None
+    per_file_ignores: tuple[PerFileIgnore, ...] = ()
+    baseline_file: Path | None = None
+    fail_new_only: bool = False
+    show_suppressed: bool = False
+    allow_incomplete: bool = False
+
+
+@dataclass(frozen=True)
+class _FileAnalysisContext:
+    matcher_index: MatcherIndex
+    project_modules: dict[str, tuple[PurePosixPath, ...]]
+    target_versions: frozenset[PythonMinor]
+    source_roots: tuple[str, ...]
+    max_file_size_bytes: int
+    registry: Registry
+
+
+@dataclass(frozen=True)
+class _FindingContext:
+    registry: Registry
+    policy: Policy
+    minimum_confidence: MatchConfidence
+    show_unscheduled: bool
+    inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex]
+    per_file_ignores: PerFileSuppressionIndex
+    baseline_fingerprints: frozenset[str]
 
 
 def _scope_name(scope: Scope | None) -> str:
@@ -158,11 +213,13 @@ class _MatcherVisitor(cst.CSTVisitor):
         matcher_index: MatcherIndex,
         project_modules: dict[str, tuple[PurePosixPath, ...]],
         target_versions: frozenset[PythonMinor],
+        source_roots: tuple[str, ...],
     ) -> None:
         """Configure one coordinated read-only traversal."""
         self._path = path
         self._index = matcher_index
         self._project_modules = project_modules
+        self._source_roots = source_roots
         self._inference_keys: set[tuple[int, int, str]] = set()
         self._guard_inference_keys: set[SourceLocation] = set()
         initial_contexts = (
@@ -347,7 +404,7 @@ class _MatcherVisitor(cst.CSTVisitor):
                     ),
                     ("imported_module", imported.module),
                     ("resolution", "competing-project-module"),
-                    ("source_roots", (".", "src")),
+                    ("source_roots", self._source_roots),
                     ("syntax", imported.syntax),
                 ),
             )
@@ -387,7 +444,7 @@ class _MatcherVisitor(cst.CSTVisitor):
                     ),
                     ("qualified_name", qualified_name),
                     ("resolution", "competing-project-module"),
-                    ("source_roots", (".", "src")),
+                    ("source_roots", self._source_roots),
                 ),
             )
         )
@@ -420,7 +477,7 @@ class _MatcherVisitor(cst.CSTVisitor):
                     ("dynamic_function", dynamic_function),
                     ("imported_module", module),
                     ("resolution", "competing-project-module"),
-                    ("source_roots", (".", "src")),
+                    ("source_roots", self._source_roots),
                 ),
             )
         )
@@ -455,7 +512,7 @@ class _MatcherVisitor(cst.CSTVisitor):
                     ("bound_names", imported.bound_names),
                     ("imported_module", imported.module),
                     ("resolution", "no-competing-project-module"),
-                    ("source_roots", (".", "src")),
+                    ("source_roots", self._source_roots),
                     ("syntax", imported.syntax),
                 ),
             )
@@ -822,38 +879,59 @@ def _parse_module(
     return module, _cst_nesting_diagnostic(module, relative_path)
 
 
-def _parse_file(
+def _parse_file_with_context(
     path: DiscoveredFile,
-    matcher_index: MatcherIndex,
-    project_modules: dict[str, tuple[PurePosixPath, ...]],
-    target_versions: frozenset[PythonMinor],
+    context: _FileAnalysisContext,
 ) -> tuple[
     tuple[StaticMatch, ...],
     tuple[AnalysisInference, ...],
-    Diagnostic | None,
+    InlineSuppressionIndex,
+    tuple[Diagnostic, ...],
 ]:
-    source, read_diagnostic = _read_source(path)
+    source, read_diagnostic = _read_source(path, context.max_file_size_bytes)
     if read_diagnostic is not None:
-        return (), (), read_diagnostic
+        return (), (), index_inline_suppressions(()), (read_diagnostic,)
     if source is None:  # pragma: no cover - guarded by the diagnostic result.
         msg = "source text is absent without a read diagnostic"
         raise RuntimeError(msg)
 
+    inline_directives, suppression_diagnostics = collect_inline_suppressions(
+        source,
+        path.relative_path,
+        context.registry,
+    )
     module, parse_diagnostic = _parse_module(source, path.relative_path)
     if parse_diagnostic is not None:
-        return (), (), parse_diagnostic
+        return (
+            (),
+            (),
+            index_inline_suppressions(inline_directives),
+            (
+                *suppression_diagnostics,
+                parse_diagnostic,
+            ),
+        )
     if module is None:  # pragma: no cover - guarded by the diagnostic result.
         msg = "parsed module is absent without a parse diagnostic"
         raise RuntimeError(msg)
 
     visitor = _MatcherVisitor(
         path,
-        matcher_index,
-        project_modules,
-        target_versions,
+        context.matcher_index,
+        context.project_modules,
+        context.target_versions,
+        context.source_roots,
     )
+    wrapper = MetadataWrapper(module)
+    inline_suppressions = index_inline_suppressions(inline_directives)
     try:
-        MetadataWrapper(module).visit(visitor)
+        inline_suppressions = index_inline_suppressions(
+            bind_inline_suppressions(
+                inline_directives,
+                wrapper,
+            )
+        )
+        wrapper.visit(visitor)
     except (RecursionError, cst.CSTValidationError, SyntaxError, ValueError) as error:
         if isinstance(error, RecursionError):
             diagnostic = _nesting_diagnostic(
@@ -872,9 +950,66 @@ def _parse_file(
         return (
             (),
             (),
-            diagnostic,
+            inline_suppressions,
+            (*suppression_diagnostics, diagnostic),
         )
-    return tuple(visitor.matches), tuple(visitor.inferences), None
+    return (
+        tuple(visitor.matches),
+        tuple(visitor.inferences),
+        inline_suppressions,
+        suppression_diagnostics,
+    )
+
+
+def _registry_from_matcher_index(index: MatcherIndex) -> Registry:
+    bindings = (
+        *(binding for values in index.module_imports.values() for binding in values),
+        *(
+            binding
+            for values in index.qualified_references.values()
+            for binding in values
+        ),
+        *(binding for values in index.qualified_calls.values() for binding in values),
+        *(binding for values in index.call_shapes.values() for binding in values),
+        *(
+            binding
+            for values in index.literal_dynamic_imports.values()
+            for binding in values
+        ),
+        *(binding for values in index.builtin_patterns.values() for binding in values),
+    )
+    rules = {binding.rule.id: binding.rule for binding in bindings}
+    return Registry(
+        release="test",
+        revision="test",
+        retired_ids=(),
+        rules=tuple(rules[rule_id] for rule_id in sorted(rules)),
+    )
+
+
+def _parse_file(
+    path: DiscoveredFile,
+    matcher_index: MatcherIndex,
+    project_modules: dict[str, tuple[PurePosixPath, ...]],
+    target_versions: frozenset[PythonMinor],
+) -> tuple[
+    tuple[StaticMatch, ...],
+    tuple[AnalysisInference, ...],
+    Diagnostic | None,
+]:
+    """Retain the M2 focused matcher-test adapter."""
+    matches, inferences, _suppressions, diagnostics = _parse_file_with_context(
+        path,
+        _FileAnalysisContext(
+            matcher_index=matcher_index,
+            project_modules=project_modules,
+            target_versions=target_versions,
+            source_roots=(".", "src"),
+            max_file_size_bytes=2 * 1024 * 1024,
+            registry=_registry_from_matcher_index(matcher_index),
+        ),
+    )
+    return matches, inferences, diagnostics[0] if diagnostics else None
 
 
 def _initial_location(relative_path: PurePosixPath) -> SourceLocation:
@@ -900,7 +1035,10 @@ def _read_failure(
     )
 
 
-def _read_source(path: DiscoveredFile) -> tuple[str | None, Diagnostic | None]:
+def _read_source(
+    path: DiscoveredFile,
+    max_file_size_bytes: int,
+) -> tuple[str | None, Diagnostic | None]:
     """Open without following links and read at most the configured byte limit."""
     flags = (
         os.O_RDONLY
@@ -920,27 +1058,27 @@ def _read_source(path: DiscoveredFile) -> tuple[str | None, Diagnostic | None]:
                 DiagnosticCategory.DISCOVERY,
                 "source entry is not a regular file",
             )
-        if file_status.st_size > MAX_SOURCE_BYTES:
+        if file_status.st_size > max_file_size_bytes:
             return _read_failure(
                 path,
                 "PYA1005",
                 DiagnosticCategory.DISCOVERY,
-                f"source file exceeds the {MAX_SOURCE_BYTES}-byte analysis limit",
+                f"source file exceeds the {max_file_size_bytes}-byte analysis limit",
             )
 
         data = bytearray()
-        while len(data) <= MAX_SOURCE_BYTES:
-            remaining = MAX_SOURCE_BYTES + 1 - len(data)
+        while len(data) <= max_file_size_bytes:
+            remaining = max_file_size_bytes + 1 - len(data)
             chunk = os.read(file_descriptor, min(64 * 1024, remaining))
             if not chunk:
                 break
             data.extend(chunk)
-        if len(data) > MAX_SOURCE_BYTES:
+        if len(data) > max_file_size_bytes:
             return _read_failure(
                 path,
                 "PYA1005",
                 DiagnosticCategory.DISCOVERY,
-                f"source file exceeds the {MAX_SOURCE_BYTES}-byte analysis limit",
+                f"source file exceeds the {max_file_size_bytes}-byte analysis limit",
             )
     except OSError as error:
         return _read_failure(
@@ -1052,8 +1190,11 @@ def _deduplicate_matches(matches: list[StaticMatch]) -> tuple[StaticMatch, ...]:
 
 
 def _findings(
-    matches: list[StaticMatch], registry: Registry, policy: Policy
+    matches: list[StaticMatch],
+    context: _FindingContext,
 ) -> tuple[Finding, ...]:
+    registry = context.registry
+    policy = context.policy
     rules = {rule.id: rule for rule in registry.rules}
     ordinals: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
     findings: list[Finding] = []
@@ -1074,12 +1215,21 @@ def _findings(
         occurrence_ordinal = ordinals[ordinal_key]
         ordinals[ordinal_key] += 1
         # Fingerprint identity is established before finding-emission filters.
+        fingerprint = _fingerprint(match, occurrence_ordinal)
+        if (
+            _CONFIDENCE_PRIORITY[match.confidence]
+            < _CONFIDENCE_PRIORITY[context.minimum_confidence]
+        ):
+            continue
         rule = rules[match.rule_id]
         usage_contexts = frozenset(rule.contexts).intersection(match.usage_contexts)
         if not usage_contexts:
             continue
         states = derive_state_ranges(rule, match.reachable_versions)
         if not states:
+            continue
+        removal_unscheduled = rule.removal_unscheduled
+        if removal_unscheduled and not context.show_unscheduled:
             continue
         impact = max(
             (Impact(state.state.value) for state in states),
@@ -1093,32 +1243,44 @@ def _findings(
         action_version = min(
             state.from_python for state in states if state.state.value == impact.value
         )
+        finding = Finding(
+            fingerprint=fingerprint,
+            rule_id=rule.id,
+            title=rule.title,
+            location=match.location,
+            enclosing_scope=match.enclosing_scope,
+            subject=match.subject,
+            match_kind=match.matcher_kind,
+            match_confidence=match.confidence,
+            match_evidence=match.evidence,
+            usage_contexts=tuple(
+                sorted(usage_contexts, key=lambda context: context.value)
+            ),
+            reachable_versions=tuple(sorted(match.reachable_versions)),
+            states=states,
+            impact=impact,
+            action_version=action_version,
+            events=tuple(
+                event for event in rule.events if event.python <= policy.horizon_python
+            ),
+            remediation=rule.remediation,
+            sources=rule.sources,
+            registry_revision=registry.revision,
+            removal_unscheduled=removal_unscheduled,
+        )
         findings.append(
-            Finding(
-                fingerprint=_fingerprint(match, occurrence_ordinal),
-                rule_id=rule.id,
-                title=rule.title,
-                location=match.location,
-                enclosing_scope=match.enclosing_scope,
-                subject=match.subject,
-                match_kind=match.matcher_kind,
-                match_confidence=match.confidence,
-                match_evidence=match.evidence,
-                usage_contexts=tuple(
-                    sorted(usage_contexts, key=lambda context: context.value)
+            replace(
+                finding,
+                suppression=suppression_for_finding(
+                    finding,
+                    context.inline_suppressions.get(finding.location.path),
+                    context.per_file_ignores,
                 ),
-                reachable_versions=tuple(sorted(match.reachable_versions)),
-                states=states,
-                impact=impact,
-                action_version=action_version,
-                events=tuple(
-                    event
-                    for event in rule.events
-                    if event.python <= policy.horizon_python
+                baseline_status=(
+                    BaselineStatus.EXISTING
+                    if finding.fingerprint in context.baseline_fingerprints
+                    else BaselineStatus.NEW
                 ),
-                remediation=rule.remediation,
-                sources=rule.sources,
-                registry_revision=registry.revision,
             )
         )
     return tuple(
@@ -1144,17 +1306,85 @@ def _discovery_issue_diagnostic(issue: DiscoveryIssue) -> Diagnostic:
     )
 
 
+def _discover_configured(
+    root: Path,
+    paths: tuple[Path, ...],
+    options: DiscoveryOptions,
+) -> DiscoveryResult:
+    if options == DiscoveryOptions():
+        return discover_python_files(root, paths)
+    return discover_python_files(root, paths, options)
+
+
 def scan(request: ScanRequest) -> ScanReport:
     """Scan Python source without importing, executing, or networking."""
-    policy = Policy.parse(request.baseline_python, request.horizon_python)
-    registry = load_registry(request.registry_source)
+    if request.fail_new_only and request.baseline_file is None:
+        message = "--fail-new-only requires --baseline-file"
+        raise ConfigurationError(message)
     try:
-        root_discovery = discover_python_files(request.root, ())
-        discovery = (
-            root_discovery
-            if not request.paths or request.paths == (Path(),)
-            else discover_python_files(request.root, request.paths)
-        )
+        root = request.root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        message = "scan root does not exist or cannot be resolved"
+        raise DiscoveryError(message) from error
+    if not root.is_dir():
+        message = "scan root must be a directory"
+        raise DiscoveryError(message)
+    registry = load_registry(request.registry_source)
+    project_configuration = load_project_configuration(root, request.config_path)
+    resolved = resolve_configuration(
+        root,
+        registry,
+        project_configuration,
+        ConfigurationOverrides(
+            baseline_python=request.baseline_python,
+            horizon_python=request.horizon_python,
+            include=request.include,
+            exclude=request.exclude,
+            source_roots=request.source_roots,
+            respect_gitignore=request.respect_gitignore,
+            minimum_confidence=request.minimum_confidence,
+            fail_on=request.fail_on,
+            show_unscheduled=request.show_unscheduled,
+            max_file_size_bytes=request.max_file_size_bytes,
+            per_file_ignores=request.per_file_ignores,
+            fail_new_only=request.fail_new_only,
+            show_suppressed=request.show_suppressed,
+            allow_incomplete=request.allow_incomplete,
+        ),
+    )
+    policy = resolved.policy
+    baseline = (
+        load_baseline(request.baseline_file, root)
+        if request.baseline_file is not None
+        else None
+    )
+    per_file_ignores, suppression_diagnostics = resolve_per_file_ignores(
+        resolved.scan.per_file_ignores,
+        registry,
+    )
+    discovery_options = DiscoveryOptions(
+        include=resolved.scan.include,
+        exclude=resolved.scan.exclude,
+        respect_gitignore=resolved.scan.respect_gitignore,
+        max_file_size_bytes=resolved.scan.max_file_size_bytes,
+    )
+    module_options = DiscoveryOptions(
+        respect_gitignore=False,
+        max_file_size_bytes=resolved.scan.max_file_size_bytes,
+        allow_explicit_built_in_roots=True,
+    )
+    try:
+        if resolved.source_roots_inferred:
+            module_discovery = _discover_configured(root, (), module_options)
+        elif resolved.scan.source_roots:
+            module_discovery = _discover_configured(
+                root,
+                tuple(Path(path) for path in resolved.scan.source_roots),
+                module_options,
+            )
+        else:
+            module_discovery = DiscoveryResult(files=(), issues=())
+        discovery = _discover_configured(root, request.paths, discovery_options)
     except DiscoveryIncompleteError as error:
         return ScanReport(
             schema_version=1,
@@ -1170,6 +1400,7 @@ def scan(request: ScanRequest) -> ScanReport:
             ),
             findings=(),
             diagnostics=(
+                *suppression_diagnostics,
                 Diagnostic(
                     code="PYA1001",
                     category=DiagnosticCategory.DISCOVERY,
@@ -1178,35 +1409,65 @@ def scan(request: ScanRequest) -> ScanReport:
                 ),
             ),
             inferences=(),
+            configuration=resolved.scan,
+            policy_provenance=resolved.policy_provenance,
         )
     project_modules = project_module_paths(
-        root_discovery.files,
-        root_discovery.issues,
+        module_discovery.files,
+        module_discovery.issues,
+        None if resolved.source_roots_inferred else resolved.scan.source_roots,
     )
     matcher_index = build_matcher_index(registry)
+    file_context = _FileAnalysisContext(
+        matcher_index=matcher_index,
+        project_modules=project_modules,
+        target_versions=policy.target_versions,
+        source_roots=resolved.scan.source_roots,
+        max_file_size_bytes=resolved.scan.max_file_size_bytes,
+        registry=registry,
+    )
 
     matches: list[StaticMatch] = []
     inferences: list[AnalysisInference] = []
-    diagnostics = [_discovery_issue_diagnostic(issue) for issue in discovery.issues]
+    inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex] = {}
+    diagnostics = [
+        *suppression_diagnostics,
+        *(_discovery_issue_diagnostic(issue) for issue in discovery.issues),
+    ]
+    incomplete_files = len(discovery.issues)
     analyzed = 0
     for path in discovery.files:
-        file_matches, file_inferences, diagnostic = _parse_file(
+        (
+            file_matches,
+            file_inferences,
+            file_suppressions,
+            file_diagnostics,
+        ) = _parse_file_with_context(
             path,
-            matcher_index,
-            project_modules,
-            policy.target_versions,
+            file_context,
         )
-        if diagnostic is not None:
-            diagnostics.append(diagnostic)
+        inline_suppressions[path.relative_path] = file_suppressions
+        diagnostics.extend(file_diagnostics)
+        if any(diagnostic.incomplete for diagnostic in file_diagnostics):
+            incomplete_files += 1
             continue
         analyzed += 1
         matches.extend(file_matches)
         inferences.extend(file_inferences)
 
     findings = _findings(
-        [match for match in matches if match.confidence is MatchConfidence.HIGH],
-        registry,
-        policy,
+        matches,
+        _FindingContext(
+            registry=registry,
+            policy=policy,
+            minimum_confidence=resolved.scan.minimum_confidence,
+            show_unscheduled=resolved.scan.show_unscheduled,
+            inline_suppressions=inline_suppressions,
+            per_file_ignores=per_file_ignores,
+            baseline_fingerprints=(
+                baseline.fingerprints if baseline is not None else frozenset()
+            ),
+        ),
     )
     return ScanReport(
         schema_version=1,
@@ -1218,7 +1479,7 @@ def scan(request: ScanRequest) -> ScanReport:
         counts=ScanCounts(
             files_discovered=discovery.files_discovered,
             files_analyzed=analyzed,
-            files_incomplete=len(diagnostics),
+            files_incomplete=incomplete_files,
         ),
         findings=findings,
         diagnostics=tuple(
@@ -1229,6 +1490,7 @@ def scan(request: ScanRequest) -> ScanReport:
                     if diagnostic.location is not None
                     else "",
                     diagnostic.code,
+                    diagnostic.message,
                 ),
             )
         ),
@@ -1244,4 +1506,6 @@ def scan(request: ScanRequest) -> ScanReport:
                 ),
             )
         ),
+        configuration=resolved.scan,
+        policy_provenance=resolved.policy_provenance,
     )

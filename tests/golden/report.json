@@ -1,8 +1,27 @@
 {
+  "configuration": {
+    "allow_incomplete": false,
+    "exclude": [],
+    "fail_new_only": false,
+    "fail_on": "breaking",
+    "include": [],
+    "max_file_size_bytes": 2097152,
+    "minimum_confidence": "high",
+    "per_file_ignores": {},
+    "respect_gitignore": true,
+    "show_suppressed": false,
+    "show_unscheduled": true,
+    "source_roots": [
+      ".",
+      "src"
+    ],
+    "source_roots_provenance": "inferred:conventional-root-and-src-layout"
+  },
   "diagnostics": [],
   "findings": [
     {
       "action_version": "3.13",
+      "baseline_status": "new",
       "enclosing_scope": "<module>",
       "fingerprint": "e781bbe30afe0c48c582ed1da3a157bfc8b048eaa000737e1109499f8d63c3ee",
       "impact": "breaking",
@@ -44,6 +63,7 @@
       "remediation": {
         "summary": "Replace the specific cgi functionality in use. There is no single drop-in replacement for the complete module."
       },
+      "removal_unscheduled": false,
       "rule_id": "CPY0001",
       "sources": [
         {
@@ -70,6 +90,7 @@
         }
       ],
       "subject": "cgi",
+      "suppressed": false,
       "timeline": [
         {
           "certainty": "released",
