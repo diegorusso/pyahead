@@ -1,0 +1,52 @@
+schema_version: 1
+id: CPY0040
+title: "Legacy pty open helpers are removed"
+summary: >-
+  pty.master_open and pty.slave_open were deprecated long before the supported
+  range, began emitting proper runtime warnings in Python 3.12, and are removed
+  in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: pty.master_open
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.12-deprecated
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: pty.master_open
+  - kind: qualified-reference
+    qualified_name: pty.slave_open
+
+remediation:
+  summary: >-
+    Use pty.openpty as directed by the linked CPython documentation.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, deprecation, api-removal, pty]

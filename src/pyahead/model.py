@@ -1,13 +1,14 @@
-"""Immutable domain models for the M1 vertical slice."""
+"""Immutable domain models for the static analyser and compatibility registry."""
 
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import PurePosixPath
 from typing import Self, TypeAlias
 
-from pyahead.versions import PythonMinor
+from pyahead.versions import PythonMinor, target_set
 
 EvidenceValue: TypeAlias = str | tuple[str, ...]
+LiteralValue: TypeAlias = bool | float | int | str | None
 
 
 class ConfigurationError(ValueError):
@@ -33,6 +34,39 @@ class Impact(StrEnum):
     INFORMATIONAL = "informational"
 
 
+class FailOn(StrEnum):
+    """Minimum finding impact that fails the CI gate."""
+
+    NEVER = "never"
+    BREAKING = "breaking"
+    RISK = "risk"
+    DEPRECATED = "deprecated"
+    ANY = "any"
+
+
+class BaselineStatus(StrEnum):
+    """Whether a finding fingerprint existed in the selected baseline."""
+
+    NEW = "new"
+    EXISTING = "existing"
+
+
+class SuppressionKind(StrEnum):
+    """Supported origins for an explicit finding suppression."""
+
+    INLINE = "inline"
+    PER_FILE = "per-file"
+
+
+class FindingState(StrEnum):
+    """The compatibility state of one finding over target versions."""
+
+    DEPRECATED = "deprecated"
+    RISK = "risk"
+    BREAKING = "breaking"
+    INFORMATIONAL = "informational"
+
+
 class MatchConfidence(StrEnum):
     """Strength of the static source-to-rule identification."""
 
@@ -50,20 +84,97 @@ class RegistryCertainty(StrEnum):
 
 
 class ChangeEventKind(StrEnum):
-    """Compatibility event types represented in the seed registry."""
+    """Compatibility event types represented by registry schema version 1."""
 
     DEPRECATED = "deprecated"
     REMOVED = "removed"
+    SIGNATURE_CHANGED = "signature_changed"
+    BEHAVIOR_CHANGED = "behavior_changed"
+    SYNTAX_CHANGED = "syntax_changed"
+    SUPPORT_DROPPED = "support_dropped"
+
+
+class MatcherKind(StrEnum):
+    """Closed set of declarative matcher implementations."""
+
+    MODULE_IMPORT = "module-import"
+    QUALIFIED_REFERENCE = "qualified-reference"
+    QUALIFIED_CALL = "qualified-call"
+    CALL_SHAPE = "call-shape"
+    LITERAL_DYNAMIC_IMPORT = "literal-dynamic-import"
+    BUILTIN_PATTERN = "builtin-pattern"
+
+
+class ReferenceContext(StrEnum):
+    """Supported syntactic contexts for qualified references."""
+
+    READ = "read"
+    DECORATOR = "decorator"
+    BASE_CLASS = "base-class"
+    ANNOTATION = "annotation"
+
+
+class UsageContext(StrEnum):
+    """Registry contexts supported by the static alpha."""
+
+    RUNTIME = "runtime"
+    TYPING = "typing"
+
+
+class ReleaseStatus(StrEnum):
+    """Presentation status for a Python release metadata record."""
+
+    EOL = "eol"
+    SECURITY = "security"
+    STABLE = "stable"
+    PRERELEASE = "prerelease"
+    PLANNED = "planned"
+
+
+class CoverageDisposition(StrEnum):
+    """Closed classification set for one authoritative-source entry."""
+
+    IMPLEMENTED = "implemented"
+    PARTIAL = "partial"
+    NOT_STATICALLY_DETECTABLE = "not-statically-detectable"
+    DYNAMIC_EVIDENCE_ROADMAP = "dynamic-evidence-roadmap"
+    C_API_ROADMAP = "c-api-roadmap"
+    DUPLICATE = "duplicate"
+    NOT_APPLICABLE = "not-applicable"
+
+
+class SubjectKind(StrEnum):
+    """Kinds of source subjects a rule may describe."""
+
+    MODULE = "module"
+    FUNCTION = "function"
+    CLASS = "class"
+    ATTRIBUTE = "attribute"
+    SYNTAX = "syntax"
+
+
+class AutomationTool(StrEnum):
+    """External tools whose verified automation may be documented."""
+
+    RUFF = "ruff"
+    PYUPGRADE = "pyupgrade"
+
+
+class BuiltinPattern(StrEnum):
+    """Whitelisted non-declarative matcher implementations."""
+
+    BOOL_BITWISE_INVERSION = "bool-bitwise-inversion"
 
 
 class DiagnosticCategory(StrEnum):
-    """Diagnostic categories needed by the M1 scan path."""
+    """Diagnostic categories supported by the static scan path."""
 
     CONFIGURATION = "configuration"
     DISCOVERY = "discovery"
     ENCODING = "encoding"
     PARSE = "parse"
     REGISTRY = "registry"
+    SUPPRESSION = "suppression"
     INTERNAL = "internal"
 
 
@@ -112,6 +223,47 @@ class Policy:
             horizon_python=PythonMinor.parse(horizon_python),
         )
 
+    @property
+    def target_versions(self) -> frozenset[PythonMinor]:
+        """Return every inclusive minor target in this policy."""
+        return target_set(self.baseline_python, self.horizon_python)
+
+
+@dataclass(frozen=True)
+class PolicyProvenance:
+    """Stable sources for the two effective policy boundaries."""
+
+    baseline_python: str
+    horizon_python: str
+    requires_python: str | None = None
+
+
+@dataclass(frozen=True)
+class PerFileIgnore:
+    """One configured path pattern and its ignored canonical rule IDs."""
+
+    pattern: str
+    rule_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EffectiveConfiguration:
+    """Resolved M4 scan configuration exposed in every report."""
+
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    source_roots: tuple[str, ...] = (".", "src")
+    source_roots_provenance: str = "inferred:conventional-root-and-src-layout"
+    respect_gitignore: bool = True
+    minimum_confidence: MatchConfidence = MatchConfidence.HIGH
+    fail_on: FailOn = FailOn.BREAKING
+    show_unscheduled: bool = True
+    max_file_size_bytes: int = 2 * 1024 * 1024
+    per_file_ignores: tuple[PerFileIgnore, ...] = ()
+    fail_new_only: bool = False
+    show_suppressed: bool = False
+    allow_incomplete: bool = False
+
 
 @dataclass(frozen=True)
 class Diagnostic:
@@ -126,11 +278,79 @@ class Diagnostic:
 
 
 @dataclass(frozen=True)
-class RuleMatcher:
-    """A declarative matcher supported by the M1 engine."""
+class ModuleImportMatcher:
+    """Match an import of a module or one of its submodules."""
 
-    kind: str
+    kind: MatcherKind
     module: str
+
+
+@dataclass(frozen=True)
+class QualifiedReferenceMatcher:
+    """Match an exact import-derived reference."""
+
+    kind: MatcherKind
+    qualified_name: str
+    contexts: tuple[ReferenceContext, ...]
+
+
+@dataclass(frozen=True)
+class QualifiedCallMatcher:
+    """Match an exact import-derived callable used as ``Call.func``."""
+
+    kind: MatcherKind
+    qualified_name: str
+
+
+@dataclass(frozen=True)
+class LiteralArgumentPredicate:
+    """Require one positional or keyword argument to equal a literal."""
+
+    position: int | None
+    keyword: str | None
+    equals: LiteralValue
+
+
+@dataclass(frozen=True)
+class CallShapeMatcher:
+    """Match a qualified call whose statically visible arguments fit a shape."""
+
+    kind: MatcherKind
+    qualified_name: str
+    min_positional_args: int | None
+    max_positional_args: int | None
+    min_keyword_args: int | None
+    max_keyword_args: int | None
+    required_keywords: tuple[str, ...]
+    forbidden_keywords: tuple[str, ...]
+    literal_arguments: tuple[LiteralArgumentPredicate, ...]
+
+
+@dataclass(frozen=True)
+class LiteralDynamicImportMatcher:
+    """Match a whitelisted dynamic-import function with a literal module name."""
+
+    kind: MatcherKind
+    module: str
+    confidence: MatchConfidence
+
+
+@dataclass(frozen=True)
+class BuiltinPatternMatcher:
+    """Dispatch to one whitelisted syntax-pattern implementation."""
+
+    kind: MatcherKind
+    pattern: BuiltinPattern
+
+
+RuleMatcher: TypeAlias = (
+    ModuleImportMatcher
+    | QualifiedReferenceMatcher
+    | QualifiedCallMatcher
+    | CallShapeMatcher
+    | LiteralDynamicImportMatcher
+    | BuiltinPatternMatcher
+)
 
 
 @dataclass(frozen=True)
@@ -144,6 +364,46 @@ class RuleEvent:
 
 
 @dataclass(frozen=True)
+class PythonRelease:
+    """Informative presentation metadata for one Python minor release."""
+
+    python: PythonMinor
+    status: ReleaseStatus
+    released_on: str | None
+    expected_final_on: str | None
+    source: str | None
+
+
+@dataclass(frozen=True)
+class CoverageSource:
+    """One authoritative page selected for explicit registry curation."""
+
+    id: str
+    title: str
+    url: str
+    checked_on: str
+
+
+@dataclass(frozen=True)
+class CoverageEntry:
+    """The reviewed disposition of one stable entry on a selected source page."""
+
+    source_key: str
+    disposition: CoverageDisposition
+    rules: tuple[str, ...]
+    note: str | None
+
+
+@dataclass(frozen=True)
+class CoverageManifest:
+    """Complete classifications authored for one selected source page."""
+
+    source: CoverageSource
+    source_keys: tuple[str, ...]
+    entries: tuple[CoverageEntry, ...]
+
+
+@dataclass(frozen=True)
 class SourceReference:
     """An authoritative source attached to a registry rule."""
 
@@ -153,28 +413,67 @@ class SourceReference:
 
 
 @dataclass(frozen=True)
+class AutomationReference:
+    """Metadata for an existing external transformation; never an invocation."""
+
+    tool: AutomationTool
+    rule: str
+
+
+@dataclass(frozen=True)
 class Remediation:
     """Human-reviewed migration guidance."""
 
     summary: str
+    documentation_url: str | None = None
+    automation: AutomationReference | None = None
 
 
 @dataclass(frozen=True)
 class Rule:
-    """A minimal reviewed compatibility-registry rule."""
+    """A strict reviewed compatibility-registry rule."""
 
     id: str
+    aliases: tuple[str, ...]
     title: str
     summary: str
+    ecosystem: str
+    runtime: str
+    subject_kind: SubjectKind
     subject: str
-    contexts: tuple[str, ...]
+    contexts: tuple[UsageContext, ...]
     events: tuple[RuleEvent, ...]
-    on_deprecation: Impact
-    on_removal: Impact
+    event_impacts: tuple[tuple[ChangeEventKind, Impact], ...]
     matchers: tuple[RuleMatcher, ...]
     remediation: Remediation
     sources: tuple[SourceReference, ...]
     tags: tuple[str, ...]
+
+    def impact_for(self, event: ChangeEventKind) -> Impact:
+        """Return the explicitly authored impact for one event kind."""
+        for kind, impact in self.event_impacts:
+            if kind is event:
+                return impact
+        message = f"rule {self.id} has no impact for {event.value}"
+        raise ValueError(message)
+
+    @property
+    def on_deprecation(self) -> Impact:
+        """Retain the M1 convenience accessor for deprecation impact."""
+        return self.impact_for(ChangeEventKind.DEPRECATED)
+
+    @property
+    def on_removal(self) -> Impact:
+        """Retain the M1 convenience accessor for removal impact."""
+        return self.impact_for(ChangeEventKind.REMOVED)
+
+    @property
+    def removal_unscheduled(self) -> bool:
+        """Whether a sourced deprecation has no authoritative removal event."""
+        kinds = frozenset(event.kind for event in self.events)
+        return (
+            ChangeEventKind.DEPRECATED in kinds and ChangeEventKind.REMOVED not in kinds
+        )
 
 
 @dataclass(frozen=True)
@@ -183,7 +482,21 @@ class Registry:
 
     release: str
     revision: str
+    retired_ids: tuple[str, ...]
     rules: tuple[Rule, ...]
+    releases: tuple[PythonRelease, ...] = ()
+    coverage: tuple[CoverageManifest, ...] = ()
+
+    def find_rule(self, identifier: str) -> Rule | None:
+        """Resolve a canonical rule ID or an explicitly declared alias."""
+        return next(
+            (
+                rule
+                for rule in self.rules
+                if identifier == rule.id or identifier in rule.aliases
+            ),
+            None,
+        )
 
 
 @dataclass(frozen=True)
@@ -196,6 +509,8 @@ class StaticMatch:
     enclosing_scope: str
     subject: str
     confidence: MatchConfidence
+    reachable_versions: frozenset[PythonMinor]
+    usage_contexts: frozenset[UsageContext]
     evidence: tuple[tuple[str, EvidenceValue], ...]
 
 
@@ -211,6 +526,24 @@ class AnalysisInference:
 
 
 @dataclass(frozen=True)
+class Suppression:
+    """An explicit inline or configuration suppression applied to a finding."""
+
+    kind: SuppressionKind
+    reason: str | None = None
+    pattern: str | None = None
+
+
+@dataclass(frozen=True)
+class FindingStateRange:
+    """One contiguous version range sharing a compatibility state."""
+
+    from_python: PythonMinor
+    through_python: PythonMinor
+    state: FindingState
+
+
+@dataclass(frozen=True)
 class Finding:
     """A repository-specific match combined with rule and policy facts."""
 
@@ -223,12 +556,18 @@ class Finding:
     match_kind: str
     match_confidence: MatchConfidence
     match_evidence: tuple[tuple[str, EvidenceValue], ...]
+    usage_contexts: tuple[UsageContext, ...]
+    reachable_versions: tuple[PythonMinor, ...]
+    states: tuple[FindingStateRange, ...]
     impact: Impact
     action_version: PythonMinor
     events: tuple[RuleEvent, ...]
     remediation: Remediation
     sources: tuple[SourceReference, ...]
     registry_revision: str
+    removal_unscheduled: bool
+    suppression: Suppression | None = None
+    baseline_status: BaselineStatus = BaselineStatus.NEW
 
 
 @dataclass(frozen=True)
@@ -242,7 +581,7 @@ class ScanCounts:
 
 @dataclass(frozen=True)
 class ScanReport:
-    """Complete formatter-independent result of an M1 scan."""
+    """Complete formatter-independent static scan result."""
 
     schema_version: int
     tool_version: str
@@ -254,16 +593,53 @@ class ScanReport:
     findings: tuple[Finding, ...]
     diagnostics: tuple[Diagnostic, ...]
     inferences: tuple[AnalysisInference, ...]
+    configuration: EffectiveConfiguration = EffectiveConfiguration()
+    policy_provenance: PolicyProvenance = PolicyProvenance(
+        baseline_python="command-line",
+        horizon_python="command-line",
+    )
+
+    @property
+    def visible_findings(self) -> tuple[Finding, ...]:
+        """Return findings selected for normal formatter output."""
+        if self.configuration.show_suppressed:
+            return self.findings
+        return tuple(
+            finding for finding in self.findings if finding.suppression is None
+        )
 
     @property
     def gate_failed(self) -> bool:
-        """Return whether a finding meets the fixed M1 breaking gate."""
-        return any(finding.impact is Impact.BREAKING for finding in self.findings)
+        """Evaluate unsuppressed findings against the configured M4 gate."""
+        if self.configuration.fail_on is FailOn.NEVER:
+            return False
+        thresholds = {
+            FailOn.ANY: 0,
+            FailOn.DEPRECATED: 1,
+            FailOn.RISK: 2,
+            FailOn.BREAKING: 3,
+        }
+        impact_ranks = {
+            Impact.INFORMATIONAL: 0,
+            Impact.DEPRECATED: 1,
+            Impact.RISK: 2,
+            Impact.BREAKING: 3,
+        }
+        threshold = thresholds[self.configuration.fail_on]
+        return any(
+            finding.suppression is None
+            and (
+                not self.configuration.fail_new_only
+                or finding.baseline_status is BaselineStatus.NEW
+            )
+            and impact_ranks[finding.impact] >= threshold
+            for finding in self.findings
+        )
 
     @property
     def exit_code(self) -> ExitCode:
-        """Evaluate the M1 default gate and incomplete-scan precedence."""
-        if self.counts.files_incomplete:
+        """Evaluate incomplete-analysis precedence and the configured gate."""
+        if self.counts.files_incomplete and not self.configuration.allow_incomplete:
             return ExitCode.INCOMPLETE
         if self.gate_failed:
             return ExitCode.FINDINGS

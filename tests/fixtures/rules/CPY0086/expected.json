@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "rule_id": "CPY0086",
+  "policy": {
+    "baseline_python": "3.11",
+    "horizon_python": "3.16"
+  },
+  "cases": [
+    {
+      "name": "explicit removed controller is positive",
+      "root": ".",
+      "paths": [
+        "positive/source.py"
+      ],
+      "expected_findings": [
+        {
+          "rule_id": "CPY0086",
+          "confidence": "high",
+          "action_version": "3.12",
+          "impact": "breaking",
+          "resolution": "exact-import",
+          "reachable_versions": [
+            "3.11",
+            "3.12",
+            "3.13",
+            "3.14",
+            "3.15",
+            "3.16"
+          ],
+          "usage_contexts": [
+            "runtime"
+          ]
+        }
+      ],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "keyword removed controller is positive",
+      "root": ".",
+      "paths": ["positive_keyword/source.py"],
+      "expected_findings": [{"rule_id": "CPY0086", "confidence": "high", "action_version": "3.12", "impact": "breaking", "resolution": "exact-import", "reachable_versions": ["3.11", "3.12", "3.13", "3.14", "3.15", "3.16"], "usage_contexts": ["runtime"]}],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "supported controller is negative",
+      "root": ".",
+      "paths": [
+        "negative/source.py"
+      ],
+      "expected_findings": [],
+      "expected_inference_codes": []
+    }
+  ]
+}

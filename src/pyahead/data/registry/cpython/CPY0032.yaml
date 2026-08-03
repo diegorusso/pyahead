@@ -1,0 +1,45 @@
+schema_version: 1
+id: CPY0032
+title: "The re template APIs are removed"
+summary: >-
+  re.template, re.T, and re.TEMPLATE are removed in Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: re.template
+
+timeline:
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: re.template
+  - kind: qualified-reference
+    qualified_name: re.T
+  - kind: qualified-reference
+    qualified_name: re.TEMPLATE
+
+remediation:
+  summary: >-
+    Remove use of the template regular-expression flag and consult the linked release notes.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, api-removal, regular-expressions]
+

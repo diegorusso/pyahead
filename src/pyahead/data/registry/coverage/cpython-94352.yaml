@@ -1,0 +1,15 @@
+schema_version: 1
+source:
+  id: cpython-94352
+  title: "CPython issue 94352 — reject None in shlex.split"
+  url: "https://github.com/python/cpython/issues/94352"
+  checked_on: "2026-08-02"
+
+# This narrowly scoped CPython issue tracks one behavior change.
+source_keys:
+  - shlex-split-none
+
+entries:
+  - source_key: shlex-split-none
+    disposition: implemented
+    rules: [CPY0075]

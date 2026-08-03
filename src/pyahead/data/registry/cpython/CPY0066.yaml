@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0066
+title: "locale.format is removed"
+summary: >-
+  locale.format is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: locale.format
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: locale.format
+
+remediation:
+  summary: >-
+    Use locale.format_string as directed by the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, locale]
+

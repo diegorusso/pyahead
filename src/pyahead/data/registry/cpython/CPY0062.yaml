@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0062
+title: "asyncio.iscoroutinefunction is scheduled for removal"
+summary: >-
+  asyncio.iscoroutinefunction is deprecated in Python 3.14 and scheduled for removal in Python 3.16.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: asyncio.iscoroutinefunction
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-deprecations
+  - event: removed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: asyncio.iscoroutinefunction
+
+remediation:
+  summary: >-
+    Use inspect.iscoroutinefunction as directed by the linked CPython documentation.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html"
+  automation: null
+
+sources:
+  - id: python-deprecations
+    title: "Python deprecation index"
+    url: "https://docs.python.org/3/deprecations/index.html"
+
+tags: [stdlib, scheduled-removal, asyncio]
+

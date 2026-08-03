@@ -1,0 +1,185 @@
+{
+  "$defs": {
+    "entry": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "rules": {
+                "items": {
+                  "pattern": "^(?:CPY[0-9]{4})(?![\\s\\S])",
+                  "type": "string"
+                },
+                "maxItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "disposition": {
+                "enum": [
+                  "duplicate",
+                  "implemented",
+                  "partial"
+                ]
+              }
+            },
+            "required": [
+              "disposition"
+            ]
+          },
+          "then": {
+            "properties": {
+              "rules": {
+                "items": {
+                  "pattern": "^(?:CPY[0-9]{4})(?![\\s\\S])",
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "rules"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "enum": [
+                  "c-api-roadmap",
+                  "duplicate",
+                  "dynamic-evidence-roadmap",
+                  "not-applicable",
+                  "not-statically-detectable",
+                  "partial"
+                ]
+              }
+            },
+            "required": [
+              "disposition"
+            ]
+          },
+          "then": {
+            "required": [
+              "note"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "implemented",
+            "partial",
+            "not-statically-detectable",
+            "dynamic-evidence-roadmap",
+            "c-api-roadmap",
+            "duplicate",
+            "not-applicable"
+          ],
+          "type": "string"
+        },
+        "note": {
+          "minLength": 1,
+          "pattern": "^(?:(?![\\s\\S]*[\\ud800-\\udfff])[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?:[\\s\\S]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])?)(?![\\s\\S])",
+          "type": "string"
+        },
+        "rules": {
+          "items": {
+            "pattern": "^(?:CPY[0-9]{4})(?![\\s\\S])",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "source_key": {
+          "minLength": 1,
+          "pattern": "^(?:(?![\\s\\S]*[\\ud800-\\udfff])[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?:[\\s\\S]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])?)(?![\\s\\S])",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_key",
+        "disposition"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://pyahead.dev/schema/registry-coverage-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/entry"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "checked_on": {
+          "pattern": "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})(?![\\s\\S])",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^(?:[a-z0-9][a-z0-9.-]*)(?![\\s\\S])",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "pattern": "^(?:(?![\\s\\S]*[\\ud800-\\udfff])[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?:[\\s\\S]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])?)(?![\\s\\S])",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "pattern": "^(?:(?![\\s\\S]*[\\ud800-\\udfff])https://(?![^/?#]*@)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::(?:[0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:[/?#][^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*)?)(?![\\s\\S])",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "url",
+        "checked_on"
+      ],
+      "type": "object"
+    },
+    "source_keys": {
+      "items": {
+        "minLength": 1,
+        "pattern": "^(?:(?![\\s\\S]*[\\ud800-\\udfff])[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?:[\\s\\S]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])?)(?![\\s\\S])",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "source",
+    "source_keys",
+    "entries"
+  ],
+  "title": "PyAhead registry coverage schema version 1",
+  "type": "object",
+  "x-pyahead-semantic-validation": [
+    "source keys are unique within a manifest",
+    "every audited source key has exactly one classification entry",
+    "rule references resolve to canonical IDs",
+    "every canonical rule is classified by at least one selected source"
+  ]
+}

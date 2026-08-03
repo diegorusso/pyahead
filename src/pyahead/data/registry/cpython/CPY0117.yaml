@@ -1,0 +1,61 @@
+schema_version: 1
+id: CPY0117
+title: "Legacy sre modules are removed"
+summary: >-
+  The sre_compile, sre_constants, and sre_parse modules were deprecated in Python 3.11 and are removed in Python 3.15.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: sre_compile
+
+timeline:
+  - event: deprecated
+    python: "3.11"
+    certainty: released
+    source: python-3.11-deprecated
+  - event: removed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: module-import
+    module: sre_compile
+  - kind: literal-dynamic-import
+    module: sre_compile
+    confidence: medium
+  - kind: module-import
+    module: sre_constants
+  - kind: literal-dynamic-import
+    module: sre_constants
+    confidence: medium
+  - kind: module-import
+    module: sre_parse
+  - kind: literal-dynamic-import
+    module: sre_parse
+    confidence: medium
+
+remediation:
+  summary: >-
+    Stop importing the private sre modules and use the public re API.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#sre"
+  automation: null
+
+sources:
+  - id: python-3.11-deprecated
+    title: "What's New in Python 3.11 — Deprecated"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#deprecated"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — sre module removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#sre"
+
+tags: [stdlib, module-removal, scheduled-removal, private-api]

@@ -1,0 +1,42 @@
+schema_version: 1
+id: CPY0120
+title: "SSL-disabling option constants are deprecated"
+summary: >-
+  ssl.OP_NO_SSLv2 and ssl.OP_NO_SSLv3 have been deprecated since Python 3.6.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: ssl.OP_NO_SSLv2
+
+timeline:
+  - event: deprecated
+    python: "3.6"
+    certainty: released
+    source: python-3.14-ssl
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ssl.OP_NO_SSLv2
+  - kind: qualified-reference
+    qualified_name: ssl.OP_NO_SSLv3
+
+remediation:
+  summary: >-
+    Configure SSLContext.minimum_version and SSLContext.maximum_version instead.
+  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.OP_NO_SSLv2"
+  automation: null
+
+sources:
+  - id: python-3.14-ssl
+    title: "Python 3.14 ssl documentation — OP_NO_SSL options"
+    url: "https://docs.python.org/3.14/library/ssl.html#ssl.OP_NO_SSLv2"
+
+tags: [stdlib, unscheduled-removal, ssl]

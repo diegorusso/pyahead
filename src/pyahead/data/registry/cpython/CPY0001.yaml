@@ -31,6 +31,9 @@ impact:
 matchers:
   - kind: module-import
     module: cgi
+  - kind: literal-dynamic-import
+    module: cgi
+    confidence: medium
 
 remediation:
   summary: >-

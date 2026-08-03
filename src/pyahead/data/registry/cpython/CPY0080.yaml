@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0080
+title: "MacOSXOSAScript._name is removed"
+summary: >-
+  The undocumented webbrowser.MacOSXOSAScript._name attribute is removed in Python 3.13; PyAhead matches class-qualified references.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: webbrowser.MacOSXOSAScript._name
+
+timeline:
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: webbrowser.MacOSXOSAScript._name
+
+remediation:
+  summary: >-
+    Remove reliance on this undocumented attribute and use the supported webbrowser interface.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, api-removal, webbrowser, partial]
+

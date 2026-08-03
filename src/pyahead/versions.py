@@ -4,7 +4,10 @@ import re
 from dataclasses import dataclass
 from typing import Self
 
-_PYTHON_MINOR_PATTERN = re.compile(r"3\.(0|[1-9][0-9]*)\Z")
+# A three-digit minor leaves ample release headroom while keeping conversion
+# bounded for untrusted policy and registry input.
+PYTHON_MINOR_PATTERN = r"3\.(0|[1-9][0-9]{0,2})"
+_PYTHON_MINOR_RE = re.compile(f"{PYTHON_MINOR_PATTERN}\\Z")
 _SUPPORTED_MAJOR = 3
 
 
@@ -32,7 +35,7 @@ class PythonMinor:
     @classmethod
     def parse(cls, value: str) -> Self:
         """Parse a strict ``MAJOR.MINOR`` policy value."""
-        match = _PYTHON_MINOR_PATTERN.fullmatch(value)
+        match = _PYTHON_MINOR_RE.fullmatch(value)
         if match is None:
             raise InvalidPythonMinorError(value)
         return cls(major=_SUPPORTED_MAJOR, minor=int(match.group(1)))
@@ -40,3 +43,17 @@ class PythonMinor:
     def __str__(self) -> str:
         """Render the canonical minor version."""
         return f"{self.major}.{self.minor}"
+
+
+def target_set(
+    baseline: PythonMinor,
+    horizon: PythonMinor,
+) -> frozenset[PythonMinor]:
+    """Generate an inclusive set of Python minor targets."""
+    if horizon < baseline:
+        message = "horizon Python must not precede baseline Python"
+        raise ValueError(message)
+    return frozenset(
+        PythonMinor(major=baseline.major, minor=minor)
+        for minor in range(baseline.minor, horizon.minor + 1)
+    )

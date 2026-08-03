@@ -1,0 +1,45 @@
+schema_version: 1
+id: CPY0063
+title: "TarFile.tarfile is scheduled for removal"
+summary: >-
+  The undocumented tarfile.TarFile.tarfile attribute is deprecated in Python 3.13 and scheduled for removal in Python 3.16; PyAhead matches class-qualified references.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: tarfile.TarFile.tarfile
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-deprecations
+  - event: removed
+    python: "3.16"
+    certainty: scheduled
+    source: python-deprecations
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: tarfile.TarFile.tarfile
+
+remediation:
+  summary: >-
+    Remove reliance on this undocumented attribute and use supported tarfile APIs.
+  documentation_url: "https://docs.python.org/3/deprecations/index.html"
+  automation: null
+
+sources:
+  - id: python-deprecations
+    title: "Python deprecation index"
+    url: "https://docs.python.org/3/deprecations/index.html"
+
+tags: [stdlib, scheduled-removal, tarfile, partial]

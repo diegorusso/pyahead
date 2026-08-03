@@ -1,0 +1,175 @@
+schema_version: 1
+source:
+  id: python-3.14-removed
+  title: "What's New in Python 3.14 — Removed"
+  url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  checked_on: "2026-08-02"
+
+# The ordered keys are independently pinned by tests and enumerate every
+# top-level and nested API bullet in the selected Removed section.
+source_keys:
+  - argparse-booleanoptionalaction-parameters
+  - argparse-nested-groups
+  - ast-legacy-constant-classes
+  - ast-bytes
+  - ast-ellipsis
+  - ast-nameconstant
+  - ast-num
+  - ast-str
+  - ast-constant-n-s
+  - ast-constant-n
+  - ast-constant-s
+  - asyncio-child-watchers
+  - asyncio-abstract-child-watcher
+  - asyncio-fast-child-watcher
+  - asyncio-multiloop-child-watcher
+  - asyncio-pidfd-child-watcher
+  - asyncio-safe-child-watcher
+  - asyncio-threaded-child-watcher
+  - asyncio-policy-get-child-watcher
+  - asyncio-policy-set-child-watcher
+  - asyncio-get-child-watcher
+  - asyncio-set-child-watcher
+  - asyncio-get-event-loop-no-current-loop
+  - email-utils-localtime-isdst
+  - importlib-abc-resource-exports
+  - importlib-abc-resource-reader
+  - importlib-abc-traversable
+  - importlib-abc-traversable-resources
+  - itertools-copy-pickle-reduce
+  - pathlib-path-extra-keywords
+  - pathlib-purepath-multiple-arguments
+  - pkgutil-find-loader-get-loader
+  - pty-master-open-slave-open
+  - sqlite3-version-version-info
+  - sqlite3-named-placeholders-sequence
+  - urllib-parse-quoter
+  - urllib-request-urlopener-fancyurlopener
+
+entries:
+  - source_key: argparse-booleanoptionalaction-parameters
+    disposition: implemented
+    rules: [CPY0045]
+  - source_key: argparse-nested-groups
+    disposition: not-statically-detectable
+    note: Proving that a group receiver was created from another group requires data-flow and receiver-type inference.
+  - source_key: ast-legacy-constant-classes
+    disposition: duplicate
+    rules: [CPY0064]
+    note: This parent bullet is decomposed into the five removed class bullets below.
+  - source_key: ast-bytes
+    disposition: implemented
+    rules: [CPY0064]
+  - source_key: ast-ellipsis
+    disposition: implemented
+    rules: [CPY0064]
+  - source_key: ast-nameconstant
+    disposition: implemented
+    rules: [CPY0064]
+  - source_key: ast-num
+    disposition: implemented
+    rules: [CPY0064]
+  - source_key: ast-str
+    disposition: implemented
+    rules: [CPY0064]
+  - source_key: ast-constant-n-s
+    disposition: duplicate
+    rules: [CPY0065]
+    note: This parent bullet is decomposed into the two removed property bullets below.
+  - source_key: ast-constant-n
+    disposition: partial
+    rules: [CPY0065]
+    note: Exact Constant-qualified references are detected; arbitrary Constant receiver types are not inferred.
+  - source_key: ast-constant-s
+    disposition: partial
+    rules: [CPY0065]
+    note: Exact Constant-qualified references are detected; arbitrary Constant receiver types are not inferred.
+  - source_key: asyncio-child-watchers
+    disposition: duplicate
+    rules: [CPY0043]
+    note: This parent bullet is decomposed into the ten removed API bullets below.
+  - source_key: asyncio-abstract-child-watcher
+    disposition: implemented
+    rules: [CPY0043]
+  - source_key: asyncio-fast-child-watcher
+    disposition: implemented
+    rules: [CPY0043]
+  - source_key: asyncio-multiloop-child-watcher
+    disposition: implemented
+    rules: [CPY0043]
+  - source_key: asyncio-pidfd-child-watcher
+    disposition: implemented
+    rules: [CPY0043]
+  - source_key: asyncio-safe-child-watcher
+    disposition: implemented
+    rules: [CPY0043]
+  - source_key: asyncio-threaded-child-watcher
+    disposition: implemented
+    rules: [CPY0043]
+  - source_key: asyncio-policy-get-child-watcher
+    disposition: partial
+    rules: [CPY0043]
+    note: >-
+      Exact AbstractEventLoopPolicy, DefaultEventLoopPolicy,
+      WindowsSelectorEventLoopPolicy, and WindowsProactorEventLoopPolicy
+      references are detected; arbitrary policy receiver types are not inferred.
+  - source_key: asyncio-policy-set-child-watcher
+    disposition: partial
+    rules: [CPY0043]
+    note: >-
+      Exact AbstractEventLoopPolicy, DefaultEventLoopPolicy,
+      WindowsSelectorEventLoopPolicy, and WindowsProactorEventLoopPolicy
+      references are detected; arbitrary policy receiver types are not inferred.
+  - source_key: asyncio-get-child-watcher
+    disposition: implemented
+    rules: [CPY0043]
+  - source_key: asyncio-set-child-watcher
+    disposition: implemented
+    rules: [CPY0043]
+  - source_key: asyncio-get-event-loop-no-current-loop
+    disposition: dynamic-evidence-roadmap
+    note: The exception depends on whether a current event loop exists at runtime.
+  - source_key: email-utils-localtime-isdst
+    disposition: implemented
+    rules: [CPY0046]
+  - source_key: importlib-abc-resource-exports
+    disposition: duplicate
+    rules: [CPY0041]
+    note: This parent bullet is decomposed into the three removed class bullets below.
+  - source_key: importlib-abc-resource-reader
+    disposition: implemented
+    rules: [CPY0041]
+  - source_key: importlib-abc-traversable
+    disposition: implemented
+    rules: [CPY0041]
+  - source_key: importlib-abc-traversable-resources
+    disposition: implemented
+    rules: [CPY0041]
+  - source_key: itertools-copy-pickle-reduce
+    disposition: not-statically-detectable
+    note: Identifying arbitrary itertools iterator receiver types requires type inference.
+  - source_key: pathlib-path-extra-keywords
+    disposition: implemented
+    rules: [CPY0133]
+  - source_key: pathlib-purepath-multiple-arguments
+    disposition: partial
+    rules: [CPY0047]
+    note: Class-qualified calls with statically visible argument counts are detected; arbitrary bound receiver types are not inferred.
+  - source_key: pkgutil-find-loader-get-loader
+    disposition: implemented
+    rules: [CPY0039]
+  - source_key: pty-master-open-slave-open
+    disposition: implemented
+    rules: [CPY0040]
+  - source_key: sqlite3-version-version-info
+    disposition: implemented
+    rules: [CPY0038]
+  - source_key: sqlite3-named-placeholders-sequence
+    disposition: not-statically-detectable
+    note: Proving placeholder style and the runtime parameter container requires value and type inference.
+  - source_key: urllib-parse-quoter
+    disposition: implemented
+    rules: [CPY0037]
+  - source_key: urllib-request-urlopener-fancyurlopener
+    disposition: implemented
+    rules: [CPY0088]

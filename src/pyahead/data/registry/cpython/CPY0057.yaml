@@ -1,0 +1,52 @@
+schema_version: 1
+id: CPY0057
+title: "Arguments to threading.RLock are scheduled for removal"
+summary: >-
+  Passing arguments to threading.RLock is deprecated in Python 3.14 and scheduled to become invalid in Python 3.15; PyAhead detects statically visible positional arguments.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: threading.RLock
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+  - event: signature_changed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: threading.RLock
+    min_positional_args: 1
+  - kind: call-shape
+    qualified_name: threading.RLock
+    min_keyword_args: 1
+
+remediation:
+  summary: >-
+    Construct threading.RLock without arguments.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#threading"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — threading deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#threading"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — threading removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#threading"
+
+tags: [stdlib, signature-change, threading, partial]

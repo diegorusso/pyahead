@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0071
+title: "pathlib.Path.link_to is removed"
+summary: >-
+  pathlib.Path.link_to is removed in Python 3.12; PyAhead matches class-qualified references.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: pathlib.Path.link_to
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: cpython-84131
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: pathlib.Path.link_to
+  - kind: qualified-reference
+    qualified_name: pathlib.PosixPath.link_to
+  - kind: qualified-reference
+    qualified_name: pathlib.WindowsPath.link_to
+
+remediation:
+  summary: >-
+    Use pathlib.Path.hardlink_to as directed by the linked release notes.
+  documentation_url: "https://github.com/python/cpython/issues/84131"
+  automation: null
+
+sources:
+  - id: cpython-84131
+    title: "CPython issue 84131 — remove pathlib.Path.link_to"
+    url: "https://github.com/python/cpython/issues/84131"
+
+tags: [stdlib, api-removal, pathlib, partial]

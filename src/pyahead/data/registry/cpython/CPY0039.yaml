@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0039
+title: "Legacy pkgutil loader helpers are removed"
+summary: >-
+  pkgutil.find_loader and pkgutil.get_loader are deprecated in Python 3.12 and removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: pkgutil.find_loader
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.14-removed
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: pkgutil.find_loader
+  - kind: qualified-reference
+    qualified_name: pkgutil.get_loader
+
+remediation:
+  summary: >-
+    Use importlib.util.find_spec as directed by the linked CPython documentation.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, api-removal, imports]
+

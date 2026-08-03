@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "rule_id": "CPY0091",
+  "policy": {"baseline_python": "3.11", "horizon_python": "3.16"},
+  "cases": [
+    {
+      "name": "deprecated typing alias is positive",
+      "root": ".",
+      "paths": ["positive/source.py"],
+      "expected_findings": [{"rule_id": "CPY0091", "confidence": "high", "action_version": "3.11", "impact": "deprecated", "resolution": "exact-import", "reachable_versions": ["3.11", "3.12", "3.13", "3.14", "3.15", "3.16"], "usage_contexts": ["runtime", "typing"]}],
+      "expected_inference_codes": []
+    },
+    {
+      "name": "unrelated typing alias is negative",
+      "root": ".",
+      "paths": ["negative/source.py"],
+      "expected_findings": [],
+      "expected_inference_codes": []
+    }
+  ]
+}

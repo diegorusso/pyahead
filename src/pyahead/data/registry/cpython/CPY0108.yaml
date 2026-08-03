@@ -1,0 +1,43 @@
+schema_version: 1
+id: CPY0108
+title: "The nturl2path module is deprecated"
+summary: >-
+  The nturl2path module is deprecated in Python 3.14 without a published
+  removal version.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: nturl2path
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: module-import
+    module: nturl2path
+  - kind: literal-dynamic-import
+    module: nturl2path
+    confidence: medium
+
+remediation:
+  summary: Use urllib.request.url2pathname and urllib.request.pathname2url.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#nturl2path"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#nturl2path"
+
+tags: [stdlib, unscheduled-removal, module]

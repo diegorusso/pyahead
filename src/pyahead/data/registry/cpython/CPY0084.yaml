@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0084
+title: "Legacy importlib compatibility helpers are removed"
+summary: >-
+  importlib.module_repr, importlib.util.module_for_loader,
+  importlib.util.set_loader, and importlib.util.set_package are removed in
+  Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: importlib.module_repr
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: importlib.module_repr
+  - kind: qualified-reference
+    qualified_name: importlib.util.module_for_loader
+  - kind: qualified-reference
+    qualified_name: importlib.util.set_loader
+  - kind: qualified-reference
+    qualified_name: importlib.util.set_package
+
+remediation:
+  summary: >-
+    Remove the compatibility helpers and follow the supported import protocols in the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, importlib]

@@ -1,0 +1,49 @@
+schema_version: 1
+id: CPY0114
+title: "zipimporter.load_module is scheduled for removal"
+summary: >-
+  zipimport.zipimporter.load_module is deprecated since Python 3.10 and
+  scheduled for removal in Python 3.15; exact class-qualified references are
+  detected.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: zipimport.zipimporter.load_module
+
+timeline:
+  - event: deprecated
+    python: "3.10"
+    certainty: released
+    source: python-3.10-deprecated
+  - event: removed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: zipimport.zipimporter.load_module
+
+remediation:
+  summary: Use zipimporter.exec_module.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#zipimport"
+  automation: null
+
+sources:
+  - id: python-3.10-deprecated
+    title: "What's New in Python 3.10 — Deprecated"
+    url: "https://docs.python.org/3.10/whatsnew/3.10.html#deprecated"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — zipimport removals"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#zipimport"
+
+tags: [stdlib, scheduled-removal, zipimport, partial]

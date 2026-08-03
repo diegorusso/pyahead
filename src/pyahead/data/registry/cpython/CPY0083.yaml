@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0083
+title: "FTP_TLS.ssl_version is removed"
+summary: >-
+  The ftplib.FTP_TLS.ssl_version class attribute is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: ftplib.FTP_TLS.ssl_version
+
+timeline:
+  - event: removed
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ftplib.FTP_TLS.ssl_version
+
+remediation:
+  summary: >-
+    Remove reliance on the attribute and use the supported SSL-context configuration described by the linked release notes.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, api-removal, ftplib, partial-receiver-coverage]
+

@@ -1,0 +1,40 @@
+schema_version: 1
+id: CPY0123
+title: "The generic SSL PROTOCOL_TLS constant is deprecated"
+summary: >-
+  ssl.PROTOCOL_TLS has been deprecated since Python 3.10.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: ssl.PROTOCOL_TLS
+
+timeline:
+  - event: deprecated
+    python: "3.10"
+    certainty: released
+    source: python-3.14-ssl
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: ssl.PROTOCOL_TLS
+
+remediation:
+  summary: >-
+    Use ssl.PROTOCOL_TLS_CLIENT or ssl.PROTOCOL_TLS_SERVER.
+  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.PROTOCOL_TLS"
+  automation: null
+
+sources:
+  - id: python-3.14-ssl
+    title: "Python 3.14 ssl documentation — PROTOCOL_TLS"
+    url: "https://docs.python.org/3.14/library/ssl.html#ssl.PROTOCOL_TLS"
+
+tags: [stdlib, unscheduled-removal, ssl]

@@ -1,0 +1,41 @@
+schema_version: 1
+id: CPY0104
+title: "typing.AnyStr is deprecated"
+summary: >-
+  typing.AnyStr is deprecated in Python 3.13. Python 3.16 removes it from
+  typing.__all__ and warns on access; its full Python 3.18 removal is outside
+  this registry's supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime, typing]
+
+subject:
+  kind: attribute
+  name: typing.AnyStr
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: typing.AnyStr
+
+remediation:
+  summary: Use the type-parameter syntax documented by the typing release note.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#typing"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — New Deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#typing"
+
+tags: [stdlib, scheduled-removal, typing, outside-window]

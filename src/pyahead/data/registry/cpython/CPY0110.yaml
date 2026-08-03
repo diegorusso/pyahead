@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0110
+title: "PurePath.as_uri is deprecated"
+summary: >-
+  pathlib.PurePath.as_uri is deprecated in Python 3.14. Its scheduled Python
+  3.19 removal is outside this registry's supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: pathlib.PurePath.as_uri
+
+timeline:
+  - event: deprecated
+    python: "3.14"
+    certainty: released
+    source: python-3.14-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: pathlib.PurePath.as_uri
+  - kind: qualified-reference
+    qualified_name: pathlib.PurePosixPath.as_uri
+  - kind: qualified-reference
+    qualified_name: pathlib.PureWindowsPath.as_uri
+
+remediation:
+  summary: Use pathlib.Path.as_uri for concrete filesystem paths.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#pathlib"
+  automation: null
+
+sources:
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pathlib"
+
+tags: [stdlib, scheduled-removal, pathlib, partial, outside-window]

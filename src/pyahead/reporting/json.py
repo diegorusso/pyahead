@@ -1,4 +1,4 @@
-"""Deterministic JSON serialization for M1 scan reports."""
+"""Deterministic JSON serialization for static scan reports."""
 
 import json
 from typing import TypeAlias
@@ -47,8 +47,18 @@ def _evidence(
 
 
 def _finding(finding: Finding) -> dict[str, JsonValue]:
-    return {
+    remediation: dict[str, JsonValue] = {"summary": finding.remediation.summary}
+    if finding.remediation.documentation_url is not None:
+        remediation["documentation_url"] = finding.remediation.documentation_url
+    if finding.remediation.automation is not None:
+        automation = finding.remediation.automation
+        remediation["automation"] = {
+            "rule": automation.rule,
+            "tool": automation.tool.value,
+        }
+    document: dict[str, JsonValue] = {
         "action_version": str(finding.action_version),
+        "baseline_status": finding.baseline_status.value,
         "enclosing_scope": finding.enclosing_scope,
         "fingerprint": finding.fingerprint,
         "impact": finding.impact.value,
@@ -59,13 +69,24 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             "kind": finding.match_kind,
         },
         "registry_revision": finding.registry_revision,
-        "remediation": {"summary": finding.remediation.summary},
+        "removal_unscheduled": finding.removal_unscheduled,
+        "reachable_versions": [str(version) for version in finding.reachable_versions],
+        "remediation": remediation,
         "rule_id": finding.rule_id,
         "sources": [
             {"id": source.id, "title": source.title, "url": source.url}
             for source in finding.sources
         ],
         "subject": finding.subject,
+        "suppressed": finding.suppression is not None,
+        "states": [
+            {
+                "from": str(state.from_python),
+                "state": state.state.value,
+                "through": str(state.through_python),
+            }
+            for state in finding.states
+        ],
         "timeline": [
             {
                 "certainty": event.certainty.value,
@@ -76,7 +97,16 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
             for event in finding.events
         ],
         "title": finding.title,
+        "usage_contexts": [context.value for context in finding.usage_contexts],
     }
+    if finding.suppression is not None:
+        suppression: dict[str, JsonValue] = {"kind": finding.suppression.kind.value}
+        if finding.suppression.reason is not None:
+            suppression["reason"] = finding.suppression.reason
+        if finding.suppression.pattern is not None:
+            suppression["pattern"] = finding.suppression.pattern
+        document["suppression"] = suppression
+    return document
 
 
 def _inference(inference: AnalysisInference) -> dict[str, JsonValue]:
@@ -103,43 +133,77 @@ def _diagnostic(diagnostic: Diagnostic) -> dict[str, JsonValue]:
 
 
 def _versions(report: ScanReport) -> list[JsonValue]:
-    baseline = report.policy.baseline_python.minor
-    horizon = report.policy.horizon_python.minor
-    return [f"3.{minor}" for minor in range(baseline, horizon + 1)]
+    return [str(version) for version in sorted(report.policy.target_versions)]
 
 
 def _summary(report: ScanReport) -> dict[str, JsonValue]:
     counts = {impact.value: 0 for impact in Impact}
+    suppressed = 0
+    new = 0
     for finding in report.findings:
+        if finding.suppression is not None:
+            suppressed += 1
+            continue
         counts[finding.impact.value] += 1
+        if finding.baseline_status.value == "new":
+            new += 1
     return {
         "breaking": counts[Impact.BREAKING.value],
         "deprecated": counts[Impact.DEPRECATED.value],
         "informational": counts[Impact.INFORMATIONAL.value],
-        "new": len(report.findings),
+        "new": new,
         "risk": counts[Impact.RISK.value],
-        "suppressed": 0,
+        "suppressed": suppressed,
     }
 
 
-def report_document(report: ScanReport) -> dict[str, JsonValue]:
-    """Build the M1 JSON document without timestamps or absolute paths."""
+def _configuration(report: ScanReport) -> dict[str, JsonValue]:
+    configuration = report.configuration
     return {
+        "allow_incomplete": configuration.allow_incomplete,
+        "exclude": list(configuration.exclude),
+        "fail_new_only": configuration.fail_new_only,
+        "fail_on": configuration.fail_on.value,
+        "include": list(configuration.include),
+        "max_file_size_bytes": configuration.max_file_size_bytes,
+        "minimum_confidence": configuration.minimum_confidence.value,
+        "per_file_ignores": {
+            item.pattern: list(item.rule_ids) for item in configuration.per_file_ignores
+        },
+        "respect_gitignore": configuration.respect_gitignore,
+        "show_suppressed": configuration.show_suppressed,
+        "show_unscheduled": configuration.show_unscheduled,
+        "source_roots": list(configuration.source_roots),
+        "source_roots_provenance": configuration.source_roots_provenance,
+    }
+
+
+def _policy_provenance(report: ScanReport) -> dict[str, JsonValue]:
+    provenance: dict[str, JsonValue] = {
+        "baseline_python": report.policy_provenance.baseline_python,
+        "horizon_python": report.policy_provenance.horizon_python,
+    }
+    if report.policy_provenance.requires_python is not None:
+        provenance["requires_python"] = report.policy_provenance.requires_python
+    return provenance
+
+
+def report_document(report: ScanReport) -> dict[str, JsonValue]:
+    """Build the JSON document without timestamps or absolute paths."""
+    return {
+        "configuration": _configuration(report),
         "diagnostics": [_diagnostic(item) for item in report.diagnostics],
-        "findings": [_finding(item) for item in report.findings],
+        "findings": [_finding(item) for item in report.visible_findings],
         "gate": {
-            "fail_on": "breaking",
+            "fail_on": report.configuration.fail_on.value,
             "failed": report.gate_failed,
-            "new_only": False,
+            "new_only": report.configuration.fail_new_only,
         },
         "inferences": [_inference(item) for item in report.inferences],
         "policy": {
             "baseline_python": str(report.policy.baseline_python),
             "horizon_python": str(report.policy.horizon_python),
-            "provenance": {
-                "baseline_python": "command-line",
-                "horizon_python": "command-line",
-            },
+            "provenance": _policy_provenance(report),
             "versions": _versions(report),
         },
         "registry": {

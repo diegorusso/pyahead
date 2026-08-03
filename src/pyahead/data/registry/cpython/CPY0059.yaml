@@ -1,0 +1,61 @@
+schema_version: 1
+id: CPY0059
+title: "Deprecated NamedTuple functional forms are scheduled to fail"
+summary: >-
+  Keyword field declarations and omitted fields in functional typing.NamedTuple calls are deprecated in Python 3.13 and scheduled to become invalid in Python 3.15.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime, typing]
+
+subject:
+  kind: function
+  name: typing.NamedTuple
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+  - event: signature_changed
+    python: "3.15"
+    certainty: scheduled
+    source: python-3.13-deprecated
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: typing.NamedTuple
+    min_positional_args: 1
+    max_positional_args: 1
+    max_keyword_args: 0
+  - kind: call-shape
+    qualified_name: typing.NamedTuple
+    min_positional_args: 1
+    max_positional_args: 1
+    min_keyword_args: 1
+  - kind: call-shape
+    qualified_name: typing.NamedTuple
+    min_positional_args: 2
+    max_positional_args: 2
+    max_keyword_args: 0
+    literal_arguments:
+      - position: 1
+        equals: null
+
+remediation:
+  summary: >-
+    Use class syntax or pass an explicit field sequence as documented by typing.NamedTuple.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#typing"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — typing deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#typing"
+
+tags: [stdlib, signature-change, typing, partial]

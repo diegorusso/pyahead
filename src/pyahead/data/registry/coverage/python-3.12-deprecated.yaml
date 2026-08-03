@@ -1,0 +1,198 @@
+schema_version: 1
+source:
+  id: python-3.12-deprecated
+  title: "What's New in Python 3.12 — Deprecated"
+  url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
+  checked_on: "2026-08-02"
+
+source_keys:
+  - argparse-boolean-optional-action
+  - ast-legacy-nodes
+  - ast-num
+  - ast-str
+  - ast-bytes
+  - ast-nameconstant
+  - ast-ellipsis
+  - asyncio-child-watcher-apis
+  - asyncio-child-watcher-classes
+  - asyncio-child-watcher-accessors
+  - asyncio-default-policy-get-event-loop
+  - calendar-january-february
+  - collections-abc-bytestring
+  - datetime-naive-utc-methods
+  - email-utils-localtime-isdst
+  - importlib-resource-reader-traversable
+  - importlib-abc-resource-reader
+  - importlib-abc-traversable
+  - importlib-abc-traversable-resources
+  - importlib-resources-traversable-guidance
+  - importlib-resources-traversable-resources-guidance
+  - itertools-copy-pickle-reduce
+  - multiprocessing-fork-multithreaded
+  - pkgutil-legacy-loader-apis
+  - pty-legacy-open-functions
+  - os-forkpty-multithreaded
+  - os-stat-st-ctime-windows
+  - os-fork-multithreaded
+  - shutil-rmtree-onerror
+  - sqlite3-default-adapters-converters
+  - sqlite3-named-placeholders-sequence
+  - sys-last-exception-attributes
+  - tarfile-extraction-filter-default
+  - typing-hashable-sized
+  - typing-bytestring
+  - element-truth-testing
+  - generator-throw-three-arguments
+  - module-package-cached-fallbacks
+  - module-package-spec-mismatch-warning
+  - bool-bitwise-inversion
+  - code-co-lnotab
+  - cpython-c-api-deprecations
+
+entries:
+  - source_key: argparse-boolean-optional-action
+    disposition: duplicate
+    rules: [CPY0045]
+    note: The released deprecation and removal are represented by CPY0045.
+  - source_key: ast-legacy-nodes
+    disposition: duplicate
+    rules: [CPY0064]
+    note: This parent bullet is decomposed into the five deprecated class bullets below.
+  - source_key: ast-num
+    disposition: duplicate
+    rules: [CPY0064]
+    note: The Python 3.12 runtime-warning boundary and Python 3.14 removal are represented by CPY0064.
+  - source_key: ast-str
+    disposition: duplicate
+    rules: [CPY0064]
+    note: The Python 3.12 runtime-warning boundary and Python 3.14 removal are represented by CPY0064.
+  - source_key: ast-bytes
+    disposition: duplicate
+    rules: [CPY0064]
+    note: The Python 3.12 runtime-warning boundary and Python 3.14 removal are represented by CPY0064.
+  - source_key: ast-nameconstant
+    disposition: duplicate
+    rules: [CPY0064]
+    note: The Python 3.12 runtime-warning boundary and Python 3.14 removal are represented by CPY0064.
+  - source_key: ast-ellipsis
+    disposition: duplicate
+    rules: [CPY0064]
+    note: The Python 3.12 runtime-warning boundary and Python 3.14 removal are represented by CPY0064.
+  - source_key: asyncio-child-watcher-apis
+    disposition: duplicate
+    rules: [CPY0043]
+    note: This module bullet is decomposed into the three nested bullets below.
+  - source_key: asyncio-child-watcher-classes
+    disposition: duplicate
+    rules: [CPY0043]
+    note: All four named classes in this Python 3.12 bullet are represented.
+  - source_key: asyncio-child-watcher-accessors
+    disposition: duplicate
+    rules: [CPY0043]
+    note: All four named functions and methods in this Python 3.12 bullet are represented.
+  - source_key: asyncio-default-policy-get-event-loop
+    disposition: dynamic-evidence-roadmap
+    note: The warning depends on current event-loop state and whether the policy creates a loop at runtime.
+  - source_key: calendar-january-february
+    disposition: implemented
+    rules: [CPY0092]
+  - source_key: collections-abc-bytestring
+    disposition: implemented
+    rules: [CPY0044]
+  - source_key: datetime-naive-utc-methods
+    disposition: implemented
+    rules: [CPY0093]
+  - source_key: email-utils-localtime-isdst
+    disposition: duplicate
+    rules: [CPY0046]
+    note: The removed argument is represented by CPY0046.
+  - source_key: importlib-resource-reader-traversable
+    disposition: duplicate
+    rules: [CPY0041]
+    note: This parent bullet is decomposed into its class and replacement-guidance bullets below.
+  - source_key: importlib-abc-resource-reader
+    disposition: duplicate
+    rules: [CPY0041]
+    note: The deprecated ABC and its released removal are represented by CPY0041.
+  - source_key: importlib-abc-traversable
+    disposition: duplicate
+    rules: [CPY0041]
+    note: The deprecated ABC and its released removal are represented by CPY0041.
+  - source_key: importlib-abc-traversable-resources
+    disposition: duplicate
+    rules: [CPY0041]
+    note: The deprecated ABC and its released removal are represented by CPY0041.
+  - source_key: importlib-resources-traversable-guidance
+    disposition: not-applicable
+    note: This nested bullet is replacement guidance, not a separate deprecation.
+  - source_key: importlib-resources-traversable-resources-guidance
+    disposition: not-applicable
+    note: This nested bullet is replacement guidance, not a separate deprecation.
+  - source_key: itertools-copy-pickle-reduce
+    disposition: not-statically-detectable
+    note: Identifying arbitrary itertools iterator receiver types requires type inference.
+  - source_key: multiprocessing-fork-multithreaded
+    disposition: dynamic-evidence-roadmap
+    note: The warning depends on the process thread state and selected start method.
+  - source_key: pkgutil-legacy-loader-apis
+    disposition: duplicate
+    rules: [CPY0025, CPY0039]
+    note: The named classes and helper functions are represented by existing rules.
+  - source_key: pty-legacy-open-functions
+    disposition: duplicate
+    rules: [CPY0040]
+    note: The Python 3.12 runtime-warning boundary and Python 3.14 removal for both functions are represented by CPY0040.
+  - source_key: os-forkpty-multithreaded
+    disposition: dynamic-evidence-roadmap
+    note: The warning depends on process thread state at runtime.
+  - source_key: os-stat-st-ctime-windows
+    disposition: dynamic-evidence-roadmap
+    note: The deprecation applies only to Windows stat results, but the static alpha has no platform-target evidence and must not report it unconditionally.
+  - source_key: os-fork-multithreaded
+    disposition: dynamic-evidence-roadmap
+    note: The warning depends on process thread state at runtime.
+  - source_key: shutil-rmtree-onerror
+    disposition: implemented
+    rules: [CPY0094]
+  - source_key: sqlite3-default-adapters-converters
+    disposition: dynamic-evidence-roadmap
+    note: Reliance on registered default conversions depends on runtime values and connection configuration.
+  - source_key: sqlite3-named-placeholders-sequence
+    disposition: not-statically-detectable
+    note: Proving placeholder style and the runtime parameter container requires value and type inference.
+  - source_key: sys-last-exception-attributes
+    disposition: implemented
+    rules: [CPY0095]
+  - source_key: tarfile-extraction-filter-default
+    disposition: dynamic-evidence-roadmap
+    note: The warning depends on runtime extraction-filter state.
+  - source_key: typing-hashable-sized
+    disposition: implemented
+    rules: [CPY0096]
+  - source_key: typing-bytestring
+    disposition: duplicate
+    rules: [CPY0091]
+    note: The separately sourced Python 3.9 deprecation is represented by CPY0091.
+  - source_key: element-truth-testing
+    disposition: not-statically-detectable
+    note: Identifying arbitrary Element receiver values in Boolean contexts requires type inference.
+  - source_key: generator-throw-three-arguments
+    disposition: not-statically-detectable
+    note: Proving an arbitrary receiver is a generator requires type inference.
+  - source_key: module-package-cached-fallbacks
+    disposition: dynamic-evidence-roadmap
+    note: The fallback depends on runtime module-spec state rather than spelling alone.
+  - source_key: module-package-spec-mismatch-warning
+    disposition: dynamic-evidence-roadmap
+    note: The warning depends on runtime module and ModuleSpec values rather than attribute spelling alone.
+  - source_key: bool-bitwise-inversion
+    disposition: duplicate
+    rules: [CPY0061]
+    note: Literal Boolean operands are represented by CPY0061.
+  - source_key: code-co-lnotab
+    disposition: partial
+    rules: [CPY0135]
+    note: Exact CodeType-qualified references are detected; arbitrary code-object receiver types require type inference.
+  - source_key: cpython-c-api-deprecations
+    disposition: c-api-roadmap
+    note: C symbols and headers are reserved for the separately designed C API roadmap.

@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0088
+title: "Legacy urllib.request opener classes are removed"
+summary: >-
+  urllib.request.URLopener and urllib.request.FancyURLopener were deprecated
+  in Python 3.3 and removed in Python 3.14.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: urllib.request.URLopener
+
+timeline:
+  - event: deprecated
+    python: "3.3"
+    certainty: released
+    source: python-3.14-removed
+  - event: removed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: urllib.request.URLopener
+  - kind: qualified-reference
+    qualified_name: urllib.request.FancyURLopener
+
+remediation:
+  summary: >-
+    Replace these legacy opener classes with supported urllib.request APIs.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#urllib-request"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#urllib-request"
+
+tags: [stdlib, api-removal, urllib]

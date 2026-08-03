@@ -1,0 +1,108 @@
+schema_version: 1
+id: CPY0086
+title: "Obsolete webbrowser controllers are removed"
+summary: >-
+  Support for the Grail, Mosaic, Netscape, Galeon, Skipstone, Iceape, and Firebird browser controllers is removed in Python 3.12.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: webbrowser.get
+
+timeline:
+  - event: support_dropped
+    python: "3.12"
+    certainty: released
+    source: python-3.12-removed
+
+impact:
+  on_support_drop: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - position: 0
+        equals: "grail"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - keyword: using
+        equals: "grail"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - position: 0
+        equals: "mosaic"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - keyword: using
+        equals: "mosaic"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - position: 0
+        equals: "netscape"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - keyword: using
+        equals: "netscape"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - position: 0
+        equals: "galeon"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - keyword: using
+        equals: "galeon"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - position: 0
+        equals: "skipstone"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - keyword: using
+        equals: "skipstone"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - position: 0
+        equals: "iceape"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - keyword: using
+        equals: "iceape"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - position: 0
+        equals: "firebird"
+  - kind: call-shape
+    qualified_name: webbrowser.get
+    literal_arguments:
+      - keyword: using
+        equals: "firebird"
+
+remediation:
+  summary: >-
+    Remove explicit selection of the obsolete controller and choose a currently supported browser integration appropriate to the deployment environment.
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+
+tags: [stdlib, support-drop, webbrowser, partial-environment-coverage]

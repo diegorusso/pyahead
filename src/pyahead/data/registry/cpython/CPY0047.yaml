@@ -1,0 +1,82 @@
+schema_version: 1
+id: CPY0047
+title: "Multi-argument PurePath relation calls are removed"
+summary: >-
+  Supplying more than one path argument to PurePath.relative_to or
+  PurePath.is_relative_to is deprecated in Python 3.12 and removed in Python
+  3.14; PyAhead matches exact class-qualified calls across the built-in pathlib
+  path classes.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: pathlib.PurePath.relative_to
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.14-removed
+  - event: signature_changed
+    python: "3.14"
+    certainty: released
+    source: python-3.14-removed
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: pathlib.PurePath.relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.PurePath.is_relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.PurePosixPath.relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.PurePosixPath.is_relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.PureWindowsPath.relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.PureWindowsPath.is_relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.Path.relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.Path.is_relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.PosixPath.relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.PosixPath.is_relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.WindowsPath.relative_to
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: pathlib.WindowsPath.is_relative_to
+    min_positional_args: 3
+
+remediation:
+  summary: >-
+    Combine the path arguments before calling the method, following the linked pathlib migration notes.
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.14-removed
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+
+tags: [stdlib, signature-change, pathlib, partial, equivalent-spellings]

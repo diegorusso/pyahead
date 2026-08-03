@@ -1,0 +1,56 @@
+schema_version: 1
+id: CPY0136
+title: "TypedDict keyword-field functional syntax is removed"
+summary: >-
+  The undocumented keyword-field syntax for functional typing.TypedDict was
+  deprecated in Python 3.11 and removed in Python 3.13.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime, typing]
+
+subject:
+  kind: function
+  name: typing.TypedDict
+
+timeline:
+  - event: deprecated
+    python: "3.11"
+    certainty: released
+    source: python-3.13-removed
+  - event: removed
+    python: "3.13"
+    certainty: released
+    source: python-3.13-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: typing.TypedDict
+    min_positional_args: 1
+    max_positional_args: 1
+    min_keyword_args: 1
+    forbidden_keywords: [total]
+  - kind: call-shape
+    qualified_name: typing.TypedDict
+    min_positional_args: 1
+    max_positional_args: 1
+    min_keyword_args: 2
+    required_keywords: [total]
+
+remediation:
+  summary: >-
+    Use class syntax or pass an explicit fields mapping to typing.TypedDict.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+
+tags: [stdlib, api-removal, typing, partial]

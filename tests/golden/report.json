@@ -1,8 +1,27 @@
 {
+  "configuration": {
+    "allow_incomplete": false,
+    "exclude": [],
+    "fail_new_only": false,
+    "fail_on": "breaking",
+    "include": [],
+    "max_file_size_bytes": 2097152,
+    "minimum_confidence": "high",
+    "per_file_ignores": {},
+    "respect_gitignore": true,
+    "show_suppressed": false,
+    "show_unscheduled": true,
+    "source_roots": [
+      ".",
+      "src"
+    ],
+    "source_roots_provenance": "inferred:conventional-root-and-src-layout"
+  },
   "diagnostics": [],
   "findings": [
     {
       "action_version": "3.13",
+      "baseline_status": "new",
       "enclosing_scope": "<module>",
       "fingerprint": "e781bbe30afe0c48c582ed1da3a157bfc8b048eaa000737e1109499f8d63c3ee",
       "impact": "breaking",
@@ -35,10 +54,16 @@
         },
         "kind": "module-import"
       },
-      "registry_revision": "c197fd097ca2da044c700fc655b9dcc4a5ba5d04224441ce12318f96b66ce189",
+      "reachable_versions": [
+        "3.11",
+        "3.12",
+        "3.13"
+      ],
+      "registry_revision": "3a2bf7aafb4480a41996e2bba8b4f2061d7a94f2727c083af094ba910865385e",
       "remediation": {
         "summary": "Replace the specific cgi functionality in use. There is no single drop-in replacement for the complete module."
       },
+      "removal_unscheduled": false,
       "rule_id": "CPY0001",
       "sources": [
         {
@@ -52,7 +77,20 @@
           "url": "https://docs.python.org/3.13/library/cgi.html"
         }
       ],
+      "states": [
+        {
+          "from": "3.11",
+          "state": "deprecated",
+          "through": "3.12"
+        },
+        {
+          "from": "3.13",
+          "state": "breaking",
+          "through": "3.13"
+        }
+      ],
       "subject": "cgi",
+      "suppressed": false,
       "timeline": [
         {
           "certainty": "released",
@@ -67,7 +105,10 @@
           "source": "python-3.13-cgi"
         }
       ],
-      "title": "The cgi module is removed"
+      "title": "The cgi module is removed",
+      "usage_contexts": [
+        "runtime"
+      ]
     }
   ],
   "gate": {
@@ -91,7 +132,7 @@
   },
   "registry": {
     "release": "2026.07.31",
-    "revision": "c197fd097ca2da044c700fc655b9dcc4a5ba5d04224441ce12318f96b66ce189"
+    "revision": "3a2bf7aafb4480a41996e2bba8b4f2061d7a94f2727c083af094ba910865385e"
   },
   "scan": {
     "files_analyzed": 1,

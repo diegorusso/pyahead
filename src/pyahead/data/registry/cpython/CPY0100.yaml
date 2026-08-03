@@ -1,0 +1,47 @@
+schema_version: 1
+id: CPY0100
+title: "Positional optional re arguments are deprecated"
+summary: >-
+  Passing maxsplit, count, or flags positionally to re.split, re.sub, and
+  re.subn is deprecated in Python 3.13; no removal version is published.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: re.split
+
+timeline:
+  - event: deprecated
+    python: "3.13"
+    certainty: released
+    source: python-3.13-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: call-shape
+    qualified_name: re.split
+    min_positional_args: 3
+  - kind: call-shape
+    qualified_name: re.sub
+    min_positional_args: 4
+  - kind: call-shape
+    qualified_name: re.subn
+    min_positional_args: 4
+
+remediation:
+  summary: Pass maxsplit, count, and flags by keyword.
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#re"
+  automation: null
+
+sources:
+  - id: python-3.13-deprecated
+    title: "What's New in Python 3.13 — New Deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#re"
+
+tags: [stdlib, signature-change, re]
