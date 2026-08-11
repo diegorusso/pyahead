@@ -109,6 +109,10 @@ uv build
 uv run pyahead --version
 ```
 
+Note: project-wide coverage is enforced at repository scope (`fail_under=90`),
+so single-file pytest runs may fail coverage checks. Use `uv run pytest
+path/to/test.py --no-cov` when you need isolated test iteration.
+
 See [`docs/contributing.md`](docs/contributing.md) before proposing a change.
 Installing a built distribution does not require uv; packaging uses Hatchling
 through the standard Python build interface.
