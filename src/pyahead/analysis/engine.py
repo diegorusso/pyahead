@@ -821,6 +821,60 @@ def _parse_nesting_diagnostic(
     return None
 
 
+def _operator_nesting_diagnostic(
+    source: str,
+    relative_path: PurePosixPath,
+) -> Diagnostic | None:
+    """Reject pathological non-delimiter nesting in a single token stream."""
+    risky_operators = {
+        "~",
+        "**",
+        "*",
+        "/",
+        "//",
+        "%",
+        "+",
+        "-",
+        "<<",
+        ">>",
+        "&",
+        "^",
+        "|",
+    }
+    nesting = 0
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type in {
+                tokenize.NEWLINE,
+                tokenize.NL,
+                tokenize.DEDENT,
+                tokenize.INDENT,
+            }:
+                nesting = 0
+                continue
+            if token.type != tokenize.OP:
+                continue
+            if token.string in {"(", "[", "{"}:
+                nesting = 0
+                continue
+            if token.string in {")", "]", "}"}:
+                nesting = 0
+                continue
+            if token.string in risky_operators:
+                nesting += 1
+                if nesting > MAX_CST_DEPTH:
+                    return _nesting_diagnostic(
+                        relative_path,
+                        "concrete syntax tree",
+                        MAX_CST_DEPTH,
+                    )
+            else:
+                nesting = 0
+    except tokenize.TokenError:
+        return None
+    return None
+
+
 def _cst_nesting_diagnostic(
     module: cst.Module,
     relative_path: PurePosixPath,
@@ -847,6 +901,10 @@ def _parse_module(
     nesting_diagnostic = _parse_nesting_diagnostic(source, relative_path)
     if nesting_diagnostic is not None:
         return None, nesting_diagnostic
+
+    operator_diagnostic = _operator_nesting_diagnostic(source, relative_path)
+    if operator_diagnostic is not None:
+        return None, operator_diagnostic
 
     try:
         module = cst.parse_module(source)

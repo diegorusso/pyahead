@@ -1,7 +1,7 @@
 """Deterministic offline stand-in for the Codex CLI used by orchestrator tests."""
 
 # The fake deliberately launches Git from an explicit argv and prints CLI help.
-# ruff: noqa: EM101, EM102, S603, T201, TRY003, TRY004
+# ruff: noqa: C901, EM101, EM102, S603, T201, TRY003, TRY004
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ PLAN_ENV = "PYAHEAD_FAKE_CODEX_PLAN"
 STATE_ENV = "PYAHEAD_FAKE_CODEX_STATE"
 EVENTS_ENV = "PYAHEAD_FAKE_CODEX_EVENTS"
 GIT_ENV = "PYAHEAD_FAKE_GIT"
+GIT_REMOTE_ENV = "PYAHEAD_FAKE_GIT_REMOTE"
 CHILD_ENV = "PYAHEAD_AUTOPILOT_CHILD"
 
 
@@ -127,6 +128,34 @@ def _refresh_index_stat_cache(root: Path, action: dict[str, object]) -> None:
         path,
         ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
     )
+
+
+def _move_remote_candidate(root: Path, action: dict[str, object]) -> None:
+    """Simulate a concurrent remote ref rewrite after hosted evidence."""
+    if action.get("move_remote_candidate") is not True:
+        return
+    state = cast(
+        "dict[str, object]",
+        json.loads((root / ".autopilot/state.json").read_text(encoding="utf-8")),
+    )
+    candidate = cast("dict[str, object]", state["candidate"])
+    active = cast("dict[str, object]", candidate["active"])
+    sha = cast("str", active["sha"])
+    remote_ref = cast("str", active["remote_ref"])
+    git = os.environ.get(GIT_ENV, "git")
+    parent = subprocess.run(
+        [git, "rev-parse", f"{sha}^"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    remote_path = os.environ[GIT_REMOTE_ENV]
+    subprocess.run(
+        [git, "--git-dir", remote_path, "update-ref", remote_ref, parent],
+        check=True,
+    )
     git = os.environ.get(GIT_ENV, "git")
     subprocess.run(
         [git, "status", "--porcelain=v1"],
@@ -170,6 +199,9 @@ def _result(role: str, milestone: str, root: Path, action: dict[str, object]) ->
     outcome = action.get("outcome", "pass" if role == "review" else "completed")
     if not isinstance(outcome, str):
         raise RuntimeError("fake outcome must be a string")
+    result_milestone = action.get("result_milestone", milestone)
+    if not isinstance(result_milestone, str):
+        raise RuntimeError("fake result_milestone must be a string")
     if role == "review":
         findings: list[dict[str, object]] = []
         blocking_reason: str | None = None
@@ -186,7 +218,7 @@ def _result(role: str, milestone: str, root: Path, action: dict[str, object]) ->
         elif outcome == "blocked":
             blocking_reason = "fixture reviewer blocker"
         return {
-            "milestone": milestone,
+            "milestone": result_milestone,
             "verdict": outcome,
             "findings": findings,
             "acceptance_evidence_inspected": ["fixture verification logs"],
@@ -199,7 +231,7 @@ def _result(role: str, milestone: str, root: Path, action: dict[str, object]) ->
     if action.get("contradict_files") is True:
         files = ["not-the-worktree.txt"]
     return {
-        "milestone": milestone,
+        "milestone": result_milestone,
         "status": outcome,
         "summary": "fixture agent result",
         "files_changed": files,
@@ -215,6 +247,7 @@ def _record_event(
     role: str,
     prompt: str,
     arguments: list[str],
+    schema_milestone: str,
 ) -> None:
     """Append invocation evidence outside the Git worktree."""
     events_path = Path(os.environ[EVENTS_ENV])
@@ -233,6 +266,7 @@ def _record_event(
             "approval": _option(arguments, "--ask-for-approval"),
             "child_marker": os.environ.get(CHILD_ENV),
             "arguments": arguments,
+            "schema_milestone": schema_milestone,
         }
     )
     _write_json(events_path, events)
@@ -288,7 +322,14 @@ def main(arguments: list[str] | None = None) -> int:
     expected_sandbox = "read-only" if role == "review" else "workspace-write"
     if _option(argv, "--sandbox") != expected_sandbox:
         raise RuntimeError("orchestrator selected the wrong sandbox")
-    _record_event(index, role, prompt, argv)
+    schema_path = Path(_option(argv, "--output-schema"))
+    schema = cast("dict[str, object]", json.loads(schema_path.read_text()))
+    properties = cast("dict[str, object]", schema.get("properties"))
+    milestone_schema = cast("dict[str, object]", properties.get("milestone"))
+    schema_milestone = milestone_schema.get("const")
+    if schema_milestone != milestone:
+        raise RuntimeError("session schema does not constrain the exact milestone")
+    _record_event(index, role, prompt, argv, cast("str", schema_milestone))
     sleep_seconds = action.get("sleep_seconds", 0)
     if not isinstance(sleep_seconds, (int, float)) or isinstance(sleep_seconds, bool):
         raise RuntimeError("fake sleep_seconds must be numeric")
@@ -296,6 +337,7 @@ def main(arguments: list[str] | None = None) -> int:
         time.sleep(float(sleep_seconds))
     _apply_changes(root, action)
     _refresh_index_stat_cache(root, action)
+    _move_remote_candidate(root, action)
     behavior = action.get("behavior", "result")
     if behavior == "exit_failure":
         return 19

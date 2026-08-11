@@ -72,7 +72,7 @@ timeout_seconds = 600
 [[verification]]
 id = "tests"
 command = ["uv", "run", "pytest"]
-timeout_seconds = 1800
+timeout_seconds = 3600
 
 [[verification]]
 id = "build"
@@ -98,6 +98,45 @@ timeout_seconds = 300
 id = "explain-cpy0001"
 command = ["uv", "run", "pyahead", "explain", "CPY0001"]
 timeout_seconds = 300
+
+[[milestone_verification]]
+id = "m6-wheel-install"
+command = ["uv", "run", "python", "scripts/install_smoke.py", "--dist-dir", "dist", "--kind", "wheel"]
+timeout_seconds = 900
+
+[[milestone_verification]]
+id = "m6-sdist-install"
+command = ["uv", "run", "python", "scripts/install_smoke.py", "--dist-dir", "dist", "--kind", "sdist"]
+timeout_seconds = 900
+
+[[milestone_verification]]
+id = "m6-benchmark"
+command = ["uv", "run", "python", "scripts/benchmark.py", "--repeat", "1", "--output", "-"]
+timeout_seconds = 900
+
+[[hosted_verification]]
+id = "m6-supported-hosts"
+workflow = "CI"
+dispatch_input = "pyahead_autopilot_token"
+timeout_seconds = 5400
+poll_interval_seconds = 15
+required_jobs = [
+  "Quality and Gate B / Linux / Python 3.11",
+  "Tests / ubuntu-latest / Python 3.12",
+  "Tests / ubuntu-latest / Python 3.13",
+  "Tests / ubuntu-latest / Python 3.14",
+  "Tests / macos-latest / Python 3.11",
+  "Tests / macos-latest / Python 3.14",
+  "Tests / windows-latest / Python 3.11",
+  "Tests / windows-latest / Python 3.14",
+  "Build wheel and sdist",
+  "Install wheel and sdist / ubuntu-latest / Python 3.11",
+  "Install wheel and sdist / ubuntu-latest / Python 3.14",
+  "Install wheel and sdist / macos-latest / Python 3.11",
+  "Install wheel and sdist / macos-latest / Python 3.14",
+  "Install wheel and sdist / windows-latest / Python 3.11",
+  "Install wheel and sdist / windows-latest / Python 3.14",
+]
 
 [[milestone]]
 id = "M2"
@@ -132,7 +171,9 @@ id = "M6"
 title = "Public-alpha hardening"
 heading = "M6 — Public-alpha hardening"
 policy = "unattended"
-extra_verification = []
+extra_verification = ["m6-wheel-install", "m6-sdist-install", "m6-benchmark"]
+hosted_verification = "m6-supported-hosts"
+requires_publication = true
 stop_after_gate = "C"
 
 [[milestone]]

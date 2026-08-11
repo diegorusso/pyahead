@@ -28,6 +28,10 @@ Independent verification evidence:
 
 $verification_evidence
 
+Configured hosted-verification contract:
+
+$hosted_verification
+
 ## Review requirements
 
 Inspect the complete live worktree diff, implementation, tests, frozen contract,
@@ -39,3 +43,5 @@ changes, and acceptance claims that were not demonstrated.
 Return only the JSON object required by the supplied output schema. Use `pass`
 only when the milestone contract is satisfied and the evidence is sufficient.
 Every requested change must be concrete and actionable.
+Set the structured result's `milestone` property to exactly `$milestone`; never
+append the title or other text.
