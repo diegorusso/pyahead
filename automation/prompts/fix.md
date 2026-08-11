@@ -20,6 +20,10 @@ $failed_output
 
 $review_findings
 
+## Parent-owned hosted verification
+
+$hosted_verification
+
 ## Non-negotiable session boundaries
 
 - Do not commit, push, create or switch branches, create or edit pull requests,
@@ -32,5 +36,7 @@ $protected_files
 - Do not weaken, delete, skip, or rewrite existing tests or quality thresholds
   merely to pass verification.
 - Do not implement later-milestone work.
+- Set the structured result's `milestone` property to exactly `$milestone`;
+  never append the title or other text.
 - Return only the JSON object required by the supplied output schema, listing
   every currently changed worktree path in `files_changed`.

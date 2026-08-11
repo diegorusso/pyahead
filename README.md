@@ -86,7 +86,13 @@ later milestones in the design.
 Milestone M1.5 adds repository development automation without changing those
 product capabilities. Maintainers can use the resumable, independently verified
 milestone controller described in [`docs/autopilot.md`](docs/autopilot.md) for
-M2 onward.
+M2 onward. M6 requires `--push`: the controller verifies a unique immutable
+candidate on the configured Linux, macOS, and Windows GitHub Actions jobs before
+independent review can attach that exact commit to the range branch. GitHub
+commands and evidence are bound to the configured origin repository, and a
+one-time dispatch token plus complete bounded run enumeration distinguishes the
+candidate run from older or duplicate runs. Exact-SHA ref races and saved intents
+without a launched publication process are rejected rather than adopted.
 
 ## Development
 

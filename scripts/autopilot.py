@@ -35,8 +35,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
     from typing import NoReturn, Self, TextIO
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 MAX_RESULT_BYTES = 1024 * 1024
+WORKFLOW_RUN_LIST_LIMIT = 100
 CHILD_MARKER = "PYAHEAD_AUTOPILOT_CHILD"
 DEFAULT_CONFIG = Path("automation/milestones.toml")
 IMPLEMENTATION_SCHEMA = Path("automation/schemas/implementation-result.json")
@@ -59,6 +60,15 @@ VALID_PHASES = frozenset(
         "review_running",
         "repair_pending",
         "repair_running",
+        "candidate_pending",
+        "candidate_running",
+        "candidate_publication_pending",
+        "candidate_dispatch_pending",
+        "candidate_dispatch_running",
+        "candidate_checks_pending",
+        "candidate_checks_running",
+        "candidate_attach_pending",
+        "candidate_attach_running",
         "commit_pending",
         "commit_running",
         "publication_pending",
@@ -73,19 +83,17 @@ VALID_PHASES = frozenset(
 )
 _MILESTONE_ID = re.compile(r"M(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
 _COMMAND_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
-_GIT_REPOSITORY_ENVIRONMENT = frozenset(
+_NON_GIT_REPOSITORY_SELECTORS = frozenset(
     {
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_COMMON_DIR",
-        "GIT_CONFIG_COUNT",
-        "GIT_CONFIG_PARAMETERS",
-        "GIT_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_NAMESPACE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_WORK_TREE",
+        "GH_ENTERPRISE_TOKEN",
+        "GH_HOST",
+        "GH_REPO",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "SSH_ASKPASS",
+        "SSH_ASKPASS_REQUIRE",
     }
 )
+_AUTOPILOT_DISPATCH_TITLE = "PyAhead autopilot "
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization:\s*(?:bearer|token)\s+)[^\s]+"),
     re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
@@ -195,6 +203,44 @@ class QualityGuard:
 
 
 @dataclass(frozen=True)
+class HostedVerification:
+    """One exact-candidate GitHub Actions evidence policy."""
+
+    identifier: str
+    workflow: str
+    dispatch_input: str
+    required_jobs: tuple[str, ...]
+    timeout_seconds: float
+    poll_interval_seconds: float
+
+
+@dataclass(frozen=True)
+class GitHubRepository:
+    """Canonical GitHub host and owner/repository derived from the Git remote."""
+
+    host: str
+    owner: str
+    repository: str
+
+    @property
+    def name_with_owner(self) -> str:
+        return f"{self.owner}/{self.repository}"
+
+    @property
+    def selector(self) -> str:
+        return f"{self.host}/{self.name_with_owner}"
+
+
+@dataclass(frozen=True)
+class GitHubTransport:
+    """Validated effective HTTPS transport for one configured Git remote."""
+
+    repository: GitHubRepository
+    fetch_url: str
+    push_url: str
+
+
+@dataclass(frozen=True)
 class Milestone:
     """Automation policy for one product milestone."""
 
@@ -203,6 +249,8 @@ class Milestone:
     heading: str
     policy: str
     extra_verification: tuple[str, ...]
+    hosted_verification: str | None
+    requires_publication: bool
     stop_after_gate: str | None
     required_design: PurePosixPath | None
 
@@ -225,6 +273,7 @@ class Config:
     quality_guards: tuple[QualityGuard, ...]
     verification: tuple[CommandSpec, ...]
     milestone_verification: Mapping[str, CommandSpec]
+    hosted_verification: Mapping[str, HostedVerification]
     milestones: tuple[Milestone, ...]
 
     def milestone(self, identifier: str) -> Milestone:
@@ -438,6 +487,83 @@ def _safe_https_url(value: str) -> bool:
     )
 
 
+def _parse_github_repository_url(value: str) -> GitHubRepository:
+    """Parse one ordinary HTTPS, SSH URL, or scp-style GitHub remote."""
+    host: str | None = None
+    path: str | None = None
+    if "://" in value:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"https", "ssh"}
+            or parsed.hostname is None
+            or parsed.port is not None
+            or parsed.query
+            or parsed.fragment
+            or (parsed.scheme == "https" and parsed.username is not None)
+            or (parsed.scheme == "ssh" and parsed.username not in {None, "git"})
+        ):
+            raise InvalidInputError(
+                "configured Git remote is not a supported credential-free GitHub URL"
+            )
+        host = parsed.hostname.lower()
+        path = parsed.path.lstrip("/")
+    else:
+        matched = re.fullmatch(
+            r"(?:git@)?(?P<host>[A-Za-z0-9.-]+):(?P<path>[^\s]+)", value
+        )
+        if matched is not None:
+            host = matched.group("host").lower()
+            path = matched.group("path")
+    if host is None or path is None:
+        raise InvalidInputError(
+            "configured Git remote must identify a GitHub host and owner/repository"
+        )
+    if re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", host) is None:
+        raise InvalidInputError("configured Git remote has an invalid GitHub host")
+    normalized = path.removesuffix(".git")
+    parts = normalized.split("/")
+    component = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\Z")
+    if len(parts) != 2 or any(component.fullmatch(part) is None for part in parts):
+        raise InvalidInputError(
+            "configured Git remote must contain exactly owner/repository"
+        )
+    return GitHubRepository(host=host, owner=parts[0], repository=parts[1])
+
+
+def _parse_github_https_repository_url(value: str) -> GitHubRepository:
+    """Require a credential-free HTTPS transport, not an SSH command surface."""
+    parsed = urlsplit(value)
+    if parsed.scheme != "https":
+        raise InvalidInputError(
+            "publication requires a credential-free HTTPS Git remote"
+        )
+    return _parse_github_repository_url(value)
+
+
+def _github_repository_url(
+    value: str,
+    repository: GitHubRepository,
+    *,
+    area: str,
+) -> bool:
+    """Require an HTTPS URL inside the exact configured GitHub repository."""
+    if not _safe_https_url(value):
+        return False
+    parsed = urlsplit(value)
+    if parsed.hostname is None or parsed.hostname.lower() != repository.host:
+        return False
+    if parsed.port is not None or parsed.query or parsed.fragment:
+        return False
+    root = f"/{repository.owner}/{repository.repository}"
+    if area == "repository":
+        return parsed.path.rstrip("/") == root
+    expected = {
+        "actions": f"{root}/actions/runs/",
+        "pull": f"{root}/pull/",
+    }.get(area)
+    return expected is not None and parsed.path.startswith(expected)
+
+
 def _load_command_specs(value: object, context: str) -> tuple[CommandSpec, ...]:
     specs: list[CommandSpec] = []
     seen: set[str] = set()
@@ -502,6 +628,7 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
         "quality_guard",
         "verification",
         "milestone_verification",
+        "hosted_verification",
         "milestone",
     }
     _exact_keys(data, allowed, "automation configuration")
@@ -552,6 +679,47 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
     )
     milestone_verification = {spec.identifier: spec for spec in milestone_specs}
 
+    hosted_verification: dict[str, HostedVerification] = {}
+    hosted_keys = {
+        "id",
+        "workflow",
+        "dispatch_input",
+        "required_jobs",
+        "timeout_seconds",
+        "poll_interval_seconds",
+    }
+    for index, item in enumerate(
+        _sequence(data.get("hosted_verification"), "hosted_verification")
+    ):
+        context = f"hosted_verification[{index}]"
+        record = _mapping(item, context)
+        _exact_keys(record, hosted_keys, context)
+        identifier = _string(record.get("id"), f"{context}.id")
+        if _COMMAND_IDENTIFIER.fullmatch(identifier) is None:
+            _fail(f"{context}.id must be a safe filename identifier")
+        if identifier in hosted_verification:
+            _fail(f"duplicate hosted verification {identifier!r}")
+        required_jobs = _string_tuple(
+            record.get("required_jobs"), f"{context}.required_jobs"
+        )
+        if not required_jobs or len(required_jobs) != len(set(required_jobs)):
+            _fail(f"{context}.required_jobs must be non-empty and unique")
+        hosted_verification[identifier] = HostedVerification(
+            identifier=identifier,
+            workflow=_string(record.get("workflow"), f"{context}.workflow"),
+            dispatch_input=_string(
+                record.get("dispatch_input"), f"{context}.dispatch_input"
+            ),
+            required_jobs=required_jobs,
+            timeout_seconds=_number(
+                record.get("timeout_seconds"), f"{context}.timeout_seconds"
+            ),
+            poll_interval_seconds=_number(
+                record.get("poll_interval_seconds"),
+                f"{context}.poll_interval_seconds",
+            ),
+        )
+
     milestones: list[Milestone] = []
     seen_milestones: set[str] = set()
     milestone_keys = {
@@ -560,6 +728,8 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
         "heading",
         "policy",
         "extra_verification",
+        "hosted_verification",
+        "requires_publication",
         "stop_after_gate",
         "required_design",
     }
@@ -589,6 +759,17 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
             _fail(
                 f"{context} references unknown verification: {', '.join(missing_extras)}"
             )
+        hosted_raw = record.get("hosted_verification")
+        hosted = (
+            _string(hosted_raw, f"{context}.hosted_verification")
+            if hosted_raw is not None
+            else None
+        )
+        if hosted is not None and hosted not in hosted_verification:
+            _fail(f"{context} references unknown hosted verification {hosted!r}")
+        requires_publication = record.get("requires_publication", False)
+        if not isinstance(requires_publication, bool):
+            _fail(f"{context}.requires_publication must be a boolean")
         required_design_raw = record.get("required_design")
         required_design = (
             _relative_path(required_design_raw, f"{context}.required_design")
@@ -602,6 +783,8 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
                 heading=_string(record.get("heading"), f"{context}.heading"),
                 policy=policy,
                 extra_verification=extras,
+                hosted_verification=hosted,
+                requires_publication=requires_publication,
                 stop_after_gate=_optional_string(
                     record.get("stop_after_gate"), f"{context}.stop_after_gate"
                 ),
@@ -626,6 +809,18 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
         expected_gate = "C" if milestone.identifier == "M6" else None
         if milestone.stop_after_gate != expected_gate:
             _fail(f"{milestone.identifier} has an unsafe stop-after-gate policy")
+        expected_publication = milestone.identifier == "M6"
+        if milestone.requires_publication is not expected_publication:
+            _fail(f"{milestone.identifier} has an unsafe publication policy")
+        if expected_publication != (milestone.hosted_verification is not None):
+            _fail(f"{milestone.identifier} has an unsafe hosted-evidence policy")
+    m6 = milestones[4]
+    required_m6_checks = {"m6-wheel-install", "m6-sdist-install", "m6-benchmark"}
+    if not required_m6_checks.issubset(m6.extra_verification):
+        _fail("M6 is missing required artifact or benchmark verification")
+    m6_hosted = hosted_verification[cast("str", m6.hosted_verification)]
+    if m6_hosted.dispatch_input != "pyahead_autopilot_token":
+        _fail("M6 hosted verification must use the controller dispatch token")
     m10 = milestones[-1]
     if m10.required_design != PurePosixPath("docs/c-api-design.md"):
         _fail("M10 must require docs/c-api-design.md")
@@ -682,9 +877,10 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
     base_branch = _string(data.get("base_branch"), "base_branch")
     remote = _string(data.get("remote"), "remote")
     safe_git_name = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
+    safe_remote_name = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
     if safe_git_name.fullmatch(base_branch) is None:
         _fail("base_branch must be a safe Git branch name")
-    if safe_git_name.fullmatch(remote) is None:
+    if safe_remote_name.fullmatch(remote) is None:
         _fail("remote must be a safe configured Git remote name")
 
     state_directory = _relative_path(data.get("state_directory"), "state_directory")
@@ -710,6 +906,7 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
         quality_guards=tuple(quality_guards),
         verification=verification,
         milestone_verification=milestone_verification,
+        hosted_verification=hosted_verification,
         milestones=tuple(milestones),
     )
 
@@ -740,16 +937,23 @@ def _redacted_command(command: Iterable[str]) -> tuple[str, ...]:
 
 
 def _repository_environment() -> dict[str, str]:
-    """Remove inherited selectors that could redirect Git outside this repository."""
+    """Remove inherited selectors that can redirect Git or GitHub operations."""
     environment = os.environ.copy()
     for key in tuple(environment):
-        if key in _GIT_REPOSITORY_ENVIRONMENT or key.startswith(
-            ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+        if (
+            key.startswith("GIT_")
+            or key in _NON_GIT_REPOSITORY_SELECTORS
+            or (key.startswith("GH_") and key != "GH_TOKEN")
         ):
             environment.pop(key, None)
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     environment["GIT_OPTIONAL_LOCKS"] = "0"
     environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GIT_CONFIG_COUNT"] = "1"
+    environment["GIT_CONFIG_KEY_0"] = "credential.interactive"
+    environment["GIT_CONFIG_VALUE_0"] = "false"
+    environment["GH_PROMPT_DISABLED"] = "1"
+    environment["NO_COLOR"] = "1"
     return environment
 
 
@@ -796,6 +1000,26 @@ def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
     except (TypeError, ValueError, UnicodeError) as error:
         raise StateError("state is not JSON serializable") from error
     _atomic_write_bytes(path, content)
+
+
+def _command_sha256(command: Sequence[str]) -> str:
+    """Hash an argv sequence without ambiguous joining or shell rendering."""
+    encoded = json.dumps(
+        list(command),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _command_evidence_paths(log_base: Path) -> tuple[Path, Path, Path, Path]:
+    """Return the durable start, result, stdout, and stderr evidence paths."""
+    return (
+        log_base.with_suffix(".started.json"),
+        log_base.with_suffix(".result.json"),
+        log_base.with_suffix(".stdout.log"),
+        log_base.with_suffix(".stderr.log"),
+    )
 
 
 def _terminate_process_tree(
@@ -899,6 +1123,17 @@ class CommandRunner:
             )
             self.write_logs(result, log_base)
             return result
+        if log_base is not None:
+            started_path, _result_path, _stdout_path, _stderr_path = (
+                _command_evidence_paths(log_base)
+            )
+            atomic_write_json(
+                started_path,
+                {
+                    "command_sha256": _command_sha256(argv),
+                    "schema_version": 1,
+                },
+            )
         try:
             stdout, stderr = process.communicate(
                 input=input_text, timeout=timeout_seconds
@@ -947,13 +1182,28 @@ class CommandRunner:
     def write_logs(result: CommandResult, log_base: Path | None) -> None:
         if log_base is None:
             return
+        _started_path, result_path, stdout_path, stderr_path = _command_evidence_paths(
+            log_base
+        )
         _atomic_write_bytes(
-            log_base.with_suffix(".stdout.log"),
+            stdout_path,
             result.stdout.encode("utf-8", errors="backslashreplace"),
         )
         _atomic_write_bytes(
-            log_base.with_suffix(".stderr.log"),
+            stderr_path,
             result.stderr.encode("utf-8", errors="backslashreplace"),
+        )
+        atomic_write_json(
+            result_path,
+            {
+                "command_sha256": _command_sha256(result.command),
+                "interrupted": result.interrupted,
+                "returncode": result.returncode,
+                "schema_version": 1,
+                "stderr_sha256": sha256_text(result.stderr),
+                "stdout_sha256": sha256_text(result.stdout),
+                "timed_out": result.timed_out,
+            },
         )
 
 
@@ -1317,6 +1567,49 @@ def _state_list(state: Mapping[str, object], key: str) -> list[object]:
     return cast("list[object]", value)
 
 
+def _github_repository_to_dict(repository: GitHubRepository) -> dict[str, object]:
+    return {
+        "host": repository.host,
+        "owner": repository.owner,
+        "repository": repository.repository,
+    }
+
+
+def _state_github_repository(state: Mapping[str, object]) -> GitHubRepository:
+    raw = state.get("github_repository")
+    if not isinstance(raw, dict) or set(raw) != {"host", "owner", "repository"}:
+        raise StateError("state GitHub repository identity is malformed")
+    data = cast("dict[str, object]", raw)
+    try:
+        repository = GitHubRepository(
+            host=_string(data.get("host"), "github_repository.host"),
+            owner=_string(data.get("owner"), "github_repository.owner"),
+            repository=_string(data.get("repository"), "github_repository.repository"),
+        )
+        expected = _parse_github_repository_url(
+            f"https://{repository.host}/{repository.name_with_owner}.git"
+        )
+    except InvalidInputError as error:
+        raise StateError("state GitHub repository identity is malformed") from error
+    if expected != repository:
+        raise StateError("state GitHub repository identity is not canonical")
+    return repository
+
+
+def _metadata_ref_paths(reference: str) -> frozenset[str]:
+    """Return one ref and only the parent directories its creation may add."""
+    path = PurePosixPath(reference)
+    if path.is_absolute() or not path.parts or path.parts[0] != "refs":
+        raise StateError("controller produced an unsafe Git metadata reference")
+    paths: set[str] = set()
+    for index in range(2, len(path.parts) + 1):
+        paths.add(PurePosixPath(*path.parts[:index]).as_posix())
+    log_path = PurePosixPath("logs", *path.parts)
+    for index in range(3, len(log_path.parts) + 1):
+        paths.add(PurePosixPath(*log_path.parts[:index]).as_posix())
+    return frozenset(paths)
+
+
 def _path_from_repo(repo_root: Path, path: PurePosixPath) -> Path:
     return repo_root.joinpath(*path.parts)
 
@@ -1362,13 +1655,47 @@ class GitRepository:
         *,
         timeout_seconds: float | None = None,
         log_base: Path | None = None,
+        env_overrides: Mapping[str, str] | None = None,
     ) -> CommandResult:
         """Run one Git subcommand without shell expansion."""
         environment = _repository_environment()
+        if env_overrides is not None:
+            environment.update(env_overrides)
         return self.runner.run(
             (*self.command, *arguments),
             cwd=self.root,
             timeout_seconds=timeout_seconds or self.timeout_seconds,
+            env=environment,
+            log_base=log_base,
+        )
+
+    def run_with_index(
+        self,
+        arguments: Sequence[str],
+        *,
+        index_path: Path,
+        log_base: Path | None = None,
+    ) -> CommandResult:
+        """Run Git against one controller-owned temporary index."""
+        try:
+            relative = index_path.relative_to(self.root)
+        except ValueError as error:
+            raise StateError("temporary Git index is outside the repository") from error
+        if not relative.parts or relative.parts[0] != ".autopilot":
+            raise StateError("temporary Git index is outside autopilot state")
+        _assert_safe_directory_chain(
+            self.root,
+            index_path.parent,
+            "temporary Git index directory",
+        )
+        if index_path.is_symlink():
+            raise StateError("temporary Git index must not be a symlink")
+        environment = _repository_environment()
+        environment["GIT_INDEX_FILE"] = str(index_path)
+        return self.runner.run(
+            (*self.command, *arguments),
+            cwd=self.root,
+            timeout_seconds=self.timeout_seconds,
             env=environment,
             log_base=log_base,
         )
@@ -1446,6 +1773,24 @@ class GitRepository:
             raise StateError("Git index contains a filename that is not valid UTF-8")
         return paths
 
+    def semantic_index_snapshot(self) -> dict[str, object]:
+        """Record every index entry, stage, mode, object, and index flag by path."""
+        result = self.run(("ls-files", "--stage", "-v", "-z"))
+        if not result.succeeded:
+            raise StateError("unable to inspect the semantic Git index")
+        records: dict[str, list[str]] = {}
+        for raw in (item for item in result.stdout.split("\0") if item):
+            metadata, separator, path = raw.partition("\t")
+            if not separator or not metadata or not path:
+                raise StateError("Git returned a malformed semantic index entry")
+            if _contains_surrogate(path):
+                raise StateError(
+                    "Git index contains a filename that is not valid UTF-8"
+                )
+            safe = _validate_changed_path(PurePosixPath(path).as_posix())
+            records.setdefault(safe, []).append(metadata)
+        return {path: sorted(entries) for path, entries in sorted(records.items())}
+
     def ensure_ancestor(self, ancestor: str, descendant: str) -> None:
         result = self.run(("merge-base", "--is-ancestor", ancestor, descendant))
         if result.returncode != 0:
@@ -1459,7 +1804,89 @@ class GitRepository:
             raise StateError("unable to inspect existing branches")
         return result.returncode == 0
 
-    def metadata_digest(self) -> str:
+    def github_transport(self, remote: str) -> GitHubTransport:
+        """Resolve one unredirected credential-free HTTPS fetch/push transport."""
+        result = self.run(("config", "--get-all", f"remote.{remote}.url"))
+        if not result.succeeded:
+            raise InvalidInputError(
+                f"configured Git remote {remote!r} has no readable URL"
+            )
+        urls = [line for line in result.stdout.splitlines() if line]
+        if len(urls) != 1:
+            raise InvalidInputError(
+                f"configured Git remote {remote!r} must have exactly one URL"
+            )
+        fetch_url = urls[0]
+        repository = _parse_github_https_repository_url(fetch_url)
+        push_result = self.run(("config", "--get-all", f"remote.{remote}.pushurl"))
+        if push_result.returncode not in {0, 1}:
+            raise InvalidInputError(
+                f"configured Git remote {remote!r} has unreadable push URLs"
+            )
+        push_urls = [line for line in push_result.stdout.splitlines() if line]
+        if push_urls:
+            if len(push_urls) != 1:
+                raise InvalidInputError(
+                    f"configured Git remote {remote!r} must have at most one push URL"
+                )
+            push_url = push_urls[0]
+            if _parse_github_https_repository_url(push_url) != repository:
+                raise InvalidInputError(
+                    f"configured Git remote {remote!r} fetch and push URLs identify "
+                    "different repositories"
+                )
+        else:
+            push_url = fetch_url
+        effective: dict[str, str] = {}
+        for purpose, arguments, configured in (
+            ("fetch", ("remote", "get-url", "--all", remote), fetch_url),
+            ("push", ("remote", "get-url", "--push", "--all", remote), push_url),
+        ):
+            effective_result = self.run(arguments)
+            if not effective_result.succeeded:
+                raise InvalidInputError(
+                    f"unable to resolve effective {purpose} URL for remote {remote!r}"
+                )
+            effective_urls = [
+                line for line in effective_result.stdout.splitlines() if line
+            ]
+            if len(effective_urls) != 1:
+                raise InvalidInputError(
+                    f"configured Git remote {remote!r} must have exactly one effective "
+                    f"{purpose} URL"
+                )
+            resolved = effective_urls[0]
+            if (
+                resolved != configured
+                or _parse_github_https_repository_url(resolved) != repository
+            ):
+                raise InvalidInputError(
+                    f"effective {purpose} transport for remote {remote!r} is redirected"
+                )
+            effective[purpose] = resolved
+        return GitHubTransport(
+            repository=repository,
+            fetch_url=effective["fetch"],
+            push_url=effective["push"],
+        )
+
+    def github_repository(self, remote: str) -> GitHubRepository:
+        """Return the repository identity of a validated HTTPS transport."""
+        return self.github_transport(remote).repository
+
+    def assert_object_database_integrity(self) -> None:
+        """Validate every Git object while suppressing harmless dangling notices."""
+        result = self.run(("fsck", "--no-dangling"))
+        if not result.succeeded:
+            raise StateError("Git object database failed integrity validation")
+
+    def metadata_digest(
+        self,
+        *,
+        ignored_paths: frozenset[str] = frozenset(),
+        ignored_prefixes: frozenset[str] = frozenset(),
+        include_semantic_index: bool = True,
+    ) -> str:
         """Hash stable Git control data and the semantic index contents."""
         if self._metadata_roots is None:
             git_directory = Path(
@@ -1486,6 +1913,11 @@ class GitRepository:
                     relative = (
                         "." if child == root else child.relative_to(root).as_posix()
                     )
+                    if relative in ignored_paths or any(
+                        relative == prefix or relative.startswith(f"{prefix}/")
+                        for prefix in ignored_prefixes
+                    ):
+                        continue
                     if relative == "index" or relative.startswith("sharedindex."):
                         continue
                     metadata = child.lstat()
@@ -1497,12 +1929,13 @@ class GitRepository:
                     digest.update(b"\0")
         except OSError as error:
             raise StateError("unable to hash Git metadata safely") from error
-        index = self.run(("ls-files", "--stage", "-v", "-z"))
-        if not index.succeeded:
-            raise StateError("unable to hash the semantic Git index")
-        digest.update(b"semantic-index\0")
-        digest.update(index.stdout.encode("utf-8", errors="surrogateescape"))
-        digest.update(b"\0")
+        if include_semantic_index:
+            index = self.run(("ls-files", "--stage", "-v", "-z"))
+            if not index.succeeded:
+                raise StateError("unable to hash the semantic Git index")
+            digest.update(b"semantic-index\0")
+            digest.update(index.stdout.encode("utf-8", errors="surrogateescape"))
+            digest.update(b"\0")
         return digest.hexdigest()
 
 
@@ -1669,6 +2102,37 @@ class Autopilot:
             "autopilot state directory",
         )
         self.store = StateStore(self.state_root)
+
+    def _configured_github_repository(self) -> GitHubRepository:
+        return self.git.github_repository(self.config.remote)
+
+    def _remote_transport_url(
+        self,
+        state: Mapping[str, object],
+        *,
+        push: bool,
+    ) -> str:
+        """Revalidate and return the explicit HTTPS URL for one network operation."""
+        transport = self.git.github_transport(self.config.remote)
+        if transport.repository != _state_github_repository(state):
+            raise StateError(
+                "configured GitHub transport changed since the run started"
+            )
+        return transport.push_url if push else transport.fetch_url
+
+    def _require_github_url(
+        self,
+        state: Mapping[str, object],
+        value: object,
+        *,
+        area: str,
+        context: str,
+    ) -> str:
+        if not isinstance(value, str) or not _github_repository_url(
+            value, _state_github_repository(state), area=area
+        ):
+            raise StateError(f"{context} does not belong to the configured repository")
+        return value
 
     def _write(self, message: str) -> None:
         self.stdout.write(message.rstrip() + "\n")
@@ -1850,20 +2314,116 @@ class Autopilot:
             _validate_codex_output_schema(schema, schema_path.as_posix())
 
         if publication:
+            github_transport = self.git.github_transport(self.config.remote)
+            github_repository = github_transport.repository
+            repository_environment = _repository_environment()
             gh_version = self.runner.run(
                 (*self.config.tools["gh"], "--version"),
                 cwd=self.repo_root,
                 timeout_seconds=self.config.default_timeout_seconds,
+                env=repository_environment,
             )
             checks.append(("GitHub CLI", gh_version))
+            gh_capabilities = (
+                (
+                    "GitHub atomic ref creation",
+                    ("api", "--help"),
+                    ("--hostname", "--include", "--method", "--raw-field"),
+                ),
+                (
+                    "GitHub workflow dispatch",
+                    ("workflow", "run", "--help"),
+                    ("--ref", "--field"),
+                ),
+                (
+                    "GitHub run discovery",
+                    ("run", "list", "--help"),
+                    ("--branch", "--commit", "--event", "--json", "--workflow"),
+                ),
+                (
+                    "GitHub run evidence",
+                    ("run", "view", "--help"),
+                    ("--json",),
+                ),
+            )
+            for name, arguments, required_flags in gh_capabilities:
+                capability = self.runner.run(
+                    (*self.config.tools["gh"], *arguments),
+                    cwd=self.repo_root,
+                    timeout_seconds=self.config.default_timeout_seconds,
+                    env=repository_environment,
+                )
+                checks.append((name, capability))
+                if capability.succeeded:
+                    help_text = f"{capability.stdout}\n{capability.stderr}"
+                    missing = [flag for flag in required_flags if flag not in help_text]
+                    if missing:
+                        raise InvalidInputError(
+                            f"installed GitHub CLI lacks {name.lower()} capabilities: "
+                            + ", ".join(missing)
+                        )
             gh_auth = self.runner.run(
-                (*self.config.tools["gh"], "auth", "status"),
+                (
+                    *self.config.tools["gh"],
+                    "auth",
+                    "status",
+                    "--hostname",
+                    github_repository.host,
+                ),
                 cwd=self.repo_root,
                 timeout_seconds=self.config.default_timeout_seconds,
+                env=repository_environment,
             )
             checks.append(("GitHub authentication", gh_auth))
+            repository_view = self.runner.run(
+                (
+                    *self.config.tools["gh"],
+                    "repo",
+                    "view",
+                    github_repository.selector,
+                    "--json",
+                    "nameWithOwner,url",
+                ),
+                cwd=self.repo_root,
+                timeout_seconds=self.config.default_timeout_seconds,
+                env=repository_environment,
+            )
+            checks.append(("GitHub repository binding", repository_view))
+            if repository_view.succeeded:
+                try:
+                    repository_document = _mapping(
+                        cast(
+                            "object",
+                            json.loads(
+                                repository_view.stdout,
+                                object_pairs_hook=_reject_duplicate_json_keys,
+                            ),
+                        ),
+                        "GitHub repository binding",
+                    )
+                except (
+                    json.JSONDecodeError,
+                    _DuplicateJSONKeyError,
+                    InvalidInputError,
+                ) as error:
+                    raise InvalidInputError(
+                        "GitHub CLI returned malformed repository binding"
+                    ) from error
+                if (
+                    repository_document.get("nameWithOwner")
+                    != github_repository.name_with_owner
+                    or not isinstance(repository_document.get("url"), str)
+                    or not _github_repository_url(
+                        cast("str", repository_document["url"]),
+                        github_repository,
+                        area="repository",
+                    )
+                ):
+                    raise InvalidInputError(
+                        "GitHub CLI repository binding contradicts the configured origin"
+                    )
             git_auth = self.git.run(
-                ("ls-remote", "--exit-code", self.config.remote, "HEAD")
+                ("ls-remote", "--exit-code", github_transport.fetch_url, "HEAD")
             )
             checks.append(("Git remote authentication", git_auth))
 
@@ -1893,6 +2453,10 @@ class Autopilot:
         self._write(f"Range: {start} through {end}")
         self._write(f"Branch: {branch}")
         self._write(f"Base: {self.config.base_branch}")
+        if any(item.hosted_verification is not None for item in selected):
+            self._write(
+                "Hosted repository: " + self._configured_github_repository().selector
+            )
         self._write("Milestones:")
         for milestone in selected:
             contract = extract_milestone_contract(design, milestone)
@@ -1905,6 +2469,10 @@ class Autopilot:
             if milestone.stop_after_gate:
                 self._write(
                     f"    stops after commit at Gate {milestone.stop_after_gate}"
+                )
+            if milestone.requires_publication:
+                self._write(
+                    "    requires --push and exact-candidate hosted verification"
                 )
             if detailed:
                 self._print_dry_run_milestone(
@@ -1943,6 +2511,7 @@ class Autopilot:
                 "parent_commit": "<parent commit after the previous milestone>",
                 "changed_paths": "- <complete agent-produced worktree path set>",
                 "verification_evidence": "- <parent-owned command results and log paths>",
+                "hosted_verification": self._hosted_verification_markdown(milestone),
             },
         )
         repair_prompt = render_prompt(
@@ -1953,12 +2522,15 @@ class Autopilot:
                 "contract_hash": sha256_text(contract),
                 "failed_output": "<redacted failed-command output, when present>",
                 "review_findings": "<concrete structured findings, when present>",
+                "hosted_verification": self._hosted_verification_markdown(milestone),
                 "protected_files": self._protected_markdown(milestone.identifier),
             },
         )
-        self._write(
-            "    stages: implementation -> verification -> review -> repair (maximum 3) -> commit"
-        )
+        stages = "implementation -> verification"
+        if milestone.hosted_verification is not None:
+            stages += " -> immutable candidate -> hosted checks"
+        stages += " -> review -> repair (maximum 3) -> commit"
+        self._write(f"    stages: {stages}")
         planned_prompts = {
             "implementation": implementation_prompt,
             "review": review_prompt,
@@ -1968,7 +2540,13 @@ class Autopilot:
             self._write(
                 f"    {role} command: "
                 + json.dumps(
-                    _redacted_command(self._codex_command(role, Path("<result>")))
+                    _redacted_command(
+                        self._codex_command(
+                            role,
+                            Path("<result>"),
+                            Path("<milestone-schema>"),
+                        )
+                    )
                 )
             )
             self._write(
@@ -1988,14 +2566,82 @@ class Autopilot:
         self._write("    protected files:")
         for path in protected:
             self._write(f"      {path}")
+        if milestone.hosted_verification is not None:
+            hosted = self._hosted_policy(milestone)
+            transport = self.git.github_transport(self.config.remote)
+            repository = transport.repository
+            self._write(
+                "    candidate ref: <range-branch>-candidate-"
+                f"{milestone.identifier.lower()}-<run-id>-<repair-attempt> "
+                "(immutable; never force-pushed)"
+            )
+            self._write(
+                "    candidate object-upload command: "
+                + json.dumps(
+                    [
+                        *self.config.tools["git"],
+                        "push",
+                        "--porcelain",
+                        "--no-follow-tags",
+                        "--recurse-submodules=no",
+                        "--force-with-lease=refs/heads/<candidate-branch>-upload:",
+                        transport.push_url,
+                        "<candidate-sha>:refs/heads/<candidate-branch>-upload",
+                    ]
+                )
+            )
+            self._write(
+                "    atomic candidate-ref command: "
+                + json.dumps(
+                    [
+                        *self.config.tools["gh"],
+                        "api",
+                        "--hostname",
+                        repository.host,
+                        "--method",
+                        "POST",
+                        f"repos/{repository.name_with_owner}/git/refs",
+                        "--include",
+                        "--raw-field",
+                        "ref=refs/heads/<candidate-branch>",
+                        "--raw-field",
+                        "sha=<candidate-sha>",
+                    ]
+                )
+            )
+            self._write(
+                "    hosted dispatch command: "
+                + json.dumps(
+                    [
+                        *self.config.tools["gh"],
+                        "workflow",
+                        "run",
+                        hosted.workflow,
+                        "--ref",
+                        "<candidate-branch>",
+                        "--field",
+                        f"{hosted.dispatch_input}=<one-time-dispatch-token>",
+                        "--repo",
+                        self._configured_github_repository().selector,
+                    ]
+                )
+            )
+            self._write("    required hosted jobs:")
+            for job in hosted.required_jobs:
+                self._write(f"      {job}")
         message = self.config.commit_template.format(
             milestone=milestone.identifier,
             title=milestone.title,
         )
         self._write(f"    commit: {message}")
+        if milestone.hosted_verification is not None:
+            self._write(
+                "    acceptance: attach the exact hosted candidate to the range branch after review"
+            )
         if push:
             self._write(
-                f"    checkpoint push: git push {self.config.remote} <branch> (never force)"
+                "    checkpoint push: git push --no-follow-tags "
+                f"--recurse-submodules=no {self.config.remote} <branch> (never force)"
             )
         if draft_pr:
             self._write(
@@ -2253,6 +2899,11 @@ class Autopilot:
         if dry_run:
             self.plan(start, end, detailed=True, push=push, draft_pr=draft_pr)
             return ExitCode.SUCCESS
+        if any(item.requires_publication for item in selected) and not push:
+            raise InvalidInputError(
+                "M6 requires --push so exact-candidate Linux, macOS, and Windows "
+                "evidence can be verified before acceptance"
+            )
         self.doctor(publication=push)
         branch = self.branch_name(selected)
         run_id = self._run_identifier()
@@ -2264,6 +2915,7 @@ class Autopilot:
             for name in ("contract", "prompts", "results", "logs"):
                 (run_directory / name).mkdir(parents=True, exist_ok=True)
             first = selected[0]
+            github_repository = self._configured_github_repository() if push else None
             state: dict[str, object] = {
                 "schema_version": STATE_SCHEMA_VERSION,
                 "run_id": run_id,
@@ -2284,12 +2936,22 @@ class Autopilot:
                     self.repo_root, self.config, first.identifier
                 ),
                 "git_metadata_digest": self.git.metadata_digest(),
+                "transition_git_metadata_digest": None,
+                "transition_git_metadata_kind": None,
+                "attachment_index_baseline": None,
                 "gate_record_hash": _hash_file(self._gate_file()),
                 "worktree_snapshot": {},
                 "verification_results": [],
                 "verification_index": 0,
                 "review_findings": [],
                 "failed_output_path": None,
+                "candidate": {"active": None, "attempts": []},
+                "hosted_evidence": None,
+                "github_repository": (
+                    _github_repository_to_dict(github_repository)
+                    if github_repository is not None
+                    else None
+                ),
                 "publication": {
                     "enabled": push,
                     "draft_pr": draft_pr,
@@ -2317,10 +2979,14 @@ class Autopilot:
         try:
             self._validate_resume_state(state)
             publication = _state_mapping(state, "publication")
-            if (
-                publication.get("enabled") is True
-                and state.get("current_phase") == "publication_pending"
-            ):
+            if publication.get("enabled") is True and state.get("current_phase") in {
+                "candidate_publication_pending",
+                "candidate_dispatch_pending",
+                "candidate_dispatch_running",
+                "candidate_checks_pending",
+                "candidate_checks_running",
+                "publication_pending",
+            }:
                 self.doctor(publication=True)
             return self._drive(state)
         finally:
@@ -2351,10 +3017,111 @@ class Autopilot:
         self._write(f"Completed commits: {len(commits)}")
         publication = _state_mapping(state, "publication")
         self._write(f"Publication: {publication.get('status', 'unknown')}")
+        candidate_value = state.get("candidate")
+        active_candidate = (
+            candidate_value.get("active") if isinstance(candidate_value, dict) else None
+        )
+        if isinstance(active_candidate, dict):
+            self._write(
+                "Candidate: "
+                f"{active_candidate.get('sha', 'pending')} "
+                f"({active_candidate.get('status', 'unknown')})"
+            )
         if state.get("last_error"):
             self._write(f"Last error: {state['last_error']}")
 
+    def _transition_metadata_digest(
+        self,
+        state: Mapping[str, object],
+        kind: str,
+    ) -> str:
+        record = self._active_candidate(state)
+        ignored_paths: set[str] = set()
+        ignored_prefixes: set[str] = set()
+        include_semantic_index = True
+        if kind == "candidate_creation":
+            ignored_paths.update(
+                _metadata_ref_paths(
+                    _string(record.get("local_ref"), "candidate.local_ref")
+                )
+            )
+            ignored_prefixes.add("objects")
+        elif kind == "candidate_publication":
+            remote_branch = _string(
+                record.get("remote_branch"), "candidate.remote_branch"
+            )
+            for branch in (remote_branch, f"{remote_branch}-upload"):
+                ignored_paths.update(
+                    _metadata_ref_paths(f"refs/remotes/{self.config.remote}/{branch}")
+                )
+        elif kind == "candidate_attachment":
+            ignored_paths.update(_metadata_ref_paths(f"refs/heads/{state['branch']}"))
+            ignored_paths.add("logs/HEAD")
+            include_semantic_index = False
+        else:
+            raise StateError("state Git metadata transition kind is unsupported")
+        return self.git.metadata_digest(
+            ignored_paths=frozenset(ignored_paths),
+            ignored_prefixes=frozenset(ignored_prefixes),
+            include_semantic_index=include_semantic_index,
+        )
+
+    def _begin_transition_metadata_guard(
+        self,
+        state: dict[str, object],
+        kind: str,
+    ) -> None:
+        if kind == "candidate_attachment":
+            state["attachment_index_baseline"] = self.git.semantic_index_snapshot()
+        state["transition_git_metadata_kind"] = kind
+        state["transition_git_metadata_digest"] = self._transition_metadata_digest(
+            state, kind
+        )
+
+    @staticmethod
+    def _clear_transition_metadata_guard(state: dict[str, object]) -> None:
+        state["transition_git_metadata_kind"] = None
+        state["transition_git_metadata_digest"] = None
+        state["attachment_index_baseline"] = None
+
+    def _assert_attachment_index_transition(self, state: Mapping[str, object]) -> None:
+        baseline_raw = state.get("attachment_index_baseline")
+        if not isinstance(baseline_raw, dict) or not all(
+            isinstance(path, str) and isinstance(entries, list)
+            for path, entries in baseline_raw.items()
+        ):
+            raise StateError("candidate attachment index baseline is malformed")
+        baseline = cast("dict[str, object]", baseline_raw)
+        current = self.git.semantic_index_snapshot()
+        candidate_paths = set(_state_mapping(state, "worktree_snapshot"))
+        for path in set(baseline) | set(current):
+            if path not in candidate_paths and baseline.get(path) != current.get(path):
+                raise StateError(
+                    "semantic Git index changed outside candidate attachment paths"
+                )
+
+    def _assert_transition_metadata_guard(
+        self,
+        state: Mapping[str, object],
+        expected_kind: str,
+    ) -> None:
+        kind = state.get("transition_git_metadata_kind")
+        expected = state.get("transition_git_metadata_digest")
+        if kind != expected_kind or not isinstance(expected, str):
+            raise StateError("state Git metadata transition guard is malformed")
+        if self._transition_metadata_digest(state, expected_kind) != expected:
+            raise StateError(
+                "Git metadata changed outside the exact parent-owned transition"
+            )
+        if expected_kind == "candidate_attachment":
+            self._assert_attachment_index_transition(state)
+
     def _validate_resume_state(self, state: dict[str, object]) -> None:
+        state.setdefault("candidate", {"active": None, "attempts": []})
+        state.setdefault("hosted_evidence", None)
+        state.setdefault("transition_git_metadata_digest", None)
+        state.setdefault("transition_git_metadata_kind", None)
+        state.setdefault("attachment_index_baseline", None)
         requested = state.get("requested_milestones")
         if (
             not isinstance(requested, list)
@@ -2414,13 +3181,47 @@ class Autopilot:
             "contract_hashes",
             "protected_hashes",
             "worktree_snapshot",
+            "candidate",
             "publication",
         ):
             _state_mapping(state, key)
+        candidate = _state_mapping(state, "candidate")
+        if set(candidate) != {"active", "attempts"}:
+            raise StateError("state candidate record is malformed")
+        attempts = candidate.get("attempts")
+        if not isinstance(attempts, list) or not all(
+            isinstance(item, dict) for item in attempts
+        ):
+            raise StateError("state candidate attempts are malformed")
+        active_candidate = candidate.get("active")
+        if active_candidate is not None and not isinstance(active_candidate, dict):
+            raise StateError("state active candidate is malformed")
+        hosted_evidence = state.get("hosted_evidence")
+        if hosted_evidence is not None and not isinstance(hosted_evidence, dict):
+            raise StateError("state hosted evidence is malformed")
         current_milestone = state.get("current_milestone")
         expected_milestone = requested[index] if index < len(requested) else None
         if current_milestone != expected_milestone:
             raise StateError("state current_milestone contradicts its range index")
+        candidate_phases = {
+            "candidate_pending",
+            "candidate_running",
+            "candidate_publication_pending",
+            "candidate_dispatch_pending",
+            "candidate_dispatch_running",
+            "candidate_checks_pending",
+            "candidate_checks_running",
+            "candidate_attach_pending",
+            "candidate_attach_running",
+        }
+        if phase in candidate_phases:
+            if (
+                not isinstance(current_milestone, str)
+                or self.config.milestone(current_milestone).hosted_verification is None
+            ):
+                raise StateError("candidate phase belongs to a non-hosted milestone")
+            if phase != "candidate_pending" and not isinstance(active_candidate, dict):
+                raise StateError("candidate phase has no active candidate")
         selected = tuple(
             self.config.milestone(item) for item in cast("list[str]", requested)
         )
@@ -2450,9 +3251,28 @@ class Autopilot:
             raise StateError("state publication commits are malformed")
         if not isinstance(publication.get("status"), str):
             raise StateError("state publication status is malformed")
+        if (
+            any(item.requires_publication for item in selected)
+            and publication.get("enabled") is not True
+        ):
+            raise StateError("state disables required exact-candidate publication")
+        if publication.get("enabled") is True:
+            github_repository = _state_github_repository(state)
+            if github_repository != self._configured_github_repository():
+                raise StateError(
+                    "configured GitHub repository changed since the run started"
+                )
+        elif state.get("github_repository") is not None:
+            raise StateError(
+                "local-only state unexpectedly records a GitHub repository"
+            )
         pr_url = publication.get("pr_url")
         if pr_url is not None and (
-            not isinstance(pr_url, str) or not _safe_https_url(pr_url)
+            publication.get("enabled") is not True
+            or not isinstance(pr_url, str)
+            or not _github_repository_url(
+                pr_url, _state_github_repository(state), area="pull"
+            )
         ):
             raise StateError("state publication URL is malformed")
         branch = cast("str", state["branch"])
@@ -2472,6 +3292,13 @@ class Autopilot:
             self._recover_commit_if_present(state, current_head)
             current_head = self.git.head()
             expected_head = cast("str", state["expected_head"])
+            phase = cast("str", state["current_phase"])
+        if phase == "candidate_attach_running":
+            self._assert_transition_metadata_guard(state, "candidate_attachment")
+            self._recover_candidate_attach_if_present(state, current_head)
+            current_head = self.git.head()
+            expected_head = cast("str", state["expected_head"])
+            phase = cast("str", state["current_phase"])
         if current_head != expected_head:
             raise StateError(
                 "branch HEAD moved outside the recorded autopilot transition"
@@ -2483,7 +3310,36 @@ class Autopilot:
         if not isinstance(expected_metadata, str):
             raise StateError("state Git metadata digest is malformed")
         metadata_changed = self.git.metadata_digest() != expected_metadata
-        if phase != "commit_running" and metadata_changed:
+        guarded_transition = False
+        if phase == "candidate_running":
+            self._assert_transition_metadata_guard(state, "candidate_creation")
+            guarded_transition = True
+        elif phase == "candidate_attach_running":
+            self._assert_transition_metadata_guard(state, "candidate_attachment")
+            guarded_transition = True
+        elif (
+            phase == "candidate_publication_pending"
+            and state.get("transition_git_metadata_kind") == "candidate_publication"
+        ):
+            self._assert_transition_metadata_guard(state, "candidate_publication")
+            guarded_transition = True
+            if metadata_changed:
+                state["_unconfirmed_candidate_push_metadata_change"] = True
+        elif (
+            state.get("transition_git_metadata_kind") is not None
+            or state.get("transition_git_metadata_digest") is not None
+        ):
+            raise StateError(
+                "state retained a Git metadata guard outside its transition"
+            )
+        if (
+            state.get("transition_git_metadata_kind") != "candidate_attachment"
+            and state.get("attachment_index_baseline") is not None
+        ):
+            raise StateError(
+                "state retained a semantic index baseline outside attachment"
+            )
+        if phase != "commit_running" and not guarded_transition and metadata_changed:
             if (
                 phase == "publication_pending"
                 and publication.get("status") == "pushing"
@@ -2493,17 +3349,39 @@ class Autopilot:
                 raise StateError(
                     "Git metadata changed outside a parent-owned transition"
                 )
-        if phase == "commit_running":
+        if phase in {"candidate_attach_running", "commit_running"}:
             if not self._snapshots_match_content(expected_snapshot, current_snapshot):
                 raise StateError(
-                    "commit recovery worktree differs from recorded changes"
+                    "commit transition worktree differs from recorded changes"
                 )
         elif current_snapshot != expected_snapshot:
             raise StateError(
                 "worktree differs from the exact changes recorded in state"
             )
-        if phase != "commit_running" and self.git.staged_paths():
+        if (
+            phase not in {"candidate_attach_running", "commit_running"}
+            and self.git.staged_paths()
+        ):
             raise StateError("Git index changed outside the parent-owned commit phase")
+        if isinstance(active_candidate, dict) and isinstance(
+            active_candidate.get("sha"), str
+        ):
+            local_ref = _string(
+                active_candidate.get("local_ref"), "candidate.local_ref"
+            )
+            if self._local_ref_sha(local_ref) != active_candidate.get("sha"):
+                raise StateError(
+                    "immutable local candidate reference moved or vanished"
+                )
+            if index < len(requested):
+                current_policy = self.config.milestone(cast("str", requested[index]))
+                self._validate_candidate_commit(
+                    state,
+                    current_policy,
+                    cast("str", active_candidate["sha"]),
+                    _string(active_candidate.get("parent"), "candidate.parent"),
+                    _string(active_candidate.get("tree"), "candidate.tree"),
+                )
         if index < len(requested):
             milestone = cast("str", requested[index])
             contract_path = self._state_contract_path(state, required=False)
@@ -2606,6 +3484,21 @@ class Autopilot:
             if phase in {"repair_pending", "repair_running"}:
                 self._run_or_recover_agent(state, "repair")
                 continue
+            if phase in {"candidate_pending", "candidate_running"}:
+                self._prepare_candidate(state)
+                continue
+            if phase == "candidate_publication_pending":
+                self._publish_candidate(state)
+                continue
+            if phase in {"candidate_dispatch_pending", "candidate_dispatch_running"}:
+                self._dispatch_candidate_workflow(state)
+                continue
+            if phase in {"candidate_checks_pending", "candidate_checks_running"}:
+                self._wait_for_candidate_checks(state)
+                continue
+            if phase in {"candidate_attach_pending", "candidate_attach_running"}:
+                self._attach_candidate(state)
+                continue
             if phase in {"commit_pending", "commit_running"}:
                 self._commit_current_milestone(state)
                 continue
@@ -2695,6 +3588,9 @@ class Autopilot:
         state["verification_index"] = 0
         state["review_findings"] = []
         state["failed_output_path"] = None
+        state["candidate"] = {"active": None, "attempts": []}
+        state["hosted_evidence"] = None
+        self._clear_transition_metadata_guard(state)
         state["last_error"] = None
         state["protected_hashes"] = protected_snapshot(
             self.repo_root,
@@ -2733,6 +3629,22 @@ class Autopilot:
             for spec in self.verification_for(milestone)
         )
 
+    def _hosted_verification_markdown(self, milestone: Milestone) -> str:
+        if milestone.hosted_verification is None:
+            return "- No hosted verification is configured for this milestone."
+        policy = self._hosted_policy(milestone)
+        jobs = "\n".join(f"  - `{name}`" for name in policy.required_jobs)
+        return (
+            f"- Workflow: `{policy.workflow}`.\n"
+            f"- Declare `workflow_dispatch.inputs.{policy.dispatch_input}` and pass "
+            "the controller-supplied one-time token through unchanged.\n"
+            f"- Set the workflow `run-name` to exactly `PyAhead autopilot "
+            f"${{{{ inputs.{policy.dispatch_input} }}}}` so the controller can bind "
+            "the dispatch to one new run.\n"
+            "- Required job names (exact):\n"
+            f"{jobs}"
+        )
+
     def _protected_markdown(self, milestone: str) -> str:
         return "\n".join(f"- `{path}`" for path in self.protected_labels(milestone))
 
@@ -2756,6 +3668,7 @@ class Autopilot:
                 "repository_instructions": self._repository_instructions(),
                 "previous_status": previous_status,
                 "verification_commands": self._verification_markdown(milestone),
+                "hosted_verification": self._hosted_verification_markdown(milestone),
                 "protected_files": self._protected_markdown(milestone.identifier),
             },
         )
@@ -2781,6 +3694,7 @@ class Autopilot:
                 "parent_commit": cast("str", state["expected_head"]),
                 "changed_paths": changed_paths,
                 "verification_evidence": self._verification_evidence(state),
+                "hosted_verification": self._hosted_verification_markdown(milestone),
             },
         )
 
@@ -2831,12 +3745,65 @@ class Autopilot:
                 "contract_hash": cast("str", state["contract_hash"]),
                 "failed_output": failed_output.rstrip(),
                 "review_findings": findings_text,
+                "hosted_verification": self._hosted_verification_markdown(milestone),
                 "protected_files": self._protected_markdown(milestone.identifier),
             },
         )
 
-    def _codex_command(self, role: str, result_path: Path) -> tuple[str, ...]:
-        schema = REVIEW_SCHEMA if role == "review" else IMPLEMENTATION_SCHEMA
+    def _session_schema_text(self, role: str, milestone: str) -> str:
+        base = REVIEW_SCHEMA if role == "review" else IMPLEMENTATION_SCHEMA
+        try:
+            raw = cast(
+                "object",
+                json.loads(
+                    (self.repo_root / base).read_text(encoding="utf-8"),
+                    object_pairs_hook=_reject_duplicate_json_keys,
+                ),
+            )
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            _DuplicateJSONKeyError,
+        ) as error:
+            raise StateError("unable to derive the session output schema") from error
+        schema = _mapping(raw, "session output schema")
+        properties = _mapping(schema.get("properties"), "session schema properties")
+        milestone_property = _mapping(
+            properties.get("milestone"), "session schema milestone property"
+        )
+        milestone_property["const"] = milestone
+        properties["milestone"] = milestone_property
+        schema["properties"] = properties
+        _validate_codex_output_schema(schema, "session output schema")
+        return (
+            json.dumps(
+                schema,
+                allow_nan=False,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+    def _assert_session_schema(self, path: Path, role: str, milestone: str) -> None:
+        expected = self._session_schema_text(role, milestone)
+        try:
+            actual = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise StateError(
+                "session output schema is missing or unreadable"
+            ) from error
+        if path.is_symlink() or actual != expected:
+            raise StateError("session output schema changed during the child session")
+
+    def _codex_command(
+        self,
+        role: str,
+        result_path: Path,
+        schema_path: Path,
+    ) -> tuple[str, ...]:
         sandbox = "read-only" if role == "review" else "workspace-write"
         return (
             *self.config.tools["codex"],
@@ -2849,7 +3816,7 @@ class Autopilot:
             "--sandbox",
             sandbox,
             "--output-schema",
-            str((self.repo_root / schema).resolve()),
+            str(schema_path.resolve()),
             "--output-last-message",
             str(result_path.resolve()),
             "--color",
@@ -2861,18 +3828,20 @@ class Autopilot:
 
     def _agent_paths(
         self, state: Mapping[str, object], role: str, attempt: int
-    ) -> tuple[Path, Path, Path]:
+    ) -> tuple[Path, Path, Path, Path]:
         milestone = cast("str", state["current_milestone"])
         run_directory = self._run_directory(state)
         stem = f"{milestone}-{role}-{attempt}"
         return (
             run_directory / "prompts" / f"{stem}.md",
             run_directory / "results" / f"{stem}.json",
+            run_directory / "results" / f"{stem}.schema.json",
             run_directory / "logs" / stem,
         )
 
     def _run_or_recover_agent(self, state: dict[str, object], role: str) -> None:
         phase = cast("str", state["current_phase"])
+        milestone = cast("str", state["current_milestone"])
         if phase == f"{role}_running":
             if state.get("active_role") != role:
                 raise StateError("running agent phase contradicts its recorded role")
@@ -2885,13 +3854,14 @@ class Autopilot:
             attempt = (
                 0 if role == "implementation" else cast("int", state["repair_count"])
             )
-            _prompt_path, expected_result, _log_base = self._agent_paths(
+            _prompt_path, expected_result, schema_path, _log_base = self._agent_paths(
                 state,
                 role,
                 attempt,
             )
             if result_path != expected_result or result_path.is_symlink():
                 raise StateError("running agent result path is unsafe")
+            self._assert_session_schema(schema_path, role, milestone)
             if result_path.is_file():
                 self._finish_agent_result(state, role, result_path)
                 return
@@ -2943,8 +3913,14 @@ class Autopilot:
             state["repair_count"] = cast("int", state["repair_count"]) + 1
             attempt = cast("int", state["repair_count"])
             prompt = self._render_repair_prompt(state, milestone, contract)
-        prompt_path, result_path, log_base = self._agent_paths(state, role, attempt)
+        prompt_path, result_path, schema_path, log_base = self._agent_paths(
+            state, role, attempt
+        )
         _atomic_write_bytes(prompt_path, prompt.encode("utf-8"))
+        _atomic_write_bytes(
+            schema_path,
+            self._session_schema_text(role, milestone.identifier).encode("utf-8"),
+        )
         with suppress(FileNotFoundError):
             result_path.unlink()
         hashes = _state_mapping(state, "prompt_hashes")
@@ -2987,7 +3963,7 @@ class Autopilot:
         )
         try:
             command_result = self.runner.run(
-                self._codex_command(role, result_path),
+                self._codex_command(role, result_path, schema_path),
                 cwd=self.repo_root,
                 timeout_seconds=timeout,
                 input_text=prompt,
@@ -2996,6 +3972,11 @@ class Autopilot:
             )
         except AutopilotInterruptedError:
             self._assert_git_metadata_unchanged(state, session=True)
+            self._assert_session_schema(
+                schema_path,
+                role,
+                milestone.identifier,
+            )
             current = self.git.changed_snapshot()
             self._assert_child_boundaries(state, milestone, current)
             state["worktree_snapshot"] = current
@@ -3003,6 +3984,11 @@ class Autopilot:
             self._save(state)
             raise
         self._assert_git_metadata_unchanged(state, session=True)
+        self._assert_session_schema(
+            schema_path,
+            role,
+            milestone.identifier,
+        )
         current = self.git.changed_snapshot()
         self._assert_child_boundaries(state, milestone, current)
         state["worktree_snapshot"] = current
@@ -3105,7 +4091,13 @@ class Autopilot:
             if review.verdict == "pass":
                 state["review_findings"] = []
                 state["last_error"] = None
-                self._save(state, "commit_pending")
+                current = self.config.milestone(milestone)
+                self._save(
+                    state,
+                    "candidate_attach_pending"
+                    if current.hosted_verification is not None
+                    else "commit_pending",
+                )
                 self._write(f"Independent review passed for {milestone}.")
                 return
             if review.verdict == "blocked":
@@ -3157,6 +4149,7 @@ class Autopilot:
             state["last_error"] = f"{reason}; maximum repair-cycle count exhausted"
             self._save(state, "repair_exhausted")
             raise AutopilotError(cast("str", state["last_error"]))
+        self._supersede_candidate_for_repair(state)
         state["last_error"] = reason
         self._save(state, "repair_pending")
         self._write(
@@ -3278,7 +4271,12 @@ class Autopilot:
             self._schedule_repair(state, "independent verification failed")
             return
         state["last_error"] = None
-        self._save(state, "review_pending")
+        self._save(
+            state,
+            "candidate_pending"
+            if milestone.hosted_verification is not None
+            else "review_pending",
+        )
         self._write(f"Independent verification passed for {milestone.identifier}.")
 
     def _verification_evidence(self, state: Mapping[str, object]) -> str:
@@ -3294,7 +4292,1481 @@ class Autopilot:
                 + f"timeout={record.get('timed_out')}; signal={record.get('signal')}; "
                 + f"logs={record.get('stdout_log')}, {record.get('stderr_log')}"
             )
+        hosted = state.get("hosted_evidence")
+        if isinstance(hosted, dict):
+            lines.append(
+                "- exact-candidate hosted evidence: "
+                + json.dumps(
+                    _redact_structure(hosted),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
         return "\n".join(lines) or "- no verification evidence"
+
+    def _hosted_policy(self, milestone: Milestone) -> HostedVerification:
+        identifier = milestone.hosted_verification
+        if identifier is None:
+            raise StateError("milestone has no hosted verification policy")
+        try:
+            return self.config.hosted_verification[identifier]
+        except KeyError as error:  # pragma: no cover - configuration validates this.
+            raise StateError("hosted verification policy is missing") from error
+
+    def _active_candidate(self, state: Mapping[str, object]) -> dict[str, object]:
+        candidate = _state_mapping(state, "candidate")
+        active = candidate.get("active")
+        if not isinstance(active, dict) or not all(
+            isinstance(key, str) for key in active
+        ):
+            raise StateError("state has no active exact candidate")
+        return cast("dict[str, object]", active)
+
+    def _store_candidate(
+        self,
+        state: dict[str, object],
+        record: Mapping[str, object],
+    ) -> None:
+        candidate = _state_mapping(state, "candidate")
+        attempts_raw = candidate.get("attempts")
+        if not isinstance(attempts_raw, list):
+            raise StateError("state candidate attempts are malformed")
+        attempt = record.get("attempt")
+        attempts: list[object] = []
+        replaced = False
+        for item in attempts_raw:
+            if isinstance(item, dict) and item.get("attempt") == attempt:
+                attempts.append(dict(record))
+                replaced = True
+            else:
+                attempts.append(item)
+        if not replaced:
+            attempts.append(dict(record))
+        candidate["attempts"] = attempts
+        candidate["active"] = dict(record)
+        state["candidate"] = candidate
+
+    def _supersede_candidate_for_repair(self, state: dict[str, object]) -> None:
+        candidate = _state_mapping(state, "candidate")
+        active = candidate.get("active")
+        if not isinstance(active, dict):
+            return
+        record = cast("dict[str, object]", dict(active))
+        record["status"] = "superseded_for_repair"
+        self._store_candidate(state, record)
+
+    def _candidate_references(
+        self,
+        state: Mapping[str, object],
+        milestone: Milestone,
+        attempt: int,
+    ) -> tuple[str, str, str]:
+        run_id = cast("str", state["run_id"])
+        branch = cast("str", state["branch"])
+        local_ref = (
+            f"refs/pyahead/autopilot/candidates/{run_id}/"
+            f"{milestone.identifier}/{attempt}"
+        )
+        remote_branch = (
+            f"{branch}-candidate-{milestone.identifier.lower()}-"
+            f"{run_id.lower()}-{attempt}"
+        )
+        remote_ref = f"refs/heads/{remote_branch}"
+        for reference in (local_ref, remote_ref):
+            valid = self.git.run(("check-ref-format", reference))
+            if not valid.succeeded:
+                raise StateError("controller produced an invalid candidate reference")
+        return local_ref, remote_ref, remote_branch
+
+    def _candidate_tree(
+        self,
+        state: Mapping[str, object],
+        milestone: Milestone,
+        attempt: int,
+        parent: str,
+        snapshot: Mapping[str, object],
+    ) -> str:
+        if not snapshot:
+            raise StateError("refusing to create an empty exact candidate")
+        run_directory = self._run_directory(state)
+        index_path = (
+            run_directory
+            / "results"
+            / f"{milestone.identifier}-candidate-{attempt}.index"
+        )
+        with suppress(FileNotFoundError):
+            index_path.unlink()
+        try:
+            read_tree = self.git.run_with_index(
+                ("read-tree", parent),
+                index_path=index_path,
+                log_base=run_directory
+                / "logs"
+                / f"{milestone.identifier}-candidate-{attempt}-read-tree",
+            )
+            if not read_tree.succeeded:
+                raise StateError("unable to initialize the candidate Git index")
+            for index, path in enumerate(sorted(snapshot)):
+                added = self.git.run_with_index(
+                    ("add", "-A", "--", path),
+                    index_path=index_path,
+                    log_base=run_directory
+                    / "logs"
+                    / f"{milestone.identifier}-candidate-{attempt}-add-{index}",
+                )
+                if not added.succeeded:
+                    raise StateError(f"unable to stage candidate path {path!r}")
+            tree_result = self.git.run_with_index(
+                ("write-tree",),
+                index_path=index_path,
+                log_base=run_directory
+                / "logs"
+                / f"{milestone.identifier}-candidate-{attempt}-write-tree",
+            )
+            if not tree_result.succeeded:
+                raise StateError("unable to write the exact candidate tree")
+            tree = tree_result.stdout.strip().lower()
+            if re.fullmatch(r"[0-9a-f]{40,64}", tree) is None:
+                raise StateError("Git returned an invalid candidate tree")
+            return tree
+        finally:
+            with suppress(FileNotFoundError):
+                index_path.unlink()
+
+    def _local_ref_sha(self, reference: str) -> str | None:
+        result = self.git.run(
+            ("rev-parse", "--verify", "--quiet", f"{reference}^{{commit}}")
+        )
+        if result.returncode == 1:
+            return None
+        if not result.succeeded:
+            raise StateError("unable to inspect the local candidate reference")
+        sha = result.stdout.strip().lower()
+        if re.fullmatch(r"[0-9a-f]{40,64}", sha) is None:
+            raise StateError("local candidate reference has an invalid commit")
+        return sha
+
+    def _validate_candidate_commit(
+        self,
+        state: Mapping[str, object],
+        milestone: Milestone,
+        sha: str,
+        parent: str,
+        tree: str,
+    ) -> None:
+        resolved = self.git.rev_parse(sha)
+        if resolved.lower() != sha.lower():
+            raise StateError(
+                "candidate reference did not resolve to its recorded commit"
+            )
+        actual_parent = self.git.require_output(
+            ("show", "-s", "--format=%P", sha),
+            "unable to inspect candidate parent",
+        )
+        if actual_parent != parent:
+            raise StateError("exact candidate has an unexpected parent")
+        actual_tree = self.git.require_output(
+            ("show", "-s", "--format=%T", sha),
+            "unable to inspect candidate tree",
+        )
+        if actual_tree.lower() != tree.lower():
+            raise StateError("exact candidate tree no longer matches state")
+        message = self.git.require_output(
+            ("show", "-s", "--format=%B", sha),
+            "unable to inspect candidate message",
+        )
+        _, trailers = self._commit_message(milestone, cast("str", state["run_id"]))
+        if not all(line in message.splitlines() for line in trailers.splitlines()):
+            raise StateError("exact candidate lacks parent-owned milestone trailers")
+        identity = self._candidate_commit_identity(state)
+        actual_identity = self.git.require_output(
+            (
+                "show",
+                "-s",
+                "--format=%an%x00%ae%x00%at%x00%cn%x00%ce%x00%ct%x00%ai%x00%ci",
+                sha,
+            ),
+            "unable to inspect candidate identity",
+        ).split("\0")
+        expected_timestamp = str(identity["timestamp"])
+        if actual_identity != [
+            identity["name"],
+            identity["email"],
+            expected_timestamp,
+            identity["name"],
+            identity["email"],
+            expected_timestamp,
+            identity["date_display"],
+            identity["date_display"],
+        ]:
+            raise StateError("exact candidate identity no longer matches state")
+
+    def _new_candidate_commit_identity(self) -> dict[str, object]:
+        name = self.git.require_output(
+            ("config", "user.name"), "candidate commit user.name is not configured"
+        )
+        email = self.git.require_output(
+            ("config", "user.email"), "candidate commit user.email is not configured"
+        )
+        if any(character in name + email for character in ("\0", "\n", "\r")):
+            raise StateError("candidate commit identity contains a control character")
+        timestamp = int(time.time())
+        display = datetime.fromtimestamp(timestamp, UTC).strftime(
+            "%Y-%m-%d %H:%M:%S +0000"
+        )
+        return {
+            "date_display": display,
+            "email": email,
+            "name": name,
+            "timestamp": timestamp,
+        }
+
+    def _candidate_commit_identity(
+        self, state: Mapping[str, object]
+    ) -> dict[str, str | int]:
+        raw = self._active_candidate(state).get("commit_identity")
+        identity = _mapping(raw, "candidate.commit_identity")
+        if set(identity) != {"date_display", "email", "name", "timestamp"}:
+            raise StateError("candidate commit identity is malformed")
+        name = _string(identity.get("name"), "candidate.commit_identity.name")
+        email = _string(identity.get("email"), "candidate.commit_identity.email")
+        display = _string(
+            identity.get("date_display"), "candidate.commit_identity.date_display"
+        )
+        timestamp = identity.get("timestamp")
+        if (
+            type(timestamp) is not int
+            or timestamp < 0
+            or any(character in name + email for character in ("\n", "\r"))
+            or datetime.fromtimestamp(timestamp, UTC).strftime(
+                "%Y-%m-%d %H:%M:%S +0000"
+            )
+            != display
+        ):
+            raise StateError("candidate commit identity is invalid")
+        return {
+            "date_display": display,
+            "email": email,
+            "name": name,
+            "timestamp": timestamp,
+        }
+
+    def _candidate_commit_environment(
+        self, state: Mapping[str, object]
+    ) -> dict[str, str]:
+        identity = self._candidate_commit_identity(state)
+        date = f"@{identity['timestamp']} +0000"
+        return {
+            "GIT_AUTHOR_DATE": date,
+            "GIT_AUTHOR_EMAIL": cast("str", identity["email"]),
+            "GIT_AUTHOR_NAME": cast("str", identity["name"]),
+            "GIT_COMMITTER_DATE": date,
+            "GIT_COMMITTER_EMAIL": cast("str", identity["email"]),
+            "GIT_COMMITTER_NAME": cast("str", identity["name"]),
+        }
+
+    def _prepare_candidate(self, state: dict[str, object]) -> None:
+        milestone = self.config.milestone(cast("str", state["current_milestone"]))
+        self._hosted_policy(milestone)
+        attempt = cast("int", state["repair_count"])
+        parent = cast("str", state["expected_head"])
+        snapshot = _state_mapping(state, "worktree_snapshot")
+        if self.git.head() != parent or self.git.changed_snapshot() != snapshot:
+            raise StateError("worktree changed before exact-candidate creation")
+        local_ref, remote_ref, remote_branch = self._candidate_references(
+            state, milestone, attempt
+        )
+        candidate_state = _state_mapping(state, "candidate")
+        active = candidate_state.get("active")
+        if not isinstance(active, dict) or active.get("attempt") != attempt:
+            record: dict[str, object] = {
+                "attempt": attempt,
+                "check_polls": 0,
+                "commit_identity": self._new_candidate_commit_identity(),
+                "create_invocation": 0,
+                "create_status": "not_started",
+                "dispatch_baseline_ids": [],
+                "dispatch_status": "not_started",
+                "dispatch_token": uuid.uuid4().hex,
+                "local_ref": local_ref,
+                "parent": parent,
+                "remote_branch": remote_branch,
+                "remote_ref": remote_ref,
+                "run_id": None,
+                "run_url": None,
+                "sha": None,
+                "status": "creating",
+                "tree": None,
+                "upload_ref": f"{remote_ref}-upload",
+                "upload_invocation": 0,
+                "upload_status": "not_started",
+            }
+            self._store_candidate(state, record)
+            state["hosted_evidence"] = None
+        else:
+            record = cast("dict[str, object]", dict(active))
+        if state.get("current_phase") != "candidate_running":
+            self._begin_transition_metadata_guard(state, "candidate_creation")
+            self._save(state, "candidate_running")
+        else:
+            self._assert_transition_metadata_guard(state, "candidate_creation")
+        tree = self._candidate_tree(
+            state,
+            milestone,
+            attempt,
+            parent,
+            snapshot,
+        )
+        sha = self._local_ref_sha(local_ref)
+        if sha is None:
+            title, trailers = self._commit_message(
+                milestone, cast("str", state["run_id"])
+            )
+            created = self.git.run(
+                ("commit-tree", tree, "-p", parent, "-m", title, "-m", trailers),
+                log_base=self._run_directory(state)
+                / "logs"
+                / f"{milestone.identifier}-candidate-{attempt}-commit-tree",
+                env_overrides=self._candidate_commit_environment(state),
+            )
+            if not created.succeeded:
+                raise StateError("unable to create the exact candidate commit")
+            sha = created.stdout.strip().lower()
+            if re.fullmatch(r"[0-9a-f]{40,64}", sha) is None:
+                raise StateError("Git returned an invalid exact-candidate commit")
+            updated = self.git.run(("update-ref", local_ref, sha, "0" * len(sha)))
+            if not updated.succeeded:
+                raise StateError("unable to create the immutable local candidate ref")
+        self._validate_candidate_commit(state, milestone, sha, parent, tree)
+        self.git.assert_object_database_integrity()
+        self._assert_transition_metadata_guard(state, "candidate_creation")
+        record.update({"sha": sha, "status": "created", "tree": tree})
+        self._store_candidate(state, record)
+        self._clear_transition_metadata_guard(state)
+        state["git_metadata_digest"] = self.git.metadata_digest()
+        state["last_error"] = None
+        self._save(state, "candidate_publication_pending")
+        self._write(f"Created immutable {milestone.identifier} candidate {sha}.")
+
+    def _candidate_publication_failure(
+        self,
+        state: dict[str, object],
+        message: str,
+    ) -> NoReturn:
+        transition_kind = state.get("transition_git_metadata_kind")
+        if isinstance(transition_kind, str):
+            self._assert_transition_metadata_guard(state, transition_kind)
+            self._clear_transition_metadata_guard(state)
+            if transition_kind == "candidate_publication":
+                record = self._active_candidate(state)
+                record["status"] = "publication_failed"
+                if record.get("upload_status") == "attempting":
+                    record["upload_status"] = "indeterminate"
+                self._store_candidate(state, record)
+        state["git_metadata_digest"] = self.git.metadata_digest()
+        state["last_error"] = message
+        self._save(state)
+        raise PublicationError(message)
+
+    def _invalidate_candidate(
+        self,
+        state: dict[str, object],
+        message: str,
+    ) -> NoReturn:
+        """Permanently stop on a contradictory immutable-ref or dispatch identity."""
+        transition_kind = state.get("transition_git_metadata_kind")
+        if isinstance(transition_kind, str):
+            self._assert_transition_metadata_guard(state, transition_kind)
+            self._clear_transition_metadata_guard(state)
+        record = self._active_candidate(state)
+        record["create_status"] = "invalidated"
+        record["upload_status"] = "invalidated"
+        record["invalid_reason"] = message
+        record["status"] = "invalidated"
+        self._store_candidate(state, record)
+        state["git_metadata_digest"] = self.git.metadata_digest()
+        state["last_error"] = message
+        self._save(state, "blocked")
+        raise StateError(message)
+
+    def _read_command_evidence(
+        self,
+        log_base: Path,
+        command: Sequence[str],
+    ) -> tuple[bool, CommandResult | None]:
+        """Read one durable process-start marker and optional completed result."""
+        started_path, result_path, stdout_path, stderr_path = _command_evidence_paths(
+            log_base
+        )
+        expected_command = _command_sha256(command)
+
+        started = False
+        if started_path.exists():
+            if (
+                started_path.is_symlink()
+                or started_path.stat().st_size > MAX_RESULT_BYTES
+            ):
+                raise StateError("candidate command start evidence is unsafe")
+            try:
+                started_raw = cast(
+                    "object",
+                    json.loads(
+                        started_path.read_text(encoding="utf-8"),
+                        object_pairs_hook=_reject_duplicate_json_keys,
+                    ),
+                )
+                started_document = _mapping(
+                    started_raw, "candidate command start evidence"
+                )
+            except (
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+                _DuplicateJSONKeyError,
+                InvalidInputError,
+            ) as error:
+                raise StateError(
+                    "candidate command start evidence is malformed"
+                ) from error
+            if (
+                set(started_document) != {"command_sha256", "schema_version"}
+                or started_document.get("schema_version") != 1
+                or started_document.get("command_sha256") != expected_command
+            ):
+                raise StateError("candidate command start evidence is contradictory")
+            started = True
+
+        if not result_path.exists():
+            return started, None
+        evidence_paths = (result_path, stdout_path, stderr_path)
+        if any(
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size > MAX_RESULT_BYTES
+            for path in evidence_paths
+        ):
+            raise StateError("candidate command result evidence is unsafe")
+        try:
+            result_raw = cast(
+                "object",
+                json.loads(
+                    result_path.read_text(encoding="utf-8"),
+                    object_pairs_hook=_reject_duplicate_json_keys,
+                ),
+            )
+            result_document = _mapping(result_raw, "candidate command result evidence")
+            stdout = stdout_path.read_text(encoding="utf-8")
+            stderr = stderr_path.read_text(encoding="utf-8")
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            _DuplicateJSONKeyError,
+            InvalidInputError,
+        ) as error:
+            raise StateError(
+                "candidate command result evidence is malformed"
+            ) from error
+        expected_keys = {
+            "command_sha256",
+            "interrupted",
+            "returncode",
+            "schema_version",
+            "stderr_sha256",
+            "stdout_sha256",
+            "timed_out",
+        }
+        returncode = result_document.get("returncode")
+        timed_out = result_document.get("timed_out")
+        interrupted = result_document.get("interrupted")
+        if (
+            set(result_document) != expected_keys
+            or result_document.get("schema_version") != 1
+            or result_document.get("command_sha256") != expected_command
+            or type(returncode) is not int
+            or not isinstance(timed_out, bool)
+            or not isinstance(interrupted, bool)
+            or result_document.get("stdout_sha256") != sha256_text(stdout)
+            or result_document.get("stderr_sha256") != sha256_text(stderr)
+        ):
+            raise StateError("candidate command result evidence is contradictory")
+        return started, CommandResult(
+            command=tuple(command),
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            duration_seconds=0.0,
+            timed_out=timed_out,
+            interrupted=interrupted,
+        )
+
+    @staticmethod
+    def _included_http_response(result: CommandResult) -> tuple[int | None, str]:
+        """Split gh --include output into its final HTTP status and JSON body."""
+        remainder = result.stdout
+        status: int | None = None
+        while remainder.startswith("HTTP/"):
+            separator = "\r\n\r\n" if "\r\n\r\n" in remainder else "\n\n"
+            header, found, body = remainder.partition(separator)
+            if not found:
+                return None, result.stdout
+            first_line = header.splitlines()[0] if header.splitlines() else ""
+            matched = re.fullmatch(r"HTTP/\S+\s+([0-9]{3})(?:\s+.*)?", first_line)
+            if matched is None:
+                return None, result.stdout
+            status = int(matched.group(1))
+            remainder = body
+        return status, remainder
+
+    def _candidate_create_outcome(
+        self,
+        result: CommandResult,
+        remote_ref: str,
+        sha: str,
+    ) -> str:
+        """Classify one completed create-ref process from included HTTP evidence."""
+        status, body = self._included_http_response(result)
+        if status is not None and 400 <= status < 500:
+            return "definite_rejection"
+        if status is not None and status != 201 and status < 500:
+            return "definite_rejection"
+        if status is None:
+            return "contradictory" if result.succeeded else "indeterminate"
+        if status >= 500 or result.timed_out or result.interrupted:
+            return "indeterminate"
+        if not result.succeeded or result.signal_number is not None:
+            return "contradictory"
+        try:
+            document = _mapping(
+                cast(
+                    "object",
+                    json.loads(body, object_pairs_hook=_reject_duplicate_json_keys),
+                ),
+                "GitHub candidate-ref response",
+            )
+            git_object = _mapping(
+                document.get("object"), "GitHub candidate-ref response object"
+            )
+        except (
+            json.JSONDecodeError,
+            _DuplicateJSONKeyError,
+            InvalidInputError,
+        ):
+            return "contradictory"
+        if (
+            document.get("ref") != remote_ref
+            or git_object.get("sha") != sha
+            or git_object.get("type") != "commit"
+        ):
+            return "contradictory"
+        return "created"
+
+    @staticmethod
+    def _candidate_upload_outcome(
+        result: CommandResult,
+        upload_ref: str,
+        sha: str,
+    ) -> str:
+        """Classify an expected-absent porcelain push without trusting a no-op."""
+        if result.timed_out or result.interrupted or result.signal_number is not None:
+            return "indeterminate"
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        rejected = any(
+            marker in output
+            for marker in (
+                "[rejected]",
+                "already exists",
+                "non-fast-forward",
+                "stale info",
+            )
+        )
+        if not result.succeeded:
+            return "definite_rejection" if rejected else "indeterminate"
+        status_lines = [
+            line.split("\t") for line in result.stdout.splitlines() if "\t" in line
+        ]
+        if len(status_lines) != 1:
+            return "contradictory"
+        fields = status_lines[0]
+        if len(fields) != 3 or fields[1] != f"{sha}:{upload_ref}":
+            return "contradictory"
+        flag = fields[0].strip()
+        summary = fields[2].lower()
+        if flag == "*" and ("[new branch]" in summary or "[new reference]" in summary):
+            return "created"
+        return "definite_rejection"
+
+    def _remote_ref_sha(self, state: dict[str, object], reference: str) -> str | None:
+        result = self.git.run(
+            ("ls-remote", self._remote_transport_url(state, push=False), reference),
+            timeout_seconds=self.config.default_timeout_seconds,
+        )
+        if not result.succeeded:
+            self._candidate_publication_failure(
+                state,
+                result.stderr.strip() or "unable to inspect the remote candidate ref",
+            )
+        output = result.stdout.strip()
+        if not output:
+            return None
+        lines = output.splitlines()
+        if len(lines) != 1 or "\t" not in lines[0]:
+            self._candidate_publication_failure(
+                state, "remote returned an ambiguous candidate reference"
+            )
+        sha, returned_ref = lines[0].split("\t", maxsplit=1)
+        if (
+            returned_ref != reference
+            or re.fullmatch(r"[0-9a-fA-F]{40,64}", sha) is None
+        ):
+            self._candidate_publication_failure(
+                state, "remote returned an invalid candidate commit"
+            )
+        return sha.lower()
+
+    def _assert_remote_candidate(
+        self,
+        state: dict[str, object],
+        record: Mapping[str, object],
+        boundary: str,
+    ) -> None:
+        sha = _string(record.get("sha"), "candidate.sha").lower()
+        remote_ref = _string(record.get("remote_ref"), "candidate.remote_ref")
+        if self._remote_ref_sha(state, remote_ref) != sha:
+            self._invalidate_candidate(
+                state, f"immutable candidate ref changed before {boundary}"
+            )
+
+    @staticmethod
+    def _candidate_invocation(record: Mapping[str, object], key: str) -> int:
+        value = record.get(key)
+        if type(value) is not int or value < 0:
+            raise StateError(f"candidate {key} is malformed")
+        return value
+
+    def _candidate_upload_spec(
+        self,
+        state: Mapping[str, object],
+        record: Mapping[str, object],
+    ) -> tuple[tuple[str, ...], tuple[str, ...], Path]:
+        sha = _string(record.get("sha"), "candidate.sha").lower()
+        upload_ref = _string(record.get("upload_ref"), "candidate.upload_ref")
+        arguments = (
+            "push",
+            "--porcelain",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            f"--force-with-lease={upload_ref}:",
+            self._remote_transport_url(state, push=True),
+            f"{sha}:{upload_ref}",
+        )
+        invocation = self._candidate_invocation(record, "upload_invocation")
+        log_base = (
+            self._run_directory(state)
+            / "logs"
+            / f"{state['current_milestone']}-candidate-{record['attempt']}-upload-{invocation}"
+        )
+        return arguments, (*self.git.command, *arguments), log_base
+
+    def _candidate_create_spec(
+        self,
+        state: Mapping[str, object],
+        record: Mapping[str, object],
+    ) -> tuple[tuple[str, ...], tuple[str, ...], Path]:
+        repository = _state_github_repository(state)
+        remote_ref = _string(record.get("remote_ref"), "candidate.remote_ref")
+        sha = _string(record.get("sha"), "candidate.sha").lower()
+        arguments = (
+            "--method",
+            "POST",
+            f"repos/{repository.name_with_owner}/git/refs",
+            "--include",
+            "--raw-field",
+            f"ref={remote_ref}",
+            "--raw-field",
+            f"sha={sha}",
+        )
+        invocation = self._candidate_invocation(record, "create_invocation")
+        command = (
+            *self.config.tools["gh"],
+            "api",
+            "--hostname",
+            repository.host,
+            *arguments,
+        )
+        log_base = (
+            self._run_directory(state)
+            / "logs"
+            / f"{state['current_milestone']}-candidate-{record['attempt']}-create-ref-{invocation}"
+        )
+        return arguments, command, log_base
+
+    def _publish_candidate(self, state: dict[str, object]) -> None:
+        """Upload one commit object, then atomically create its final evidence ref."""
+        unconfirmed_metadata = state.pop(
+            "_unconfirmed_candidate_push_metadata_change", False
+        )
+        record = self._active_candidate(state)
+        sha = _string(record.get("sha"), "candidate.sha").lower()
+        remote_ref = _string(record.get("remote_ref"), "candidate.remote_ref")
+        upload_ref = _string(record.get("upload_ref"), "candidate.upload_ref")
+        if upload_ref != f"{remote_ref}-upload":
+            raise StateError("candidate upload ref contradicts its immutable ref")
+        create_status = _string(record.get("create_status"), "candidate.create_status")
+        upload_status = _string(record.get("upload_status"), "candidate.upload_status")
+        if create_status not in {
+            "not_started",
+            "api_attempting",
+            "indeterminate",
+            "confirmed",
+        }:
+            raise StateError("candidate create status is not resumable")
+        if upload_status not in {
+            "not_started",
+            "attempting",
+            "indeterminate",
+            "confirmed",
+        }:
+            raise StateError("candidate upload status is not resumable")
+
+        upload_arguments, upload_command, upload_log_base = self._candidate_upload_spec(
+            state, record
+        )
+        upload_remote = self._remote_ref_sha(state, upload_ref)
+        if upload_status == "not_started" and upload_remote is not None:
+            self._invalidate_candidate(
+                state, "candidate object-upload ref existed before its lease attempt"
+            )
+        if upload_remote is not None and upload_remote != sha:
+            self._invalidate_candidate(
+                state, "candidate object-upload ref points to a different commit"
+            )
+        if upload_status == "confirmed" and upload_remote != sha:
+            self._invalidate_candidate(
+                state, "confirmed candidate object-upload ref moved or vanished"
+            )
+        if upload_status in {"attempting", "indeterminate"}:
+            started, durable_upload = self._read_command_evidence(
+                upload_log_base, upload_command
+            )
+            if upload_remote == sha:
+                if not started:
+                    self._invalidate_candidate(
+                        state,
+                        "exact candidate object-upload ref appeared without a parent push",
+                    )
+                if durable_upload is None:
+                    self._invalidate_candidate(
+                        state,
+                        "exact candidate object-upload ref appeared without a durable "
+                        "completed parent push result",
+                    )
+                upload_outcome = self._candidate_upload_outcome(
+                    durable_upload, upload_ref, sha
+                )
+                if upload_outcome != "created":
+                    self._invalidate_candidate(
+                        state,
+                        "candidate object-upload ref appeared without strict new-ref "
+                        "porcelain ownership evidence",
+                    )
+                record["upload_status"] = "confirmed"
+                self._store_candidate(state, record)
+                upload_status = "confirmed"
+            elif not started and durable_upload is not None:
+                self._invalidate_candidate(
+                    state,
+                    "candidate object-upload command returned without a process-start marker",
+                )
+            elif not started:
+                record["upload_status"] = "not_started"
+                self._store_candidate(state, record)
+                upload_status = "not_started"
+            elif durable_upload is None:
+                self._candidate_publication_failure(
+                    state,
+                    "candidate object-upload process started without a completed result; "
+                    "it will not be retried automatically",
+                )
+            else:
+                upload_outcome = self._candidate_upload_outcome(
+                    durable_upload, upload_ref, sha
+                )
+                if upload_outcome == "created":
+                    self._invalidate_candidate(
+                        state,
+                        "created candidate object-upload ref moved or vanished",
+                    )
+                if upload_outcome in {"definite_rejection", "contradictory"}:
+                    self._invalidate_candidate(
+                        state,
+                        "candidate object-upload ref update was definitely rejected",
+                    )
+                record["upload_invocation"] = (
+                    self._candidate_invocation(record, "upload_invocation") + 1
+                )
+                record["upload_status"] = "not_started"
+                record["status"] = "publication_failed"
+                self._store_candidate(state, record)
+                self._candidate_publication_failure(
+                    state,
+                    durable_upload.stderr.strip()
+                    or "candidate object upload failed without creating its ref",
+                )
+        if unconfirmed_metadata is True and upload_remote != sha:
+            raise StateError(
+                "Git metadata changed during an unconfirmed candidate object upload, "
+                "but the remote does not contain the exact object-upload ref"
+            )
+        if upload_status == "not_started":
+            record["status"] = "uploading_object"
+            record["upload_status"] = "attempting"
+            self._store_candidate(state, record)
+            if state.get("transition_git_metadata_kind") is None:
+                self._begin_transition_metadata_guard(state, "candidate_publication")
+            else:
+                self._assert_transition_metadata_guard(state, "candidate_publication")
+            self._save(state, "candidate_publication_pending")
+            pushed = self.git.run(
+                upload_arguments,
+                timeout_seconds=self.config.default_timeout_seconds,
+                log_base=upload_log_base,
+            )
+            self._assert_transition_metadata_guard(state, "candidate_publication")
+            started, durable_upload = self._read_command_evidence(
+                upload_log_base, upload_command
+            )
+            if not started or durable_upload is None:
+                self._invalidate_candidate(
+                    state,
+                    "candidate object-upload command lacks durable process evidence",
+                )
+            upload_outcome = self._candidate_upload_outcome(
+                durable_upload, upload_ref, sha
+            )
+            if upload_outcome in {"definite_rejection", "contradictory"}:
+                self._invalidate_candidate(
+                    state,
+                    "candidate object-upload ref update was definitely rejected",
+                )
+            if upload_outcome != "created":
+                upload_remote = self._remote_ref_sha(state, upload_ref)
+                if upload_remote is not None and upload_remote != sha:
+                    self._invalidate_candidate(
+                        state,
+                        "candidate object-upload ref appeared with another commit",
+                    )
+                if upload_remote == sha:
+                    self._invalidate_candidate(
+                        state,
+                        "candidate object-upload ref appeared after an indeterminate "
+                        "or unsuccessful parent push",
+                    )
+                record["upload_invocation"] = (
+                    self._candidate_invocation(record, "upload_invocation") + 1
+                )
+                record["upload_status"] = "not_started"
+                record["status"] = "publication_failed"
+                self._store_candidate(state, record)
+                message = pushed.stderr.strip() or "candidate object upload failed"
+                self._candidate_publication_failure(state, message)
+            else:
+                upload_remote = self._remote_ref_sha(state, upload_ref)
+                if upload_remote != sha:
+                    self._invalidate_candidate(
+                        state, "remote did not retain the exact candidate object upload"
+                    )
+                record["upload_status"] = "confirmed"
+                self._store_candidate(state, record)
+
+        if state.get("transition_git_metadata_kind") is not None:
+            self._assert_transition_metadata_guard(state, "candidate_publication")
+            self._clear_transition_metadata_guard(state)
+        state["git_metadata_digest"] = self.git.metadata_digest()
+        self._store_candidate(state, record)
+        self._save(state, "candidate_publication_pending")
+
+        create_status = _string(record.get("create_status"), "candidate.create_status")
+        final_remote = self._remote_ref_sha(state, remote_ref)
+        create_arguments, create_command, create_log_base = self._candidate_create_spec(
+            state, record
+        )
+        if create_status == "not_started" and final_remote is not None:
+            self._invalidate_candidate(
+                state,
+                "immutable candidate ref existed before its create-only attempt",
+            )
+        if final_remote is not None and final_remote != sha:
+            self._invalidate_candidate(
+                state, "immutable remote candidate ref points to a different commit"
+            )
+        if create_status == "confirmed" and final_remote != sha:
+            self._invalidate_candidate(
+                state, "confirmed immutable candidate ref moved or vanished"
+            )
+        if create_status in {"api_attempting", "indeterminate"}:
+            started, durable_create = self._read_command_evidence(
+                create_log_base, create_command
+            )
+            if final_remote == sha:
+                if not started:
+                    self._invalidate_candidate(
+                        state,
+                        "exact candidate ref appeared without a parent API invocation",
+                    )
+                if durable_create is not None:
+                    outcome = self._candidate_create_outcome(
+                        durable_create, remote_ref, sha
+                    )
+                    if outcome in {"definite_rejection", "contradictory"}:
+                        self._invalidate_candidate(
+                            state,
+                            "atomic candidate-ref creation returned definite or "
+                            "contradictory evidence",
+                        )
+                record["create_status"] = "confirmed"
+                self._store_candidate(state, record)
+                create_status = "confirmed"
+            elif not started and durable_create is not None:
+                self._invalidate_candidate(
+                    state,
+                    "candidate create-ref command returned without a process-start marker",
+                )
+            elif not started:
+                record["create_status"] = "not_started"
+                self._store_candidate(state, record)
+                create_status = "not_started"
+            elif durable_create is None:
+                self._candidate_publication_failure(
+                    state,
+                    "candidate create-ref process started without a completed result; "
+                    "it will not be retried automatically",
+                )
+            else:
+                outcome = self._candidate_create_outcome(
+                    durable_create, remote_ref, sha
+                )
+                if outcome in {"definite_rejection", "contradictory"}:
+                    self._invalidate_candidate(
+                        state,
+                        "atomic candidate-ref creation returned definite or "
+                        "contradictory evidence",
+                    )
+                if outcome == "created":
+                    self._invalidate_candidate(
+                        state,
+                        "created immutable candidate ref moved or vanished",
+                    )
+                record["create_invocation"] = (
+                    self._candidate_invocation(record, "create_invocation") + 1
+                )
+                record["create_status"] = "not_started"
+                record["status"] = "publication_failed"
+                self._store_candidate(state, record)
+                self._candidate_publication_failure(
+                    state,
+                    durable_create.stderr.strip()
+                    or "atomic candidate-ref creation was indeterminate and created no ref",
+                )
+        if create_status != "confirmed":
+            record["status"] = "creating_remote_ref"
+            record["create_status"] = "api_attempting"
+            self._store_candidate(state, record)
+            self._save(state, "candidate_publication_pending")
+            created = self._gh_api_run(
+                create_arguments,
+                state,
+                create_log_base.name,
+            )
+            started, durable_create = self._read_command_evidence(
+                create_log_base, create_command
+            )
+            if not started or durable_create is None:
+                self._invalidate_candidate(
+                    state, "candidate create-ref command lacks durable process evidence"
+                )
+            outcome = self._candidate_create_outcome(durable_create, remote_ref, sha)
+            if outcome in {"definite_rejection", "contradictory"}:
+                self._invalidate_candidate(
+                    state,
+                    "atomic candidate-ref creation was definitely rejected or "
+                    "returned contradictory evidence",
+                )
+            final_remote = self._remote_ref_sha(state, remote_ref)
+            if outcome == "indeterminate":
+                record["create_status"] = "indeterminate"
+                record["status"] = "publication_indeterminate"
+                self._store_candidate(state, record)
+                if final_remote != sha:
+                    if final_remote is not None:
+                        self._invalidate_candidate(
+                            state,
+                            "immutable candidate ref appeared during atomic creation",
+                        )
+                    record["create_invocation"] = (
+                        self._candidate_invocation(record, "create_invocation") + 1
+                    )
+                    record["create_status"] = "not_started"
+                    self._store_candidate(state, record)
+                    self._candidate_publication_failure(
+                        state,
+                        created.stderr.strip()
+                        or "atomic candidate-ref creation was indeterminate",
+                    )
+            if final_remote != sha:
+                if final_remote is not None:
+                    self._invalidate_candidate(
+                        state,
+                        "immutable candidate ref changed after atomic creation",
+                    )
+                self._candidate_publication_failure(
+                    state, "remote did not retain the atomic candidate ref"
+                )
+            record["create_status"] = "confirmed"
+        record["status"] = "published"
+        self._store_candidate(state, record)
+        publication = _state_mapping(state, "publication")
+        publication["status"] = "candidate_published"
+        state["publication"] = publication
+        state["git_metadata_digest"] = self.git.metadata_digest()
+        state["last_error"] = None
+        self._save(state, "candidate_dispatch_pending")
+        self._write(f"Published immutable candidate ref {remote_ref}.")
+
+    def _candidate_runs(
+        self,
+        state: dict[str, object],
+        policy: HostedVerification,
+        record: Mapping[str, object],
+    ) -> list[dict[str, object]]:
+        sha = _string(record.get("sha"), "candidate.sha").lower()
+        branch = _string(record.get("remote_branch"), "candidate.remote_branch")
+        listed = self._gh_run(
+            (
+                "run",
+                "list",
+                "--workflow",
+                policy.workflow,
+                "--branch",
+                branch,
+                "--commit",
+                sha,
+                "--event",
+                "workflow_dispatch",
+                "--limit",
+                str(WORKFLOW_RUN_LIST_LIMIT),
+                "--json",
+                "databaseId,displayTitle,headSha,status,conclusion,url,createdAt,workflowName,event",
+            ),
+            state,
+            f"{state['current_milestone']}-candidate-run-list",
+        )
+        if not listed.succeeded:
+            self._candidate_publication_failure(
+                state, listed.stderr.strip() or "unable to discover candidate CI run"
+            )
+        try:
+            loaded = cast(
+                "object",
+                json.loads(
+                    listed.stdout or "[]",
+                    object_pairs_hook=_reject_duplicate_json_keys,
+                ),
+            )
+        except (json.JSONDecodeError, _DuplicateJSONKeyError):
+            self._candidate_publication_failure(
+                state, "GitHub returned malformed candidate run data"
+            )
+        if not isinstance(loaded, list):
+            self._candidate_publication_failure(
+                state, "GitHub returned invalid candidate run data"
+            )
+        if len(loaded) >= WORKFLOW_RUN_LIST_LIMIT:
+            self._candidate_publication_failure(
+                state,
+                "candidate workflow-run enumeration may be truncated; uniqueness "
+                "cannot be established",
+            )
+        runs: list[dict[str, object]] = []
+        for index, item in enumerate(loaded):
+            try:
+                candidate = _mapping(item, f"candidate runs[{index}]")
+            except InvalidInputError:
+                self._candidate_publication_failure(
+                    state, "GitHub returned malformed candidate run data"
+                )
+            run_id = candidate.get("databaseId")
+            url = candidate.get("url")
+            if (
+                type(run_id) is not int
+                or run_id <= 0
+                or not isinstance(url, str)
+                or not _github_repository_url(
+                    url, _state_github_repository(state), area="actions"
+                )
+                or not isinstance(candidate.get("displayTitle"), str)
+            ):
+                self._candidate_publication_failure(
+                    state, "GitHub returned unsafe candidate run identity"
+                )
+            if (
+                candidate.get("headSha") == sha
+                and candidate.get("event") == "workflow_dispatch"
+                and candidate.get("workflowName") == policy.workflow
+            ):
+                runs.append(candidate)
+        return sorted(runs, key=lambda item: cast("int", item["databaseId"]))
+
+    @staticmethod
+    def _expected_dispatch_title(record: Mapping[str, object]) -> str:
+        return _AUTOPILOT_DISPATCH_TITLE + _string(
+            record.get("dispatch_token"), "candidate.dispatch_token"
+        )
+
+    def _new_attributed_runs(
+        self,
+        runs: Sequence[Mapping[str, object]],
+        record: Mapping[str, object],
+    ) -> list[dict[str, object]]:
+        baseline_raw = record.get("dispatch_baseline_ids")
+        if not isinstance(baseline_raw, list) or not all(
+            type(item) is int and item > 0 for item in baseline_raw
+        ):
+            raise StateError("candidate dispatch baseline is malformed")
+        baseline = set(cast("list[int]", baseline_raw))
+        expected_title = self._expected_dispatch_title(record)
+        return [
+            dict(candidate)
+            for candidate in runs
+            if cast("int", candidate["databaseId"]) not in baseline
+            and candidate.get("displayTitle") == expected_title
+        ]
+
+    def _assert_unique_attributed_run(
+        self,
+        state: dict[str, object],
+        policy: HostedVerification,
+        record: Mapping[str, object],
+        boundary: str,
+    ) -> None:
+        attributed = self._new_attributed_runs(
+            self._candidate_runs(state, policy, record), record
+        )
+        if len(attributed) != 1 or attributed[0].get("databaseId") != record.get(
+            "run_id"
+        ):
+            self._invalidate_candidate(
+                state,
+                f"candidate dispatch identity became ambiguous before {boundary}",
+            )
+
+    def _dispatch_candidate_workflow(self, state: dict[str, object]) -> None:
+        milestone = self.config.milestone(cast("str", state["current_milestone"]))
+        policy = self._hosted_policy(milestone)
+        record = self._active_candidate(state)
+        self._assert_remote_candidate(state, record, "workflow dispatch")
+        dispatch_status = _string(
+            record.get("dispatch_status"), "candidate.dispatch_status"
+        )
+        if state.get("current_phase") == "candidate_dispatch_pending":
+            if dispatch_status != "not_started":
+                raise StateError("candidate dispatch state is contradictory")
+            baseline_runs = self._candidate_runs(state, policy, record)
+            baseline_ids = [
+                cast("int", candidate["databaseId"]) for candidate in baseline_runs
+            ]
+            record.update(
+                {
+                    "dispatch_baseline_ids": baseline_ids,
+                    "dispatch_status": "prepared",
+                    "status": "dispatch_prepared",
+                }
+            )
+            self._store_candidate(state, record)
+            self._save(state, "candidate_dispatch_running")
+            dispatch_token = _string(
+                record.get("dispatch_token"), "candidate.dispatch_token"
+            )
+            dispatched = self._gh_run(
+                (
+                    "workflow",
+                    "run",
+                    policy.workflow,
+                    "--ref",
+                    _string(record.get("remote_branch"), "candidate.remote_branch"),
+                    "--field",
+                    f"{policy.dispatch_input}={dispatch_token}",
+                ),
+                state,
+                f"{milestone.identifier}-candidate-dispatch",
+            )
+            if not dispatched.succeeded:
+                record["dispatch_status"] = "indeterminate"
+                record["status"] = "dispatch_indeterminate"
+                self._store_candidate(state, record)
+                self._candidate_publication_failure(
+                    state,
+                    dispatched.stderr.strip()
+                    or "candidate workflow dispatch result is indeterminate",
+                )
+            record["dispatch_status"] = "sent"
+            record["status"] = "dispatch_sent"
+            self._store_candidate(state, record)
+            self._save(state, "candidate_dispatch_running")
+        elif dispatch_status not in {"prepared", "sent", "indeterminate"}:
+            raise StateError("candidate dispatch resume state is contradictory")
+        deadline = time.monotonic() + min(60.0, policy.timeout_seconds)
+        new_runs: list[dict[str, object]] = []
+        while time.monotonic() < deadline:
+            runs = self._candidate_runs(state, policy, record)
+            new_runs = self._new_attributed_runs(runs, record)
+            if new_runs:
+                time.sleep(policy.poll_interval_seconds)
+                confirmed = self._candidate_runs(state, policy, record)
+                new_runs = self._new_attributed_runs(confirmed, record)
+                break
+            time.sleep(policy.poll_interval_seconds)
+        if not new_runs:
+            record["dispatch_status"] = "indeterminate"
+            record["status"] = "dispatch_indeterminate"
+            self._store_candidate(state, record)
+            self._candidate_publication_failure(
+                state,
+                "candidate workflow dispatch is indeterminate; the controller will "
+                "not redispatch automatically",
+            )
+        if len(new_runs) != 1:
+            self._invalidate_candidate(
+                state, "candidate workflow dispatch produced ambiguous runs"
+            )
+        selected = new_runs[0]
+        record.update(
+            {
+                "dispatch_status": "discovered",
+                "run_id": selected["databaseId"],
+                "run_url": selected["url"],
+                "status": "dispatched",
+            }
+        )
+        self._store_candidate(state, record)
+        state["last_error"] = None
+        self._save(state, "candidate_checks_pending")
+        self._write(
+            f"Dispatched {policy.workflow} for exact candidate {record['sha']}."
+        )
+
+    def _candidate_run_evidence(
+        self,
+        state: dict[str, object],
+        policy: HostedVerification,
+        record: Mapping[str, object],
+    ) -> dict[str, object]:
+        run_id = record.get("run_id")
+        if type(run_id) is not int or run_id <= 0:
+            raise StateError("candidate has no valid hosted run ID")
+        poll = record.get("check_polls", 0)
+        if type(poll) is not int or poll < 0:
+            raise StateError("candidate hosted poll count is malformed")
+        viewed = self._gh_run(
+            (
+                "run",
+                "view",
+                str(run_id),
+                "--json",
+                "databaseId,displayTitle,headSha,status,conclusion,url,jobs,workflowName,event",
+            ),
+            state,
+            f"{state['current_milestone']}-candidate-run-view-{poll}",
+        )
+        if not viewed.succeeded:
+            self._candidate_publication_failure(
+                state, viewed.stderr.strip() or "unable to inspect candidate CI run"
+            )
+        try:
+            document = _mapping(
+                cast(
+                    "object",
+                    json.loads(
+                        viewed.stdout,
+                        object_pairs_hook=_reject_duplicate_json_keys,
+                    ),
+                ),
+                "candidate run evidence",
+            )
+        except (
+            json.JSONDecodeError,
+            _DuplicateJSONKeyError,
+            InvalidInputError,
+        ):
+            self._candidate_publication_failure(
+                state, "GitHub returned malformed run evidence"
+            )
+        url = document.get("url")
+        if not isinstance(url, str) or not _github_repository_url(
+            url, _state_github_repository(state), area="actions"
+        ):
+            self._candidate_publication_failure(
+                state, "GitHub returned an unsafe candidate run URL"
+            )
+        jobs_raw = document.get("jobs")
+        if not isinstance(jobs_raw, list):
+            self._candidate_publication_failure(
+                state, "GitHub candidate run omitted job evidence"
+            )
+        jobs: list[dict[str, object]] = []
+        names: set[str] = set()
+        for index, raw_job in enumerate(jobs_raw):
+            try:
+                job = _mapping(raw_job, f"candidate jobs[{index}]")
+                name = _string(job.get("name"), f"candidate jobs[{index}].name")
+            except InvalidInputError:
+                self._candidate_publication_failure(
+                    state, "GitHub returned malformed candidate job evidence"
+                )
+            if name in names:
+                self._candidate_publication_failure(
+                    state, "GitHub candidate run repeated a job name"
+                )
+            names.add(name)
+            job_url = job.get("url")
+            if not isinstance(job_url, str) or not _github_repository_url(
+                job_url, _state_github_repository(state), area="actions"
+            ):
+                self._candidate_publication_failure(
+                    state, "GitHub returned an unsafe candidate job URL"
+                )
+            jobs.append(
+                {
+                    "conclusion": job.get("conclusion"),
+                    "name": name,
+                    "status": job.get("status"),
+                    "url": job_url,
+                }
+            )
+        return {
+            "candidate_ref": record.get("remote_ref"),
+            "candidate_sha": document.get("headSha"),
+            "conclusion": document.get("conclusion"),
+            "dispatch_title": document.get("displayTitle"),
+            "event": document.get("event"),
+            "jobs": jobs,
+            "required_jobs": list(policy.required_jobs),
+            "run_id": document.get("databaseId"),
+            "status": document.get("status"),
+            "url": url,
+            "workflow": document.get("workflowName"),
+        }
+
+    def _hosted_candidate_failure(
+        self,
+        state: dict[str, object],
+        evidence: Mapping[str, object],
+        reason: str,
+    ) -> None:
+        state["hosted_evidence"] = dict(evidence)
+        state["failed_output_path"] = self._write_failure_input(
+            state,
+            reason
+            + "\nHosted evidence:\n"
+            + json.dumps(
+                _redact_structure(dict(evidence)),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+        state["review_findings"] = []
+        self._schedule_repair(state, reason)
+
+    def _wait_for_candidate_checks(self, state: dict[str, object]) -> None:
+        milestone = self.config.milestone(cast("str", state["current_milestone"]))
+        policy = self._hosted_policy(milestone)
+        record = self._active_candidate(state)
+        timeout_override = state.get("timeout_override")
+        timeout = (
+            float(timeout_override)
+            if isinstance(timeout_override, (int, float))
+            and not isinstance(timeout_override, bool)
+            else policy.timeout_seconds
+        )
+        deadline = time.monotonic() + timeout
+        self._save(state, "candidate_checks_running")
+        while True:
+            self._assert_remote_candidate(state, record, "hosted evidence polling")
+            evidence = self._candidate_run_evidence(state, policy, record)
+            record["check_polls"] = cast("int", record.get("check_polls", 0)) + 1
+            record["status"] = f"checks_{evidence.get('status')}"
+            self._store_candidate(state, record)
+            state["hosted_evidence"] = evidence
+            self._save(state, "candidate_checks_running")
+            expected_sha = _string(record.get("sha"), "candidate.sha").lower()
+            if evidence.get("candidate_sha") != expected_sha:
+                self._hosted_candidate_failure(
+                    state,
+                    evidence,
+                    "hosted verification ran against a different candidate SHA",
+                )
+                return
+            if (
+                evidence.get("run_id") != record.get("run_id")
+                or evidence.get("event") != "workflow_dispatch"
+                or evidence.get("workflow") != policy.workflow
+                or evidence.get("dispatch_title")
+                != _AUTOPILOT_DISPATCH_TITLE
+                + _string(record.get("dispatch_token"), "candidate.dispatch_token")
+            ):
+                self._hosted_candidate_failure(
+                    state, evidence, "hosted verification identity is contradictory"
+                )
+                return
+            if evidence.get("status") == "completed":
+                self._assert_unique_attributed_run(
+                    state, policy, record, "hosted evidence acceptance"
+                )
+                jobs = cast("list[dict[str, object]]", evidence["jobs"])
+                by_name = {cast("str", job["name"]): job for job in jobs}
+                missing = [name for name in policy.required_jobs if name not in by_name]
+                unsuccessful = [
+                    name
+                    for name in policy.required_jobs
+                    if name in by_name
+                    and (
+                        by_name[name].get("status") != "completed"
+                        or by_name[name].get("conclusion") != "success"
+                    )
+                ]
+                if evidence.get("conclusion") != "success" or missing or unsuccessful:
+                    details = []
+                    if missing:
+                        details.append("missing jobs: " + ", ".join(missing))
+                    if unsuccessful:
+                        details.append("unsuccessful jobs: " + ", ".join(unsuccessful))
+                    self._hosted_candidate_failure(
+                        state,
+                        evidence,
+                        "exact-candidate hosted verification failed"
+                        + ("; " + "; ".join(details) if details else ""),
+                    )
+                    return
+                self._assert_remote_candidate(
+                    state, record, "hosted evidence acceptance"
+                )
+                record["status"] = "checks_passed"
+                self._store_candidate(state, record)
+                state["last_error"] = None
+                self._save(state, "review_pending")
+                self._write(
+                    f"Hosted verification passed for exact candidate {expected_sha}."
+                )
+                return
+            if time.monotonic() >= deadline:
+                self._hosted_candidate_failure(
+                    state,
+                    evidence,
+                    "exact-candidate hosted verification timed out",
+                )
+                return
+            time.sleep(policy.poll_interval_seconds)
 
     def _commit_message(self, milestone: Milestone, run_id: str) -> tuple[str, str]:
         title = self.config.commit_template.format(
@@ -3308,6 +5780,147 @@ class Autopilot:
             f"PyAhead-Milestone: {milestone.identifier}"
         )
         return title, trailers
+
+    def _recover_candidate_attach_if_present(
+        self,
+        state: dict[str, object],
+        current_head: str | None = None,
+    ) -> bool:
+        """Adopt the exact candidate once if branch attachment outlived state."""
+        if state.get("current_phase") != "candidate_attach_running":
+            return False
+        milestone = self.config.milestone(cast("str", state["current_milestone"]))
+        record = self._active_candidate(state)
+        parent = _string(record.get("parent"), "candidate.parent")
+        sha = _string(record.get("sha"), "candidate.sha").lower()
+        tree = _string(record.get("tree"), "candidate.tree").lower()
+        head = current_head or self.git.head()
+        if head == parent:
+            return False
+        if head != sha:
+            raise StateError("unexpected history movement during candidate attachment")
+        policy = self._hosted_policy(milestone)
+        self._assert_remote_candidate(state, record, "attachment recovery")
+        self._assert_unique_attributed_run(state, policy, record, "attachment recovery")
+        self._validate_candidate_commit(state, milestone, sha, parent, tree)
+        if self.git.changed_snapshot() or self.git.staged_paths():
+            raise StateError(
+                "attached candidate did not leave a clean worktree and index"
+            )
+        record["status"] = "attached"
+        self._store_candidate(state, record)
+        self._record_completed_commit(state, milestone, sha)
+        state["expected_head"] = sha
+        state["worktree_snapshot"] = {}
+        self._clear_transition_metadata_guard(state)
+        state["git_metadata_digest"] = self.git.metadata_digest()
+        state["last_error"] = None
+        publication = _state_mapping(state, "publication")
+        self._save(
+            state,
+            "publication_pending"
+            if publication.get("enabled") is True
+            else "milestone_complete",
+        )
+        return True
+
+    def _attach_candidate(self, state: dict[str, object]) -> None:
+        if self._recover_candidate_attach_if_present(state):
+            return
+        milestone = self.config.milestone(cast("str", state["current_milestone"]))
+        record = self._active_candidate(state)
+        self._assert_remote_candidate(state, record, "candidate attachment")
+        policy = self._hosted_policy(milestone)
+        self._assert_unique_attributed_run(
+            state, policy, record, "candidate attachment"
+        )
+        if record.get("status") != "checks_passed":
+            raise StateError(
+                "candidate attachment attempted without passing hosted checks"
+            )
+        evidence = state.get("hosted_evidence")
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("candidate_sha") != record.get("sha")
+            or evidence.get("status") != "completed"
+            or evidence.get("conclusion") != "success"
+        ):
+            raise StateError("candidate attachment lacks exact hosted evidence")
+        review = state.get("review_result")
+        if not isinstance(review, dict) or review.get("verdict") != "pass":
+            raise StateError("candidate attachment attempted without passing review")
+        verification = _state_list(state, "verification_results")
+        if not verification or any(
+            not isinstance(item, dict) or item.get("succeeded") is not True
+            for item in verification
+        ):
+            raise StateError("candidate attachment lacks passing local verification")
+        parent = _string(record.get("parent"), "candidate.parent")
+        sha = _string(record.get("sha"), "candidate.sha").lower()
+        tree = _string(record.get("tree"), "candidate.tree").lower()
+        snapshot = self.git.changed_snapshot()
+        recorded_snapshot = _state_mapping(state, "worktree_snapshot")
+        if state.get("current_phase") == "candidate_attach_running":
+            matches = self._snapshots_match_content(recorded_snapshot, snapshot)
+        else:
+            matches = snapshot == recorded_snapshot
+        if not matches or not snapshot:
+            raise StateError("worktree changed before candidate attachment")
+        if self.git.head() != parent or state.get("expected_head") != parent:
+            raise StateError("candidate parent moved before attachment")
+        if state.get("current_phase") != "candidate_attach_running":
+            state["commit_parent"] = parent
+            self._begin_transition_metadata_guard(state, "candidate_attachment")
+            self._save(state, "candidate_attach_running")
+        else:
+            self._assert_transition_metadata_guard(state, "candidate_attachment")
+        current_tree = self._candidate_tree(
+            state,
+            milestone,
+            cast("int", record["attempt"]),
+            parent,
+            recorded_snapshot,
+        )
+        if current_tree != tree:
+            raise StateError(
+                "live worktree no longer matches the hosted candidate tree"
+            )
+        run_directory = self._run_directory(state)
+        for index, path in enumerate(sorted(recorded_snapshot)):
+            added = self.git.run(
+                ("add", "-A", "--", path),
+                log_base=run_directory
+                / "logs"
+                / f"{milestone.identifier}-candidate-attach-add-{index}",
+            )
+            if not added.succeeded:
+                state["last_error"] = f"unable to stage candidate path {path!r}"
+                self._save(state)
+                raise StateError(cast("str", state["last_error"]))
+        staged = set(self.git.staged_paths())
+        if not staged or not staged.issubset(set(recorded_snapshot)):
+            raise StateError("candidate attachment staged an unexpected path set")
+        staged_tree = self.git.require_output(
+            ("write-tree",), "unable to inspect staged candidate tree"
+        )
+        if staged_tree.lower() != tree:
+            raise StateError("staged worktree does not match the hosted candidate tree")
+        self._assert_remote_candidate(state, record, "range-branch attachment")
+        self._assert_unique_attributed_run(
+            state, policy, record, "range-branch attachment"
+        )
+        updated = self.git.run(
+            ("update-ref", f"refs/heads/{state['branch']}", sha, parent),
+            log_base=run_directory
+            / "logs"
+            / f"{milestone.identifier}-candidate-attach-ref",
+        )
+        if not updated.succeeded:
+            raise StateError("unable to attach the exact candidate to the range branch")
+        self._assert_transition_metadata_guard(state, "candidate_attachment")
+        if not self._recover_candidate_attach_if_present(state, sha):
+            raise StateError("exact candidate attachment was not recoverable")
+        self._write(f"Accepted {milestone.identifier} exact candidate {sha}.")
 
     def _recover_commit_if_present(
         self, state: dict[str, object], current_head: str | None = None
@@ -3373,6 +5986,8 @@ class Autopilot:
                 "contract_hash": state.get("contract_hash"),
                 "repair_cycles": state.get("repair_count"),
                 "verification": list(_state_list(state, "verification_results")),
+                "hosted_evidence": state.get("hosted_evidence"),
+                "candidate": state.get("candidate"),
             }
         )
         state["completed_commits"] = completed
@@ -3480,7 +6095,12 @@ class Autopilot:
     ) -> str | None:
         branch = cast("str", state["branch"])
         result = self.git.run(
-            ("ls-remote", "--heads", self.config.remote, f"refs/heads/{branch}"),
+            (
+                "ls-remote",
+                "--heads",
+                self._remote_transport_url(state, push=False),
+                f"refs/heads/{branch}",
+            ),
             timeout_seconds=self.config.default_timeout_seconds,
         )
         if not result.succeeded:
@@ -3560,7 +6180,13 @@ class Autopilot:
             state["publication"] = publication
             self._save(state, "publication_pending")
             result = self.git.run(
-                ("push", self.config.remote, branch),
+                (
+                    "push",
+                    "--no-follow-tags",
+                    "--recurse-submodules=no",
+                    self._remote_transport_url(state, push=True),
+                    branch,
+                ),
                 timeout_seconds=self.config.default_timeout_seconds,
                 log_base=self._run_directory(state)
                 / "logs"
@@ -3595,8 +6221,36 @@ class Autopilot:
         state: Mapping[str, object],
         name: str,
     ) -> CommandResult:
+        repository = _state_github_repository(state)
         return self.runner.run(
-            (*self.config.tools["gh"], *arguments),
+            (
+                *self.config.tools["gh"],
+                *arguments,
+                "--repo",
+                repository.selector,
+            ),
+            cwd=self.repo_root,
+            timeout_seconds=self.config.default_timeout_seconds,
+            env=_repository_environment(),
+            log_base=self._run_directory(state) / "logs" / name,
+        )
+
+    def _gh_api_run(
+        self,
+        arguments: Sequence[str],
+        state: Mapping[str, object],
+        name: str,
+    ) -> CommandResult:
+        """Call one repository-bound GitHub API endpoint without ambient selectors."""
+        repository = _state_github_repository(state)
+        return self.runner.run(
+            (
+                *self.config.tools["gh"],
+                "api",
+                "--hostname",
+                repository.host,
+                *arguments,
+            ),
             cwd=self.repo_root,
             timeout_seconds=self.config.default_timeout_seconds,
             env=_repository_environment(),
@@ -3659,7 +6313,9 @@ class Autopilot:
                         state, publication, "existing pull request is not a draft"
                     )
                 pr_url = _string(candidate.get("url"), "GitHub pull request URL")
-                if not _safe_https_url(pr_url):
+                if not _github_repository_url(
+                    pr_url, _state_github_repository(state), area="pull"
+                ):
                     self._publication_failure(
                         state,
                         publication,
@@ -3695,7 +6351,9 @@ class Autopilot:
                 urls = [
                     line.strip() for line in created.stdout.splitlines() if line.strip()
                 ]
-                if not urls or not _safe_https_url(urls[-1]):
+                if not urls or not _github_repository_url(
+                    urls[-1], _state_github_repository(state), area="pull"
+                ):
                     self._publication_failure(
                         state,
                         publication,
@@ -3748,6 +6406,17 @@ class Autopilot:
                             + f"timeout={result.get('timed_out')}, "
                             + f"signal={result.get('signal')})"
                         )
+                hosted = record.get("hosted_evidence")
+                if isinstance(hosted, dict):
+                    lines.append(
+                        "  - exact candidate `"
+                        + str(hosted.get("candidate_sha"))
+                        + "`: hosted workflow "
+                        + str(hosted.get("conclusion"))
+                        + " ("
+                        + str(hosted.get("url"))
+                        + ")"
+                    )
         else:
             lines.append("- None yet.")
         lines.extend(
@@ -3806,6 +6475,9 @@ class Autopilot:
         state["review_findings"] = []
         state["failed_output_path"] = None
         state["repair_count"] = 0
+        state["candidate"] = {"active": None, "attempts": []}
+        state["hosted_evidence"] = None
+        self._clear_transition_metadata_guard(state)
         state["worktree_snapshot"] = {}
         if index < len(requested):
             next_milestone = self.config.milestone(requested[index])
@@ -3850,7 +6522,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="autopilot.py",
         description=(
             "Run PyAhead design milestones through isolated implementation, "
-            "verification, review, repair, commit, and optional publication phases."
+            "verification, exact-candidate hosted evidence when configured, review, "
+            "repair, commit, and publication phases."
         ),
         epilog=(
             "Exit codes: 0 success; 2 invalid input/capability; 3 external or agent "
@@ -3904,7 +6577,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--push",
         action="store_true",
-        help="push every committed milestone as a recoverable checkpoint",
+        help=(
+            "push every accepted milestone as a recoverable checkpoint "
+            "(required for M6 hosted evidence)"
+        ),
     )
     run.add_argument(
         "--draft-pr",
