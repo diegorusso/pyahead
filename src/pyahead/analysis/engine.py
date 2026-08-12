@@ -1381,7 +1381,7 @@ def _discover_configured(
     return discover_python_files(root, paths, options)
 
 
-def scan(request: ScanRequest) -> ScanReport:
+def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordinator.
     """Scan Python source without importing, executing, or networking."""
     if request.fail_new_only and request.baseline_file is None:
         message = "--fail-new-only requires --baseline-file"
@@ -1473,6 +1473,41 @@ def scan(request: ScanRequest) -> ScanReport:
                     incomplete=True,
                 ),
             ),
+            inferences=(),
+            configuration=resolved.scan,
+            policy_provenance=resolved.policy_provenance,
+        )
+    source_limit_issues = tuple(
+        issue
+        for issue in (*module_discovery.issues, *discovery.issues)
+        if issue.code == "PYA1006"
+    )
+    if source_limit_issues:
+        reported_issues = {
+            (issue.relative_path, issue.code, issue.message): issue
+            for issue in (*discovery.issues, *source_limit_issues)
+        }
+        limit_diagnostics = (
+            *suppression_diagnostics,
+            *(
+                _discovery_issue_diagnostic(reported_issues[key])
+                for key in sorted(reported_issues)
+            ),
+        )
+        return ScanReport(
+            schema_version=1,
+            tool_version=__version__,
+            registry_release=registry.release,
+            registry_revision=registry.revision,
+            policy=policy,
+            root_label=".",
+            counts=ScanCounts(
+                files_discovered=discovery.files_discovered,
+                files_analyzed=0,
+                files_incomplete=len(reported_issues),
+            ),
+            findings=(),
+            diagnostics=limit_diagnostics,
             inferences=(),
             configuration=resolved.scan,
             policy_provenance=resolved.policy_provenance,

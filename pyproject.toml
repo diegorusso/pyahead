@@ -11,12 +11,16 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
   "libcst>=1.8,<2",
@@ -52,8 +56,10 @@ packages = ["src/pyahead"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/AGENTS.md",
+  "/CHANGELOG.md",
   "/LICENSE",
   "/README.md",
+  "/SECURITY.md",
   "/automation",
   "/docs",
   "/pyproject.toml",

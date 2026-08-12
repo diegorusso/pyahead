@@ -18,6 +18,7 @@ from pyahead.analysis.discovery import (
 )
 
 _TWO_FILES = 2
+_THREE_FILES = 3
 
 
 def test_discovery_is_sorted_deduplicated_and_excludes_build_data(
@@ -284,6 +285,48 @@ def test_discovery_skips_oversized_and_non_regular_sources(tmp_path: Path) -> No
     assert [
         (issue.relative_path.as_posix(), issue.code) for issue in result.issues
     ] == [("large.py", "PYA1005"), ("pipe.py", "PYA1004")]
+
+
+def test_discovery_stops_deterministically_at_source_entry_limit(
+    tmp_path: Path,
+) -> None:
+    """The bounded prefix and first omitted entry are stable and incomplete."""
+    for name in ("c.py", "a.py", "b.py"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = discover_python_files(
+        tmp_path,
+        (),
+        DiscoveryOptions(max_source_entries=2),
+    )
+
+    assert [item.relative_path.as_posix() for item in result.files] == ["a.py", "b.py"]
+    assert [(item.relative_path.as_posix(), item.code) for item in result.issues] == [
+        ("c.py", "PYA1006")
+    ]
+    assert result.files_discovered == _THREE_FILES
+
+
+def test_overlapping_requested_paths_share_one_source_entry_budget(
+    tmp_path: Path,
+) -> None:
+    """Repeated discovery roots do not manufacture a limit diagnostic."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.py").write_text("", encoding="utf-8")
+    (source / "b.py").write_text("", encoding="utf-8")
+
+    result = discover_python_files(
+        tmp_path,
+        (Path(), Path("src")),
+        DiscoveryOptions(max_source_entries=2),
+    )
+
+    assert [item.relative_path.as_posix() for item in result.files] == [
+        "src/a.py",
+        "src/b.py",
+    ]
+    assert result.issues == ()
 
 
 def test_unsafe_runtime_module_candidate_still_prevents_false_certainty(
