@@ -18,6 +18,9 @@ uv run mypy src
 uv run pytest
 uv build
 uv run pyahead --version
+uv run python scripts/install_smoke.py --dist-dir dist --kind wheel
+uv run python scripts/install_smoke.py --dist-dir dist --kind sdist
+uv run python scripts/benchmark.py --repeat 1 --output -
 ```
 
 Note: repository-wide coverage is configured with `fail_under=90`, so running a
@@ -29,3 +32,7 @@ Before opening a pull request, also run `git diff --check` and inspect the diff
 for generated files, credentials, absolute paths, and unrelated changes. In the
 pull request, name the milestone, list the acceptance criteria demonstrated,
 and record the exact verification results.
+
+Public-alpha releases follow [`releasing.md`](releasing.md). Corpus and
+false-positive work must follow [`corpus-review.md`](corpus-review.md); never
+commit acquired checkouts or expanded source-derived review data.

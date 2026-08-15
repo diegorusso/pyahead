@@ -531,11 +531,21 @@ wheels = [
 
 [[package]]
 name = "rpds-py"
-version = "0.21.0"
+version = "2026.6.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/23/80/afdf96daf9b27d61483ef05b38f282121db0e38f5fd4e89f40f5c86c2a4f/rpds_py-0.21.0.tar.gz", hash = "sha256:ed6378c9d66d0de903763e7706383d60c33829581f0adff47b6535f1802fa6db" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/2a/9618a122aeb2a169a28b03889a2995fe297588964333d4a7d67bdf46e147/rpds_py-2026.6.3.tar.gz", hash = "sha256:1cebd1337c242e4ec2293e541f712b2da849b29f48f0c293684b71c0632625d4" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/fd/f1fd7e77fef8e5a442ce7fd80ba957730877515fe18d7195f646408a60ce/rpds_py-0.21.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:de609a6f1b682f70bb7163da745ee815d8f230d97276db049ab447767466a09d" },
+    { url = "https://files.pythonhosted.org/packages/4d/dc/323d08583c0832911768663d1944f0107fcd4088704858d84b5e06d105a0/rpds_py-2026.6.3-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:db08f45aecde626498fb3df07bcf6d2ec040af42e859a4f5040d79c200342911" },
+    { url = "https://files.pythonhosted.org/packages/94/1f/a2dca5ffdbf1d475ffc4e80e4d5d720ff3a00f691795910116960ee12511/rpds_py-2026.6.3-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:7b689145a1485c335569bd056464f3243a29af7ed3871c7be31ad624ba239bc7" },
+    { url = "https://files.pythonhosted.org/packages/5e/19/7e98f468bd50346faff5b10e5297374b443bfdddacc8e9fbc65984539597/rpds_py-2026.6.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9c1255b302953c86a486b81d330d5ee1d5bd937691ce271b6be0ef0e299eaab7" },
+    { url = "https://files.pythonhosted.org/packages/f2/b7/b7a1695d7af36f521fb11e80d6d3adbd744f73b921859bd3c2a2c0dc706f/rpds_py-2026.6.3-cp311-cp311-win_amd64.whl", hash = "sha256:2c54a076ca4d370980ab57bc0e31df57bbe8d41340436a90ef8b1219a3cbb127" },
+    { url = "https://files.pythonhosted.org/packages/04/8f/d2f3f532616be4d06c316ef119683e832bd3d41e112bf3a88f4151c95b17/rpds_py-2026.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ecabd69db66de867690f9797f2f8fa27ba501bbc24540cbdbdc649cd15888ba6" },
+    { url = "https://files.pythonhosted.org/packages/9e/9b/069aa329940f8207615e091f5eedbbd40e1e15eac68a0790fd05ccdf796c/rpds_py-2026.6.3-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:54f45a148e28767bf343d33a684693c70e451c6f4c0e9904709a723fafbdfc1f" },
+    { url = "https://files.pythonhosted.org/packages/57/d7/fe978efc2ae50abe48eb7464668ea99f53c010c60aeebb7b35ad27f23661/rpds_py-2026.6.3-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:acac386b453c2516111b50985d60ce46e7fadb5ea71ae7b25f4c946935bf27cf" },
+    { url = "https://files.pythonhosted.org/packages/ba/54/f785cc3d3f60839ca57a5af4927a9f347b07b2799c373fc20f7949f87c7e/rpds_py-2026.6.3-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:d7469697dce35be237db177d42e2a2ee26e6dcc5fc052078a6fefabd288c6edd" },
+    { url = "https://files.pythonhosted.org/packages/b6/36/7fbe9dcdaf857fb3f63c2a2284b62492d95f5e8334e947e5fb6e7f68c9be/rpds_py-2026.6.3-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:931908d9fc855d8f74783377822be318edb6dcb19e47169dc038f9a1bf60b06e" },
+    { url = "https://files.pythonhosted.org/packages/d1/9c/0d1fdc2e7aba23e290d603bc494e97bd205bae262ce33c6b32a69768ed5e/rpds_py-2026.6.3-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:dc319e5a1de4b6913aac94bf6a2f9e847371e0a140a43dd4991db1a09bc2d504" },
+    { url = "https://files.pythonhosted.org/packages/85/62/a3892ba945f4e24c78f352e5de3c7620d8479f73f211406a97263d13c7d2/rpds_py-2026.6.3-cp314-cp314-win_amd64.whl", hash = "sha256:0be972be84cfcaf46c8c6edf690ca0f154ac17babf1f6a955a51579b34ad2dc5" },
 ]
 
 [[package]]
