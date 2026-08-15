@@ -48,7 +48,7 @@ def _run_state() -> tuple[Path, dict[str, object]]:
     """Load the fake workflow runs created for the current fixture."""
     path = Path(os.environ[RUN_STATE_ENV])
     if not path.exists():
-        return path, {"runs": [], "view_count": 0}
+        return path, {"job_logs": {}, "runs": [], "view_count": 0}
     loaded = cast("object", json.loads(path.read_text(encoding="utf-8")))
     if not isinstance(loaded, dict):
         raise RuntimeError("fake GitHub run state is malformed")
@@ -56,8 +56,10 @@ def _run_state() -> tuple[Path, dict[str, object]]:
     if (
         not isinstance(state.get("runs"), list)
         or type(state.get("view_count")) is not int
+        or not isinstance(state.get("job_logs", {}), dict)
     ):
         raise RuntimeError("fake GitHub run state fields are malformed")
+    state.setdefault("job_logs", {})
     return path, state
 
 
@@ -291,17 +293,54 @@ def _run_view(argv: list[str]) -> int:
     status = result.get("status", "completed")
     conclusion = result.get("conclusion", "success" if status == "completed" else None)
     head_sha = result.get("headSha", run["headSha"])
-    jobs = result.get(
+    raw_jobs = result.get(
         "jobs",
         [
             {
                 "conclusion": "success" if status == "completed" else None,
+                "databaseId": 1,
                 "name": "fixture-hosted",
                 "status": status,
                 "url": f"{WEB_ROOT}/actions/runs/{run_id}/job/1",
             }
         ],
     )
+    jobs: object = raw_jobs
+    if isinstance(raw_jobs, list):
+        normalized: list[object] = []
+        job_logs = cast("dict[str, object]", state["job_logs"])
+        for index, raw_job in enumerate(raw_jobs):
+            if not isinstance(raw_job, dict):
+                normalized.append(raw_job)
+                continue
+            job = cast("dict[str, object]", dict(raw_job))
+            raw_url = job.get("url")
+            url_job_id = (
+                int(raw_url.rstrip("/").rsplit("/", maxsplit=1)[-1])
+                if isinstance(raw_url, str)
+                and raw_url.rstrip("/").rsplit("/", maxsplit=1)[-1].isdigit()
+                else None
+            )
+            job_id = job.get("databaseId", url_job_id or index + 1)
+            job["databaseId"] = job_id
+            if "url" not in job:
+                job["url"] = f"{WEB_ROOT}/actions/runs/{run_id}/job/{job_id}"
+            log = job.pop("log", f"fixture log for job {job_id}\n")
+            error_once = job.pop("log_error_once", False)
+            key = f"{run_id}:{job_id}"
+            existing = job_logs.get(key)
+            failed_once = (
+                existing.get("failed_once", False)
+                if isinstance(existing, dict)
+                else False
+            )
+            job_logs[key] = {
+                "content": log,
+                "error_once": error_once,
+                "failed_once": failed_once,
+            }
+            normalized.append(job)
+        jobs = normalized
     if (
         status == "completed"
         and os.environ.get(DELAYED_DUPLICATE_ENV) == "1"
@@ -334,6 +373,34 @@ def _run_view(argv: list[str]) -> int:
     return 0
 
 
+def _run_job_log(argv: list[str]) -> int:
+    """Return one complete hosted-job log with an optional transient failure."""
+    if len(argv) != 6 or argv[3] != "--job" or argv[5:] != ["--log"]:  # noqa: PLR2004
+        return 42
+    run_id = int(argv[2])
+    job_id = int(argv[4])
+    state_path, state = _run_state()
+    job_logs = cast("dict[str, object]", state["job_logs"])
+    raw = job_logs.get(f"{run_id}:{job_id}")
+    if not isinstance(raw, dict):
+        sys.stderr.write("fake GitHub job log is unavailable\n")
+        return 1
+    record = cast("dict[str, object]", raw)
+    if record.get("error_once") is True and record.get("failed_once") is not True:
+        record["failed_once"] = True
+        job_logs[f"{run_id}:{job_id}"] = record
+        state["job_logs"] = job_logs
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        sys.stderr.write("transient fake GitHub job-log failure\n")
+        return 1
+    content = record.get("content")
+    if not isinstance(content, str):
+        sys.stderr.write("fake GitHub job log is malformed\n")
+        return 1
+    sys.stdout.write(content)
+    return 0
+
+
 def main(arguments: list[str] | None = None) -> int:
     """Implement the authenticated draft-PR calls used by the orchestrator."""
     argv = list(sys.argv[1:] if arguments is None else arguments)
@@ -358,7 +425,7 @@ def main(arguments: list[str] | None = None) -> int:
         print("--branch --commit --event --json --workflow")
         return 0
     if argv == ["run", "view", "--help"]:
-        print("--json")
+        print("--job --json --log")
         return 0
     if argv == ["repo", "view", REPOSITORY, "--json", "nameWithOwner,url"]:
         print(json.dumps({"nameWithOwner": "example/pyahead", "url": WEB_ROOT}))
@@ -369,6 +436,8 @@ def main(arguments: list[str] | None = None) -> int:
         return _workflow_run(argv)
     if argv[:2] == ["run", "list"]:
         return _run_list(argv)
+    if argv[:2] == ["run", "view"] and "--job" in argv:
+        return _run_job_log(argv)
     if argv[:2] == ["run", "view"]:
         return _run_view(argv)
     if argv[:2] == ["pr", "list"]:
