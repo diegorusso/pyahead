@@ -2035,6 +2035,41 @@ Acceptance:
 - the complete M0–M5 repository suite and all controller tests pass without
   starting a real M6 implementation session.
 
+### M1.5.2 — Hosted diagnostics and agent recovery
+
+This controller-hardening milestone addresses two failures observed during the
+first exact-candidate M6 hosted run. It changes development automation only and
+does not add or modify M6 product functionality.
+
+Deliverables:
+
+- repository-bound GitHub API fallback when `gh run view --job --log` fails or
+  returns an empty successful response;
+- non-empty failed-job evidence as a precondition for launching a fixer;
+- resumable fresh-process retries for failed implementation, review, and repair
+  sessions, with unique prompt, result, and log paths;
+- preservation of the logical repair count and all edits when a repair process
+  fails before returning a structured result;
+- immutable semantic repair evidence across fixer-process retries, with each
+  process failure recorded under a distinct attempt/retry identity;
+- deterministic offline tests and updated operator documentation.
+
+Acceptance:
+
+- an empty successful `gh run view` response is never recorded as complete
+  hosted evidence;
+- the fallback endpoint is derived from the configured origin repository and
+  exact job ID, and its complete redacted output is supplied to the fixer;
+- failure or empty output from both log interfaces leaves the run in the hosted
+  check phase with repair count unchanged;
+- `resume` starts a fresh context after an implementation, reviewer, or fixer
+  process failure without overwriting the previous process evidence;
+- retrying a failed fixer preserves its edits and does not consume an additional
+  semantic repair cycle or replace the verification/review/hosted evidence that
+  initiated it;
+- the full repository quality and build suite passes without starting a real
+  product-milestone run.
+
 ### M2 — Registry and matcher framework
 
 Deliverables:

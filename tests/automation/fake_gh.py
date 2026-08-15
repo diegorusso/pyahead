@@ -26,6 +26,7 @@ CREATE_REF_RESULT_ENV = "PYAHEAD_FAKE_GH_CREATE_REF_RESULT"
 CROWDED_DUPLICATE_ENV = "PYAHEAD_FAKE_GH_CROWDED_DUPLICATE"
 REPOSITORY = "github.com/example/pyahead"
 WEB_ROOT = "https://github.com/example/pyahead"
+API_JOB_LOG_ARGC = 4
 
 
 def _record(arguments: list[str]) -> None:
@@ -327,6 +328,9 @@ def _run_view(argv: list[str]) -> int:
                 job["url"] = f"{WEB_ROOT}/actions/runs/{run_id}/job/{job_id}"
             log = job.pop("log", f"fixture log for job {job_id}\n")
             error_once = job.pop("log_error_once", False)
+            run_view_empty = job.pop("log_run_view_empty", False)
+            api_error_once = job.pop("log_api_error_once", False)
+            api_empty = job.pop("log_api_empty", False)
             key = f"{run_id}:{job_id}"
             existing = job_logs.get(key)
             failed_once = (
@@ -334,10 +338,19 @@ def _run_view(argv: list[str]) -> int:
                 if isinstance(existing, dict)
                 else False
             )
+            api_failed_once = (
+                existing.get("api_failed_once", False)
+                if isinstance(existing, dict)
+                else False
+            )
             job_logs[key] = {
+                "api_empty": api_empty,
+                "api_error_once": api_error_once,
+                "api_failed_once": api_failed_once,
                 "content": log,
                 "error_once": error_once,
                 "failed_once": failed_once,
+                "run_view_empty": run_view_empty,
             }
             normalized.append(job)
         jobs = normalized
@@ -397,6 +410,53 @@ def _run_job_log(argv: list[str]) -> int:
     if not isinstance(content, str):
         sys.stderr.write("fake GitHub job log is malformed\n")
         return 1
+    if record.get("run_view_empty") is True:
+        return 0
+    sys.stdout.write(content)
+    return 0
+
+
+def _api_job_log(argv: list[str]) -> int:
+    """Return one repository-bound hosted-job log through the API fallback."""
+    prefix = "repos/example/pyahead/actions/jobs/"
+    if (
+        len(argv) != API_JOB_LOG_ARGC
+        or argv[:3] != ["api", "--hostname", "github.com"]
+        or not argv[3].startswith(prefix)
+        or not argv[3].endswith("/logs")
+    ):
+        return 42
+    raw_job_id = argv[3][len(prefix) : -len("/logs")]
+    if not raw_job_id.isdigit():
+        return 42
+    state_path, state = _run_state()
+    job_logs = cast("dict[str, object]", state["job_logs"])
+    matches = [
+        (key, value)
+        for key, value in job_logs.items()
+        if key.endswith(f":{raw_job_id}")
+    ]
+    if len(matches) != 1 or not isinstance(matches[0][1], dict):
+        sys.stderr.write("fake GitHub API job log is unavailable\n")
+        return 1
+    key, raw = matches[0]
+    record = cast("dict[str, object]", raw)
+    if (
+        record.get("api_error_once") is True
+        and record.get("api_failed_once") is not True
+    ):
+        record["api_failed_once"] = True
+        job_logs[key] = record
+        state["job_logs"] = job_logs
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        sys.stderr.write("transient fake GitHub API job-log failure\n")
+        return 1
+    content = record.get("content")
+    if not isinstance(content, str):
+        sys.stderr.write("fake GitHub API job log is malformed\n")
+        return 1
+    if record.get("api_empty") is True:
+        return 0
     sys.stdout.write(content)
     return 0
 
@@ -430,6 +490,12 @@ def main(arguments: list[str] | None = None) -> int:
     if argv == ["repo", "view", REPOSITORY, "--json", "nameWithOwner,url"]:
         print(json.dumps({"nameWithOwner": "example/pyahead", "url": WEB_ROOT}))
         return 0
+    if (
+        argv[:3] == ["api", "--hostname", "github.com"]
+        and len(argv) == API_JOB_LOG_ARGC
+        and "/actions/jobs/" in argv[3]
+    ):
+        return _api_job_log(argv)
     if argv and argv[0] == "api":
         return _api_create_ref(argv)
     if argv[:2] == ["workflow", "run"]:

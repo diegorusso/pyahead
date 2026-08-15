@@ -30,6 +30,12 @@ must accept the `pyahead_autopilot_token` dispatch input and use it in the exact
 `PyAhead autopilot <token>` run title. Stop at Gate C before M7-M8. Refuse M9
 here and M10 without its design.
 
+Hosted failure logs must be non-empty: fall back from `gh run view` to the
+repository-bound job-log API, and stop resumably if neither interface supplies
+evidence. `resume` may retry a failed child only in a fresh uniquely logged
+session while preserving its worktree, logical repair count, and original
+semantic repair evidence.
+
 ```console
 python scripts/autopilot.py doctor
 python scripts/autopilot.py plan --from M2 --through M6

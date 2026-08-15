@@ -2963,6 +2963,14 @@ class Autopilot:
                 "verification_index": 0,
                 "review_findings": [],
                 "failed_output_path": None,
+                "agent_process_failures": [],
+                "active_agent_attempt": None,
+                "active_agent_retry": None,
+                "active_result_path": None,
+                "active_role": None,
+                "pending_agent_retry": None,
+                "session_baseline_snapshot": {},
+                "session_git_metadata_digest": None,
                 "candidate": {"active": None, "attempts": []},
                 "hosted_evidence": None,
                 "github_repository": (
@@ -3137,6 +3145,7 @@ class Autopilot:
     def _validate_resume_state(self, state: dict[str, object]) -> None:
         state.setdefault("candidate", {"active": None, "attempts": []})
         state.setdefault("hosted_evidence", None)
+        state.setdefault("agent_process_failures", [])
         state.setdefault("transition_git_metadata_digest", None)
         state.setdefault("transition_git_metadata_kind", None)
         state.setdefault("attachment_index_baseline", None)
@@ -3159,6 +3168,24 @@ class Autopilot:
         phase = state.get("current_phase")
         if not isinstance(phase, str) or phase not in VALID_PHASES:
             raise StateError("state current_phase is unsupported")
+        pending_retry_raw = state.get("pending_agent_retry")
+        if pending_retry_raw is not None:
+            pending_retry = _mapping(pending_retry_raw, "pending agent retry")
+            retry_role = pending_retry.get("role")
+            if retry_role not in ROLE_TEMPLATES:
+                raise StateError("pending agent retry role is malformed")
+            _integer(
+                pending_retry.get("attempt"),
+                "pending agent retry.attempt",
+                minimum=0,
+            )
+            _integer(
+                pending_retry.get("retry"),
+                "pending agent retry.retry",
+                minimum=1,
+            )
+            if phase != f"{retry_role}_pending":
+                raise StateError("pending agent retry contradicts the current phase")
         repair_count = state.get("repair_count")
         if (
             isinstance(repair_count, bool)
@@ -3189,6 +3216,7 @@ class Autopilot:
                 "Gate C approval record changed outside an operator command"
             )
         for key in (
+            "agent_process_failures",
             "completed_commits",
             "verification_results",
             "review_findings",
@@ -3490,6 +3518,13 @@ class Autopilot:
                 if outcome is not None:
                     return outcome
                 continue
+            if phase == "agent_failed":
+                self._queue_agent_retry(
+                    state,
+                    cast("str", state.get("active_role")),
+                    "previous agent process failed",
+                )
+                continue
             if phase in {"implementation_pending", "implementation_running"}:
                 self._run_or_recover_agent(state, "implementation")
                 continue
@@ -3606,6 +3641,13 @@ class Autopilot:
         state["verification_index"] = 0
         state["review_findings"] = []
         state["failed_output_path"] = None
+        state["active_agent_attempt"] = None
+        state["active_agent_retry"] = None
+        state["active_result_path"] = None
+        state["active_role"] = None
+        state["pending_agent_retry"] = None
+        state["session_baseline_snapshot"] = {}
+        state["session_git_metadata_digest"] = None
         state["candidate"] = {"active": None, "attempts": []}
         state["hosted_evidence"] = None
         self._clear_transition_metadata_guard(state)
@@ -3845,11 +3887,17 @@ class Autopilot:
         )
 
     def _agent_paths(
-        self, state: Mapping[str, object], role: str, attempt: int
+        self,
+        state: Mapping[str, object],
+        role: str,
+        attempt: int,
+        retry: int = 0,
     ) -> tuple[Path, Path, Path, Path]:
         milestone = cast("str", state["current_milestone"])
         run_directory = self._run_directory(state)
         stem = f"{milestone}-{role}-{attempt}"
+        if retry:
+            stem = f"{stem}-retry-{retry}"
         return (
             run_directory / "prompts" / f"{stem}.md",
             run_directory / "results" / f"{stem}.json",
@@ -3869,13 +3917,12 @@ class Autopilot:
             result_path = _path_from_repo(
                 self.repo_root, _relative_path(result_raw, "active_result_path")
             )
-            attempt = (
-                0 if role == "implementation" else cast("int", state["repair_count"])
-            )
+            attempt, retry = self._active_agent_coordinates(state, role)
             _prompt_path, expected_result, schema_path, _log_base = self._agent_paths(
                 state,
                 role,
                 attempt,
+                retry,
             )
             if result_path != expected_result or result_path.is_symlink():
                 raise StateError("running agent result path is unsafe")
@@ -3886,23 +3933,56 @@ class Autopilot:
             baseline = _state_mapping(state, "session_baseline_snapshot")
             current = self.git.changed_snapshot()
             recorded = _state_mapping(state, "worktree_snapshot")
-            if current == baseline:
-                self._save(state, f"{role}_pending")
-                return
-            if current == recorded and role == "review":
-                self._save(state, "review_pending")
-                return
-            if current == recorded and role in {"implementation", "repair"}:
-                failure_path = self._write_failure_input(
-                    state,
-                    "The previous agent was interrupted after editing but before "
-                    "producing a structured result. Inspect and complete only the frozen milestone.",
-                )
-                state["failed_output_path"] = failure_path
-                self._schedule_repair(state, "interrupted agent session")
+            if current in (baseline, recorded):
+                self._queue_agent_retry(state, role, "interrupted agent session")
                 return
             raise StateError("interrupted agent left unrecorded worktree changes")
         self._execute_agent(state, role)
+
+    def _active_agent_coordinates(
+        self,
+        state: Mapping[str, object],
+        role: str,
+    ) -> tuple[int, int]:
+        """Return the durable logical attempt and process-retry coordinates."""
+        raw_attempt = state.get("active_agent_attempt")
+        if raw_attempt is None:
+            raw_attempt = 0 if role == "implementation" else state.get("repair_count")
+        raw_retry = state.get("active_agent_retry", 0)
+        if (
+            isinstance(raw_attempt, bool)
+            or not isinstance(raw_attempt, int)
+            or raw_attempt < 0
+            or isinstance(raw_retry, bool)
+            or not isinstance(raw_retry, int)
+            or raw_retry < 0
+        ):
+            raise StateError("active agent coordinates are malformed")
+        return raw_attempt, raw_retry
+
+    def _queue_agent_retry(
+        self,
+        state: dict[str, object],
+        role: str,
+        reason: str,
+    ) -> None:
+        """Queue one fresh process for the same logical agent role and attempt."""
+        if role not in ROLE_TEMPLATES:
+            raise StateError("failed agent state has no valid active role")
+        attempt, retry = self._active_agent_coordinates(state, role)
+        state["pending_agent_retry"] = {
+            "attempt": attempt,
+            "retry": retry + 1,
+            "role": role,
+        }
+        state["active_result_path"] = None
+        state["active_role"] = None
+        state["last_error"] = f"{reason}; retrying {role} in a fresh session"
+        self._save(state, f"{role}_pending")
+        self._write(
+            f"Retrying {role} attempt {attempt} in fresh process {retry + 1}; "
+            "recorded work is preserved."
+        )
 
     def _execute_agent(self, state: dict[str, object], role: str) -> None:
         milestone = self.config.milestone(cast("str", state["current_milestone"]))
@@ -3912,6 +3992,24 @@ class Autopilot:
         contract = contract_path.read_text(encoding="utf-8")
         if sha256_text(contract) != state.get("contract_hash"):
             raise StateError("frozen milestone contract hash changed")
+        pending_retry_raw = state.get("pending_agent_retry")
+        pending_retry: dict[str, object] | None = None
+        if pending_retry_raw is not None:
+            pending_retry = dict(_mapping(pending_retry_raw, "pending agent retry"))
+            if pending_retry.get("role") != role:
+                raise StateError("pending agent retry contradicts its role")
+            attempt = _integer(
+                pending_retry.get("attempt"),
+                "pending agent retry.attempt",
+                minimum=0,
+            )
+            retry = _integer(
+                pending_retry.get("retry"),
+                "pending agent retry.retry",
+                minimum=1,
+            )
+        else:
+            retry = 0
         if role == "implementation":
             prompt = self._render_implementation_prompt(
                 milestone,
@@ -3919,20 +4017,28 @@ class Autopilot:
                 cast("str", state["contract_hash"]),
                 self._previous_status(state),
             )
-            attempt = 0
+            expected_attempt = 0
         elif role == "review":
             prompt = self._render_review_prompt(state, milestone, contract)
-            attempt = cast("int", state["repair_count"])
+            expected_attempt = cast("int", state["repair_count"])
         else:
-            if cast("int", state["repair_count"]) >= self.config.max_repair_cycles:
-                state["last_error"] = "maximum repair-cycle count exhausted"
-                self._save(state, "repair_exhausted")
-                raise AutopilotError(cast("str", state["last_error"]))
-            state["repair_count"] = cast("int", state["repair_count"]) + 1
-            attempt = cast("int", state["repair_count"])
+            if pending_retry is None:
+                if cast("int", state["repair_count"]) >= self.config.max_repair_cycles:
+                    state["last_error"] = "maximum repair-cycle count exhausted"
+                    self._save(state, "repair_exhausted")
+                    raise AutopilotError(cast("str", state["last_error"]))
+                state["repair_count"] = cast("int", state["repair_count"]) + 1
+            expected_attempt = cast("int", state["repair_count"])
             prompt = self._render_repair_prompt(state, milestone, contract)
+        if pending_retry is None:
+            attempt = expected_attempt
+        elif attempt != expected_attempt:
+            raise StateError("pending agent retry contradicts its logical attempt")
         prompt_path, result_path, schema_path, log_base = self._agent_paths(
-            state, role, attempt
+            state,
+            role,
+            attempt,
+            retry,
         )
         _atomic_write_bytes(prompt_path, prompt.encode("utf-8"))
         _atomic_write_bytes(
@@ -3942,7 +4048,10 @@ class Autopilot:
         with suppress(FileNotFoundError):
             result_path.unlink()
         hashes = _state_mapping(state, "prompt_hashes")
-        hashes[f"{milestone.identifier}:{role}:{attempt}"] = sha256_text(prompt)
+        prompt_key = f"{milestone.identifier}:{role}:{attempt}"
+        if retry:
+            prompt_key = f"{prompt_key}:retry:{retry}"
+        hashes[prompt_key] = sha256_text(prompt)
         state["prompt_hashes"] = hashes
         baseline = self.git.changed_snapshot()
         if baseline != _state_mapping(state, "worktree_snapshot"):
@@ -3968,7 +4077,10 @@ class Autopilot:
         state["active_result_path"] = PurePosixPath(
             result_path.relative_to(self.repo_root).as_posix()
         ).as_posix()
+        state["active_agent_attempt"] = attempt
+        state["active_agent_retry"] = retry
         state["active_role"] = role
+        state["pending_agent_retry"] = None
         self._save(state, f"{role}_running")
         environment = _repository_environment()
         environment[CHILD_MARKER] = "1"
@@ -4012,8 +4124,20 @@ class Autopilot:
         state["worktree_snapshot"] = current
         if not command_result.succeeded:
             reason = _format_command_failure(command_result)
-            failure_path = self._write_failure_input(state, reason)
-            state["failed_output_path"] = failure_path
+            failure_path = self._write_agent_process_failure(state, role, reason)
+            failures = _state_list(state, "agent_process_failures")
+            attempt, retry = self._active_agent_coordinates(state, role)
+            failures.append(
+                {
+                    "attempt": attempt,
+                    "milestone": milestone.identifier,
+                    "path": failure_path,
+                    "retry": retry,
+                    "role": role,
+                    "sha256": sha256_text(reason),
+                }
+            )
+            state["agent_process_failures"] = failures
             state["last_error"] = (
                 f"{role} Codex session failed; complete logs were preserved"
             )
@@ -4159,6 +4283,26 @@ class Autopilot:
         path = run_directory / "results" / f"{milestone}-failure-{repair}.txt"
         _atomic_write_bytes(
             path, _redact(content).encode("utf-8", errors="backslashreplace")
+        )
+        return PurePosixPath(path.relative_to(self.repo_root).as_posix()).as_posix()
+
+    def _write_agent_process_failure(
+        self,
+        state: Mapping[str, object],
+        role: str,
+        content: str,
+    ) -> str:
+        """Record a process failure without replacing semantic repair evidence."""
+        run_directory = self._run_directory(state)
+        milestone = cast("str", state["current_milestone"])
+        attempt, retry = self._active_agent_coordinates(state, role)
+        stem = f"{milestone}-{role}-{attempt}"
+        if retry:
+            stem = f"{stem}-retry-{retry}"
+        path = run_directory / "results" / f"{stem}.process-failure.txt"
+        _atomic_write_bytes(
+            path,
+            _redact(content).encode("utf-8", errors="backslashreplace"),
         )
         return PurePosixPath(path.relative_to(self.repo_root).as_posix()).as_posix()
 
@@ -5736,13 +5880,31 @@ class Autopilot:
                 state,
                 log_name,
             )
-            if not result.succeeded:
-                self._candidate_publication_failure(
-                    state,
-                    result.stderr.strip()
-                    or f"unable to retrieve hosted failure log for {name}",
+            retrieval = "gh-run-view"
+            selected_log_name = log_name
+            if not result.succeeded or not result.stdout.strip():
+                repository = _state_github_repository(state)
+                api_log_name = f"{log_name}-api"
+                endpoint = (
+                    f"repos/{repository.name_with_owner}/actions/jobs/{job_id}/logs"
                 )
-            log_base = run_directory / "logs" / log_name
+                api_result = self._gh_api_run(
+                    (endpoint,),
+                    state,
+                    api_log_name,
+                )
+                if not api_result.succeeded or not api_result.stdout.strip():
+                    detail = api_result.stderr.strip() or result.stderr.strip()
+                    if not detail:
+                        detail = (
+                            "GitHub returned an empty hosted failure log from both "
+                            "the run-view and repository API interfaces"
+                        )
+                    self._candidate_publication_failure(state, detail)
+                result = api_result
+                retrieval = "github-api"
+                selected_log_name = api_log_name
+            log_base = run_directory / "logs" / selected_log_name
             started_path, result_path, stdout_path, stderr_path = (
                 _command_evidence_paths(log_base)
             )
@@ -5756,6 +5918,7 @@ class Autopilot:
                 {
                     "database_id": job_id,
                     "job": name,
+                    "retrieval": retrieval,
                     "result_log": relative(result_path),
                     "started_log": relative(started_path),
                     "stderr_log": relative(stderr_path),
@@ -6600,6 +6763,9 @@ class Autopilot:
         state["review_result"] = None
         state["active_result_path"] = None
         state["active_role"] = None
+        state["active_agent_attempt"] = None
+        state["active_agent_retry"] = None
+        state["pending_agent_retry"] = None
         state["session_baseline_snapshot"] = {}
         state["session_git_metadata_digest"] = None
         state["verification_results"] = []

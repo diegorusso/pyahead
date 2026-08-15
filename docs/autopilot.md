@@ -137,7 +137,8 @@ For each milestone, the controller:
    run has the corresponding exact title and every configured Linux, macOS,
    Windows, build, and install-smoke job passed for the exact candidate SHA and
    repository; for completed unsuccessful jobs it first stores complete
-   redacted logs under the ignored run directory;
+   redacted logs under the ignored run directory, falling back from an empty or
+   failed `gh run view --job --log` response to the repository-bound job-log API;
 8. gives a separate read-only reviewer the frozen contract, complete live diff,
    tests, local evidence, and exact-candidate hosted evidence;
 9. if verification fails, hosted verification fails, or review returns
@@ -156,7 +157,12 @@ For each milestone, the controller:
 Agent-reported commands are retained as claims but never count as verification.
 A malformed or missing implementation/fixer result enters the bounded repair
 path. A malformed reviewer result fails safely because it cannot supply a valid
-independent decision.
+independent decision. If an implementation, review, or repair process itself
+fails, `resume` starts the same logical role in a fresh context with unique
+evidence paths. A fixer process retry keeps the same semantic repair-cycle count
+and sees the edits already preserved in the recorded worktree. Its original
+verification, review, or hosted-job repair input remains unchanged; the child
+process failure is stored separately under its unique attempt/retry identity.
 
 ## Command reference
 
@@ -273,9 +279,10 @@ reinterpreted under the stronger publication semantics; preserve its run logs,
 archive its `state.json`, and begin a clean run. State writes use a same-directory
 temporary file, flush and fsync it, and then
 atomically replace `state.json`. State records the run ID, branch, base and
-expected commits, milestone/index/phase, repair count, accepted worktree,
-completed commits, prompt hashes, contract hashes, protected hashes, Git
-metadata digest, configured GitHub repository identity, candidate
+expected commits, milestone/index/phase, repair count, active role/process retry
+coordinates and process-failure evidence, accepted worktree, completed commits,
+prompt hashes, contract hashes, protected hashes, Git metadata digest, configured
+GitHub repository identity, candidate
 parent/tree/SHA/refs and one-time dispatch state, hosted run and job evidence,
 Gate C record hash, timeout override, and publication progress.
 The Gate C hash may change only through the explicit `gate approve C` operator
@@ -292,13 +299,15 @@ do not put secrets in source, prompts, command output, or repository-owned
 configuration, and inspect logs before sharing them.
 
 When an exact-candidate workflow completes unsuccessfully, the parent retrieves
-each completed unsuccessful job log before scheduling a repair. The failure
-input lists only repository-relative paths under `.autopilot/runs/`; the
-network-restricted fixer reads those local files instead of querying GitHub.
-If GitHub cannot return a required log, the run stays in its hosted-check phase
-with repair count unchanged. Fix the authentication or transient GitHub problem
-and run `resume`; the controller retries evidence collection before any fixer is
-started.
+each completed unsuccessful job log before scheduling a repair. It first uses
+`gh run view --job --log`; a failed or empty response is not evidence and causes
+a fallback to the repository-bound GitHub job-log API for the configured origin
+host, owner, repository, and exact job ID. The failure input lists only
+repository-relative paths under `.autopilot/runs/`; the network-restricted fixer
+reads those local files instead of querying GitHub. If both interfaces fail or
+return empty output, the run stays in its hosted-check phase with repair count
+unchanged. Fix authentication or a transient GitHub problem and run `resume`;
+the controller retries evidence collection before any fixer is started.
 
 The exclusive lock prevents concurrent controllers. Normal Ctrl-C handling
 removes the lock and leaves the last safe state. A hard kill can leave a stale
@@ -322,6 +331,14 @@ duplicate milestone commit, or repush a recorded checkpoint. A resumable run
 accepts only the exact content recorded in state. Unexpected worktree changes,
 branch movement, rewritten history, remote divergence, protected changes, or
 Git metadata changes stop safely for operator inspection.
+
+An agent-process timeout, signal, or non-zero exit initially returns exit 4 and
+records `agent_failed`. After inspecting the logs and preserved diff, run
+`resume`; the controller creates a fresh role session with a `-retry-N` evidence
+suffix instead of overwriting the failed process logs. Retrying a fixer does not
+increment the repair count because it continues the same evidence-driven repair
+cycle, and it receives the same semantic failure evidence that started that
+cycle rather than the failed fixer process's own stderr.
 
 ## Failure and stop conditions
 
