@@ -1628,10 +1628,214 @@ def test_child_timeout_is_an_explicit_logged_failure(
 
     state = fixture.state()
     assert state["current_phase"] == "agent_failed"
-    failure_path = fixture.root / cast("str", state["failed_output_path"])
+    assert state["failed_output_path"] is None
+    process_failures = cast("list[dict[str, object]]", state["agent_process_failures"])
+    failure_path = fixture.root / cast("str", process_failures[0]["path"])
     assert "timed out" in failure_path.read_text(encoding="utf-8")
     logs = list((fixture.root / ".autopilot/runs").rglob("M2-implementation-0.*.log"))
     assert len(logs) == 2
+
+
+def test_failed_implementation_process_resumes_in_a_fresh_session(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A failed implementer preserves edits and receives a unique retry path."""
+    fixture = repo_factory()
+    fixture.set_plan(
+        [
+            {
+                "role": "implementation",
+                "behavior": "exit_failure",
+                "changes": {"feature.txt": "partial\n"},
+            },
+            {
+                "role": "implementation",
+                "outcome": "completed",
+                "changes": {"feature.txt": "complete\n"},
+            },
+            {"role": "review", "outcome": "pass"},
+        ]
+    )
+
+    with pytest.raises(autopilot.AutopilotError, match="session failed"):
+        _run_one(fixture.make_autopilot())
+
+    assert fixture.state()["current_phase"] == "agent_failed"
+    assert fixture.make_autopilot().resume() is autopilot.ExitCode.SUCCESS
+    assert [event["role"] for event in fixture.codex_events()] == [
+        "implementation",
+        "implementation",
+        "review",
+    ]
+    assert next(
+        (fixture.root / ".autopilot/runs").rglob("M2-implementation-0-retry-1.json")
+    ).is_file()
+    completed = cast("list[dict[str, object]]", fixture.state()["completed_commits"])
+    assert completed[0]["repair_cycles"] == 0
+    assert (fixture.root / "feature.txt").read_text(encoding="utf-8") == "complete\n"
+
+
+def test_failed_repair_process_retries_the_same_repair_cycle(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A fixer retry retains the original failed verification and partial edits."""
+    verification = (
+        "from pathlib import Path; "
+        "raise SystemExit(0 if Path('feature.txt').read_text() == "
+        "'partial repair\\n' else 1)"
+    )
+    fixture = repo_factory(verification_code=verification)
+    fixture.set_plan(
+        [
+            {
+                "role": "implementation",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate\n"},
+            },
+            {
+                "role": "repair",
+                "behavior": "exit_failure",
+                "changes": {"feature.txt": "partial repair\n"},
+            },
+            {"role": "repair", "outcome": "completed", "changes": {}},
+            {"role": "review", "outcome": "pass"},
+        ]
+    )
+
+    with pytest.raises(autopilot.AutopilotError, match="session failed"):
+        _run_one(fixture.make_autopilot())
+
+    failed_state = fixture.state()
+    assert failed_state["current_phase"] == "agent_failed"
+    assert failed_state["repair_count"] == 1
+    semantic_failure = fixture.root / cast("str", failed_state["failed_output_path"])
+    assert "Return code: 1" in semantic_failure.read_text(encoding="utf-8")
+    process_failures = cast(
+        "list[dict[str, object]]", failed_state["agent_process_failures"]
+    )
+    assert len(process_failures) == 1
+    assert process_failures[0]["path"] != failed_state["failed_output_path"]
+    assert fixture.make_autopilot().resume() is autopilot.ExitCode.SUCCESS
+    assert [event["role"] for event in fixture.codex_events()] == [
+        "implementation",
+        "repair",
+        "repair",
+        "review",
+    ]
+    completed = cast("list[dict[str, object]]", fixture.state()["completed_commits"])
+    assert completed[0]["repair_cycles"] == 1
+    assert (fixture.root / "feature.txt").read_text(encoding="utf-8") == (
+        "partial repair\n"
+    )
+    assert next(
+        (fixture.root / ".autopilot/runs").rglob("M2-repair-1-retry-1.json")
+    ).is_file()
+    retry_prompt = next(
+        (fixture.root / ".autopilot/runs").rglob("M2-repair-1-retry-1.md")
+    ).read_text(encoding="utf-8")
+    assert "Return code: 1" in retry_prompt
+
+
+def test_failed_hosted_fixer_retry_retains_original_job_log_paths(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A failed hosted fixer never replaces the CI evidence supplied to its retry."""
+    fixture = repo_factory()
+    fixture.set_plan(
+        [
+            {
+                "role": "implementation",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate-zero\n"},
+            },
+            {
+                "role": "repair",
+                "behavior": "exit_failure",
+                "changes": {"feature.txt": "partial repair\n"},
+            },
+            {
+                "role": "repair",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate-one\n"},
+            },
+            {"role": "review", "outcome": "pass"},
+        ]
+    )
+    fixture.set_gh_run_plan(
+        [
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "jobs": [
+                    {
+                        "conclusion": "failure",
+                        "databaseId": 101,
+                        "log": "actionable hosted failure\n",
+                        "name": "fixture-hosted",
+                        "status": "completed",
+                        "url": (
+                            "https://github.com/example/pyahead/actions/runs/"
+                            "9001/job/101"
+                        ),
+                    }
+                ],
+            },
+            {"status": "completed", "conclusion": "success"},
+        ]
+    )
+
+    with pytest.raises(autopilot.AutopilotError, match="session failed"):
+        fixture.make_autopilot().run(
+            "M6", "M6", push=True, draft_pr=False, dry_run=False
+        )
+
+    failed_state = fixture.state()
+    assert failed_state["repair_count"] == 1
+    semantic_failure = fixture.root / cast("str", failed_state["failed_output_path"])
+    semantic_text = semantic_failure.read_text(encoding="utf-8")
+    assert "Complete redacted failed-job logs" in semantic_text
+    assert "M6-candidate-0-hosted-job-101.stdout.log" in semantic_text
+    process_failures = cast(
+        "list[dict[str, object]]", failed_state["agent_process_failures"]
+    )
+    assert process_failures[0]["path"] != failed_state["failed_output_path"]
+
+    assert fixture.make_autopilot().resume() is autopilot.ExitCode.SUCCESS
+    retry_prompt = next(
+        (fixture.root / ".autopilot/runs").rglob("M6-repair-1-retry-1.md")
+    ).read_text(encoding="utf-8")
+    assert "Complete redacted failed-job logs" in retry_prompt
+    assert "M6-candidate-0-hosted-job-101.stdout.log" in retry_prompt
+
+
+def test_failed_reviewer_process_resumes_in_a_fresh_read_only_session(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Review transport failure is retried without launching a fixer."""
+    fixture = repo_factory()
+    fixture.set_plan(
+        [
+            {
+                "role": "implementation",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate\n"},
+            },
+            {"role": "review", "behavior": "exit_failure"},
+            {"role": "review", "outcome": "pass"},
+        ]
+    )
+
+    with pytest.raises(autopilot.AutopilotError, match="session failed"):
+        _run_one(fixture.make_autopilot())
+
+    assert fixture.make_autopilot().resume() is autopilot.ExitCode.SUCCESS
+    events = fixture.codex_events()
+    assert [event["role"] for event in events] == [
+        "implementation",
+        "review",
+        "review",
+    ]
+    assert events[-1]["sandbox"] == "read-only"
 
 
 def test_command_runner_interruption_and_signal_semantics(
@@ -2336,6 +2540,126 @@ def test_hosted_failure_starts_fresh_repair_and_unique_candidate(
     )
 
 
+def test_empty_run_view_log_uses_repository_api_fallback(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """An empty successful CLI log is not mistaken for complete evidence."""
+    fixture = repo_factory()
+    fixture.set_plan(
+        [
+            {
+                "role": "implementation",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate-zero\n"},
+            },
+            {
+                "role": "repair",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate-one\n"},
+            },
+            {"role": "review", "outcome": "pass"},
+        ]
+    )
+    fixture.set_gh_run_plan(
+        [
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "jobs": [
+                    {
+                        "conclusion": "failure",
+                        "databaseId": 101,
+                        "log": "API fallback traceback\n",
+                        "log_run_view_empty": True,
+                        "name": "fixture-hosted",
+                        "status": "completed",
+                        "url": (
+                            "https://github.com/example/pyahead/actions/runs/"
+                            "9001/job/101"
+                        ),
+                    }
+                ],
+            },
+            {"status": "completed", "conclusion": "success"},
+        ]
+    )
+
+    assert (
+        fixture.make_autopilot().run(
+            "M6", "M6", push=True, draft_pr=False, dry_run=False
+        )
+        is autopilot.ExitCode.SUCCESS
+    )
+
+    api_log = next(
+        (fixture.root / ".autopilot/runs").rglob(
+            "M6-candidate-0-hosted-job-101-api.stdout.log"
+        )
+    )
+    assert api_log.read_text(encoding="utf-8") == "API fallback traceback\n"
+    repair_prompt = next(
+        (fixture.root / ".autopilot/runs").rglob("M6-repair-1.md")
+    ).read_text(encoding="utf-8")
+    assert "github-api" in repair_prompt
+    assert api_log.relative_to(fixture.root).as_posix() in repair_prompt
+    gh_events = json.loads(fixture.gh_events_path.read_text(encoding="utf-8"))
+    assert [
+        "api",
+        "--hostname",
+        "github.com",
+        "repos/example/pyahead/actions/jobs/101/logs",
+    ] in gh_events
+
+
+def test_empty_logs_from_both_interfaces_stop_before_repair(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Two empty responses remain a resumable publication failure."""
+    fixture = repo_factory()
+    fixture.set_plan(
+        [
+            {
+                "role": "implementation",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate-zero\n"},
+            }
+        ]
+    )
+    fixture.set_gh_run_plan(
+        [
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "jobs": [
+                    {
+                        "conclusion": "failure",
+                        "databaseId": 101,
+                        "log": "unused fixture log\n",
+                        "log_api_empty": True,
+                        "log_run_view_empty": True,
+                        "name": "fixture-hosted",
+                        "status": "completed",
+                        "url": (
+                            "https://github.com/example/pyahead/actions/runs/"
+                            "9001/job/101"
+                        ),
+                    }
+                ],
+            }
+        ]
+    )
+
+    with pytest.raises(autopilot.PublicationError, match="empty hosted failure log"):
+        fixture.make_autopilot().run(
+            "M6", "M6", push=True, draft_pr=False, dry_run=False
+        )
+
+    state = fixture.state()
+    assert state["current_phase"] == "candidate_checks_running"
+    assert state["repair_count"] == 0
+    assert [event["role"] for event in fixture.codex_events()] == ["implementation"]
+
+
 def test_hosted_log_failure_resumes_without_consuming_repair(
     repo_factory: Callable[..., RepositoryFixture],
 ) -> None:
@@ -2364,6 +2688,7 @@ def test_hosted_log_failure_resumes_without_consuming_repair(
                 "conclusion": "failure",
                 "databaseId": 101,
                 "log": "actionable hosted failure\n",
+                "log_api_error_once": True,
                 "log_error_once": True,
                 "name": "fixture-hosted",
                 "status": "completed",
@@ -2377,7 +2702,7 @@ def test_hosted_log_failure_resumes_without_consuming_repair(
 
     with pytest.raises(
         autopilot.PublicationError,
-        match="transient fake GitHub job-log failure",
+        match="transient fake GitHub API job-log failure",
     ):
         fixture.make_autopilot().run(
             "M6", "M6", push=True, draft_pr=False, dry_run=False
