@@ -16,6 +16,10 @@ $contract
 
 $failed_output
 
+When this output lists safe repository-relative hosted log paths, read every
+listed stdout and stderr log before deciding what to change. Child sessions are
+network-restricted; do not try to retrieve the same evidence from GitHub.
+
 ## Concrete review findings
 
 $review_findings

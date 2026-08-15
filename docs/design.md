@@ -1987,6 +1987,9 @@ Deliverables:
   to the sole configured origin fetch/push repository identity;
 - exact-SHA Linux, macOS, Windows, build, and artifact-install job evidence
   persisted with URLs and supplied to the final read-only reviewer;
+- complete redacted logs for every completed unsuccessful hosted job persisted
+  under the ignored run directory and supplied to a network-restricted fixer by
+  safe repository-relative paths;
 - resumable candidate creation, publication, dispatch, polling, review, and
   attachment phases, including safe adoption when attachment outlives a state
   write;
@@ -2011,7 +2014,10 @@ Acceptance:
   run enumeration uses a larger bounded window and fails closed if that window
   is saturated rather than assuming uniqueness from truncated output;
 - CI failure, missing jobs, or contradictory SHA evidence enters the bounded
-  fresh-fixer cycle and any replacement uses a distinct immutable ref;
+  fresh-fixer cycle and any replacement uses a distinct immutable ref; a fixer
+  is not started and no repair cycle is consumed until the controller has
+  retrieved the available failed-job logs, while a retrieval failure remains a
+  resumable publication stop;
 - the reviewer receives local and hosted evidence, and only a passing review can
   attach the already-proven commit to the range branch;
 - interruption at every candidate phase resumes without force-pushing,

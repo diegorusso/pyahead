@@ -564,6 +564,24 @@ def _github_repository_url(
     return expected is not None and parsed.path.startswith(expected)
 
 
+def _github_actions_job_url(
+    value: str,
+    repository: GitHubRepository,
+    *,
+    run_id: int,
+    job_id: int,
+) -> bool:
+    """Bind a job URL to the exact configured repository, run, and job IDs."""
+    if not _github_repository_url(value, repository, area="actions"):
+        return False
+    parsed = urlsplit(value)
+    expected = (
+        f"/{repository.owner}/{repository.repository}/actions/runs/"
+        f"{run_id}/job/{job_id}"
+    )
+    return parsed.path.rstrip("/") == expected
+
+
 def _load_command_specs(value: object, context: str) -> tuple[CommandSpec, ...]:
     specs: list[CommandSpec] = []
     seen: set[str] = set()
@@ -2343,7 +2361,7 @@ class Autopilot:
                 (
                     "GitHub run evidence",
                     ("run", "view", "--help"),
-                    ("--json",),
+                    ("--job", "--json", "--log"),
                 ),
             )
             for name, arguments, required_flags in gh_capabilities:
@@ -5615,6 +5633,7 @@ class Autopilot:
             )
         jobs: list[dict[str, object]] = []
         names: set[str] = set()
+        expected_run_id = run_id
         for index, raw_job in enumerate(jobs_raw):
             try:
                 job = _mapping(raw_job, f"candidate jobs[{index}]")
@@ -5629,15 +5648,26 @@ class Autopilot:
                 )
             names.add(name)
             job_url = job.get("url")
-            if not isinstance(job_url, str) or not _github_repository_url(
-                job_url, _state_github_repository(state), area="actions"
+            job_id = job.get("databaseId")
+            if (
+                isinstance(job_id, bool)
+                or not isinstance(job_id, int)
+                or job_id <= 0
+                or not isinstance(job_url, str)
+                or not _github_actions_job_url(
+                    job_url,
+                    _state_github_repository(state),
+                    run_id=expected_run_id,
+                    job_id=job_id,
+                )
             ):
                 self._candidate_publication_failure(
-                    state, "GitHub returned an unsafe candidate job URL"
+                    state, "GitHub returned contradictory candidate job identity"
                 )
             jobs.append(
                 {
                     "conclusion": job.get("conclusion"),
+                    "database_id": job_id,
                     "name": name,
                     "status": job.get("status"),
                     "url": job_url,
@@ -5657,6 +5687,89 @@ class Autopilot:
             "workflow": document.get("workflowName"),
         }
 
+    def _collect_hosted_failure_logs(
+        self,
+        state: dict[str, object],
+        evidence: Mapping[str, object],
+        job_names: Sequence[str],
+    ) -> dict[str, object]:
+        """Persist complete redacted logs before a network-restricted repair."""
+        run_id = evidence.get("run_id")
+        if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+            raise StateError("hosted failure evidence has no valid run ID")
+        jobs_raw = evidence.get("jobs")
+        if not isinstance(jobs_raw, list):
+            raise StateError("hosted failure evidence has no job list")
+        jobs: dict[str, dict[str, object]] = {}
+        for index, raw_job in enumerate(jobs_raw):
+            if not isinstance(raw_job, dict):
+                raise StateError(f"hosted failure evidence job {index} is malformed")
+            job = cast("dict[str, object]", raw_job)
+            name = job.get("name")
+            if not isinstance(name, str) or not name:
+                raise StateError("hosted failure evidence has an unnamed job")
+            jobs[name] = job
+
+        attempt = self._active_candidate(state).get("attempt")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
+            raise StateError("candidate attempt is malformed")
+        milestone = cast("str", state["current_milestone"])
+        run_directory = self._run_directory(state)
+        records: list[dict[str, object]] = []
+        for name in job_names:
+            selected_job = jobs.get(name)
+            if selected_job is None:
+                raise StateError("hosted failure log job is absent from evidence")
+            job_id = selected_job.get("database_id")
+            if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+                raise StateError("hosted failure log job ID is malformed")
+            log_name = f"{milestone}-candidate-{attempt}-hosted-job-{job_id}"
+            result = self._gh_run(
+                (
+                    "run",
+                    "view",
+                    str(run_id),
+                    "--job",
+                    str(job_id),
+                    "--log",
+                ),
+                state,
+                log_name,
+            )
+            if not result.succeeded:
+                self._candidate_publication_failure(
+                    state,
+                    result.stderr.strip()
+                    or f"unable to retrieve hosted failure log for {name}",
+                )
+            log_base = run_directory / "logs" / log_name
+            started_path, result_path, stdout_path, stderr_path = (
+                _command_evidence_paths(log_base)
+            )
+
+            def relative(path: Path) -> str:
+                return PurePosixPath(
+                    path.relative_to(self.repo_root).as_posix()
+                ).as_posix()
+
+            records.append(
+                {
+                    "database_id": job_id,
+                    "job": name,
+                    "result_log": relative(result_path),
+                    "started_log": relative(started_path),
+                    "stderr_log": relative(stderr_path),
+                    "stderr_sha256": sha256_text(result.stderr),
+                    "stdout_log": relative(stdout_path),
+                    "stdout_sha256": sha256_text(result.stdout),
+                }
+            )
+        updated = dict(evidence)
+        updated["failure_logs"] = records
+        state["hosted_evidence"] = updated
+        self._save(state, "candidate_checks_running")
+        return updated
+
     def _hosted_candidate_failure(
         self,
         state: dict[str, object],
@@ -5667,6 +5780,13 @@ class Autopilot:
         state["failed_output_path"] = self._write_failure_input(
             state,
             reason
+            + (
+                "\nComplete redacted failed-job logs are stored at the safe "
+                "repository-relative paths in hosted evidence.failure_logs. "
+                "Inspect every listed stdout and stderr log before editing."
+                if evidence.get("failure_logs")
+                else ""
+            )
             + "\nHosted evidence:\n"
             + json.dumps(
                 _redact_structure(dict(evidence)),
@@ -5736,6 +5856,18 @@ class Autopilot:
                     )
                 ]
                 if evidence.get("conclusion") != "success" or missing or unsuccessful:
+                    failed_job_names = [
+                        cast("str", job["name"])
+                        for job in jobs
+                        if job.get("status") == "completed"
+                        and job.get("conclusion") != "success"
+                    ]
+                    if failed_job_names:
+                        evidence = self._collect_hosted_failure_logs(
+                            state,
+                            evidence,
+                            failed_job_names,
+                        )
                     details = []
                     if missing:
                         details.append("missing jobs: " + ", ".join(missing))

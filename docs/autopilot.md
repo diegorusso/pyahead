@@ -136,12 +136,14 @@ For each milestone, the controller:
    occupied; otherwise it accepts M6 hosted evidence only when exactly one new
    run has the corresponding exact title and every configured Linux, macOS,
    Windows, build, and install-smoke job passed for the exact candidate SHA and
-   repository;
+   repository; for completed unsuccessful jobs it first stores complete
+   redacted logs under the ignored run directory;
 8. gives a separate read-only reviewer the frozen contract, complete live diff,
    tests, local evidence, and exact-candidate hosted evidence;
-9. if verification fails or review returns `changes_requested`, gives a fresh
-   fixer only the contract, redacted failed output, concrete findings, and
-   protected paths;
+9. if verification fails, hosted verification fails, or review returns
+   `changes_requested`, gives a fresh fixer only the contract, redacted failed
+   output, concrete findings, protected paths, and safe repository-relative
+   paths to any captured hosted job logs;
 10. repeats local verification, candidate publication/hosted checks when
     configured, and independent review, with at most three fixer cycles;
 11. creates a normal milestone commit after review, or for M6 stages the
@@ -289,6 +291,15 @@ forms, and credential-bearing URLs. Redaction is not a general secret scanner:
 do not put secrets in source, prompts, command output, or repository-owned
 configuration, and inspect logs before sharing them.
 
+When an exact-candidate workflow completes unsuccessfully, the parent retrieves
+each completed unsuccessful job log before scheduling a repair. The failure
+input lists only repository-relative paths under `.autopilot/runs/`; the
+network-restricted fixer reads those local files instead of querying GitHub.
+If GitHub cannot return a required log, the run stays in its hosted-check phase
+with repair count unchanged. Fix the authentication or transient GitHub problem
+and run `resume`; the controller retries evidence collection before any fixer is
+started.
+
 The exclusive lock prevents concurrent controllers. Normal Ctrl-C handling
 removes the lock and leaves the last safe state. A hard kill can leave a stale
 lock; confirm that its recorded PID is not running and that no controller uses
@@ -325,7 +336,8 @@ Expected stops include:
 - M6 without `--push`, an object-upload conflict, atomic candidate-ref conflict
   or mismatch, a saturated workflow-run listing, hosted run SHA mismatch,
   duplicate or unattributed dispatch,
-  missing required hosted job, or unsuccessful hosted conclusion;
+  missing required hosted job, unsuccessful hosted conclusion, contradictory
+  job identity, or unavailable failed-job log evidence;
 - review-requested changes that still fail after three repair cycles;
 - protected governance, harness, contract, CI, quality-policy, semantic index,
   history, branch, or stable Git-metadata modification;

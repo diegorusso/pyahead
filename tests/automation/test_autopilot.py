@@ -492,8 +492,8 @@ def _write_config(
 state_directory = ".autopilot"
 base_branch = "main"
 remote = "origin"
-default_timeout_seconds = 3
-codex_timeout_seconds = 3
+default_timeout_seconds = 10
+codex_timeout_seconds = 10
 max_repair_cycles = 3
 branch_template = "codex/{{from_slug}}-{{through_slug}}-autopilot"
 commit_template = "Implement {{milestone}}: {{title}}"
@@ -2277,7 +2277,23 @@ def test_hosted_failure_starts_fresh_repair_and_unique_candidate(
     )
     fixture.set_gh_run_plan(
         [
-            {"status": "completed", "conclusion": "failure"},
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "jobs": [
+                    {
+                        "conclusion": "failure",
+                        "databaseId": 101,
+                        "log": "windows fixture traceback\n",
+                        "name": "fixture-hosted",
+                        "status": "completed",
+                        "url": (
+                            "https://github.com/example/pyahead/actions/runs/"
+                            "9001/job/101"
+                        ),
+                    }
+                ],
+            },
             {"status": "completed", "conclusion": "success"},
         ]
     )
@@ -2302,6 +2318,131 @@ def test_hosted_failure_starts_fresh_repair_and_unique_candidate(
         "repair",
         "review",
     ]
+    repair_prompt = next(
+        (fixture.root / ".autopilot/runs").rglob("M6-repair-1.md")
+    ).read_text(encoding="utf-8")
+    assert "hosted evidence.failure_logs" in repair_prompt
+    assert ".autopilot/runs/" in repair_prompt
+    hosted_log = next(
+        (fixture.root / ".autopilot/runs").rglob(
+            "M6-candidate-0-hosted-job-101.stdout.log"
+        )
+    )
+    assert hosted_log.read_text(encoding="utf-8") == "windows fixture traceback\n"
+    gh_events = json.loads(fixture.gh_events_path.read_text(encoding="utf-8"))
+    assert any(
+        event[:6] == ["run", "view", "9001", "--job", "101", "--log"]
+        for event in gh_events
+    )
+
+
+def test_hosted_log_failure_resumes_without_consuming_repair(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Unavailable diagnostics pause safely before a fixer receives evidence."""
+    fixture = repo_factory()
+    fixture.set_plan(
+        [
+            {
+                "role": "implementation",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate-zero\n"},
+            },
+            {
+                "role": "repair",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate-one\n"},
+            },
+            {"role": "review", "outcome": "pass"},
+        ]
+    )
+    failed_run = {
+        "status": "completed",
+        "conclusion": "failure",
+        "jobs": [
+            {
+                "conclusion": "failure",
+                "databaseId": 101,
+                "log": "actionable hosted failure\n",
+                "log_error_once": True,
+                "name": "fixture-hosted",
+                "status": "completed",
+                "url": ("https://github.com/example/pyahead/actions/runs/9001/job/101"),
+            }
+        ],
+    }
+    fixture.set_gh_run_plan(
+        [failed_run, failed_run, {"status": "completed", "conclusion": "success"}]
+    )
+
+    with pytest.raises(
+        autopilot.PublicationError,
+        match="transient fake GitHub job-log failure",
+    ):
+        fixture.make_autopilot().run(
+            "M6", "M6", push=True, draft_pr=False, dry_run=False
+        )
+
+    state = fixture.state()
+    assert state["current_phase"] == "candidate_checks_running"
+    assert state["repair_count"] == 0
+    assert [event["role"] for event in fixture.codex_events()] == ["implementation"]
+
+    assert fixture.make_autopilot().resume() is autopilot.ExitCode.SUCCESS
+    assert [event["role"] for event in fixture.codex_events()] == [
+        "implementation",
+        "repair",
+        "review",
+    ]
+    completed = cast("list[dict[str, object]]", fixture.state()["completed_commits"])
+    assert completed[0]["repair_cycles"] == 1
+
+
+def test_contradictory_hosted_job_identity_fails_before_repair(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A job URL cannot identify a different job than its database ID."""
+    fixture = repo_factory()
+    fixture.set_plan(
+        [
+            {
+                "role": "implementation",
+                "outcome": "completed",
+                "changes": {"feature.txt": "candidate-zero\n"},
+            }
+        ]
+    )
+    fixture.set_gh_run_plan(
+        [
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "jobs": [
+                    {
+                        "conclusion": "failure",
+                        "databaseId": 102,
+                        "name": "fixture-hosted",
+                        "status": "completed",
+                        "url": (
+                            "https://github.com/example/pyahead/actions/runs/"
+                            "9001/job/101"
+                        ),
+                    }
+                ],
+            }
+        ]
+    )
+
+    with pytest.raises(
+        autopilot.PublicationError,
+        match="contradictory candidate job identity",
+    ):
+        fixture.make_autopilot().run(
+            "M6", "M6", push=True, draft_pr=False, dry_run=False
+        )
+
+    assert fixture.state()["repair_count"] == 0
+    assert [event["role"] for event in fixture.codex_events()] == ["implementation"]
 
 
 def test_wrong_hosted_sha_fails_closed_then_rechecks_repair(
