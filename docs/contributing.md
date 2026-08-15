@@ -20,6 +20,11 @@ uv build
 uv run pyahead --version
 ```
 
+Note: repository-wide coverage is configured with `fail_under=90`, so running a
+single test file directly (for example `uv run pytest tests/test_cli.py`) can fail
+coverage even if the file itself passes. Use `uv run pytest <file> --no-cov` for
+isolated test runs.
+
 Before opening a pull request, also run `git diff --check` and inspect the diff
 for generated files, credentials, absolute paths, and unrelated changes. In the
 pull request, name the milestone, list the acceptance criteria demonstrated,

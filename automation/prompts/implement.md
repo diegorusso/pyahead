@@ -25,6 +25,10 @@ The parent orchestrator will independently run:
 
 $verification_commands
 
+## Parent-owned hosted verification
+
+$hosted_verification
+
 ## Non-negotiable session boundaries
 
 - Implement only $milestone. Do not implement a later milestone.
@@ -38,5 +42,7 @@ $protected_files
 - Do not weaken, remove, skip, or rewrite tests or quality thresholds merely to
   make checks pass.
 - Preserve unrelated work. Work offline except for the Codex control channel.
+- Set the structured result's `milestone` property to exactly `$milestone`;
+  never append the title or other text.
 - Return only the JSON object required by the supplied output schema. Report
   commands honestly; the parent will not trust those claims as verification.

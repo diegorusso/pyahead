@@ -16,9 +16,17 @@ $contract
 
 $failed_output
 
+When this output lists safe repository-relative hosted log paths, read every
+listed stdout and stderr log before deciding what to change. Child sessions are
+network-restricted; do not try to retrieve the same evidence from GitHub.
+
 ## Concrete review findings
 
 $review_findings
+
+## Parent-owned hosted verification
+
+$hosted_verification
 
 ## Non-negotiable session boundaries
 
@@ -32,5 +40,7 @@ $protected_files
 - Do not weaken, delete, skip, or rewrite existing tests or quality thresholds
   merely to pass verification.
 - Do not implement later-milestone work.
+- Set the structured result's `milestone` property to exactly `$milestone`;
+  never append the title or other text.
 - Return only the JSON object required by the supplied output schema, listing
   every currently changed worktree path in `files_changed`.
