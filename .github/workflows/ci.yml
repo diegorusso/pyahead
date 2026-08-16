@@ -1,4 +1,8 @@
 name: CI
+run-name: PyAhead autopilot ${{ inputs.pyahead_autopilot_token }}
+
+env:
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
 
 on:
   pull_request:
@@ -6,14 +10,20 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      pyahead_autopilot_token:
+        description: One-time token binding an autopilot candidate to this run
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  verify:
-    name: Verify on Python 3.11
+  quality:
+    name: Quality and Gate B / Linux / Python 3.11
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -29,7 +39,7 @@ jobs:
           enable-cache: true
 
       - name: Sync locked environment
-        run: uv sync --locked
+        run: uv sync --frozen
 
       - name: Lint
         run: uv run ruff check .
@@ -40,11 +50,146 @@ jobs:
       - name: Type-check
         run: uv run mypy src
 
-      - name: Test
+      - name: Test with coverage
         run: uv run pytest
+
+      - name: Validate registry
+        run: uv run pyahead registry validate
+
+      - name: Check registry coverage
+        run: uv run pyahead registry coverage
+
+      - name: Enforce performance budgets
+        run: uv run python scripts/benchmark.py --repeat 1 --output -
+
+  tests:
+    name: Tests / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: ubuntu-latest
+            python: "3.14"
+          - os: macos-latest
+            python: "3.11"
+          - os: macos-latest
+            python: "3.14"
+          - os: windows-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.14"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Sync locked environment
+        run: uv sync --frozen
+
+      - name: Run tests
+        run: uv run pytest
+
+  prerelease:
+    name: Prerelease / ubuntu-latest / Python 3.15
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up prerelease Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.15"
+          allow-prereleases: true
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Sync locked environment
+        run: uv sync --frozen
+
+      - name: Run tests
+        run: uv run pytest
+
+  build:
+    name: Build wheel and sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
 
       - name: Build distributions
         run: uv build
 
-      - name: Smoke-test console script
-        run: uv run pyahead --version
+  install:
+    name: Install wheel and sdist / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.14"
+          - os: macos-latest
+            python: "3.11"
+          - os: macos-latest
+            python: "3.14"
+          - os: windows-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.14"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Install and scan from wheel
+        run: uv run python scripts/install_smoke.py --dist-dir dist --kind wheel
+
+      - name: Install and scan from sdist
+        run: uv run python scripts/install_smoke.py --dist-dir dist --kind sdist

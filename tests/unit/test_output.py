@@ -62,6 +62,24 @@ def test_root_bounded_output_replaces_within_pinned_parent(tmp_path: Path) -> No
     assert list(reports.glob(".report.json.*.tmp")) == []
 
 
+def test_root_bounded_output_replaces_with_guarded_path_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows-style guarded parents retain atomic replacement semantics."""
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    destination = reports / "report.json"
+    destination.write_text("old\n", encoding="utf-8")
+    monkeypatch.setattr(output_module, "_supports_pinned_directories", lambda: False)
+    monkeypatch.setattr(output_module, "_supports_guarded_paths", lambda: True)
+
+    write_text_atomic(destination, "new\n", root=tmp_path)
+
+    assert destination.read_text(encoding="utf-8") == "new\n"
+    assert list(reports.glob(".report.json.*.tmp")) == []
+
+
 def test_root_bounded_output_rejects_parent_swap_before_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
