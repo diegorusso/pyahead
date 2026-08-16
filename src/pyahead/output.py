@@ -43,6 +43,10 @@ def _supports_pinned_directories() -> bool:
     )
 
 
+def _supports_guarded_paths() -> bool:
+    return os.name == "nt"
+
+
 def _require_pinned_directories() -> None:
     if not _supports_pinned_directories():
         message = "secure root-bounded output is unavailable on this platform"
@@ -88,6 +92,46 @@ class _PinnedDirectoryChain:
         for descriptor in reversed(self.descriptors):
             with suppress(OSError):
                 os.close(descriptor)
+
+
+def _is_real_directory(status: os.stat_result) -> bool:
+    attributes = getattr(status, "st_file_attributes", 0)
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return (
+        stat.S_ISDIR(status.st_mode)
+        and not stat.S_ISLNK(status.st_mode)
+        and not attributes & reparse_point
+    )
+
+
+@dataclass(frozen=True)
+class _PathDirectoryChain:
+    """Path-based directory bindings for platforms without directory FDs."""
+
+    paths: tuple[Path, ...]
+    statuses: tuple[os.stat_result, ...]
+
+    def validate(self) -> None:
+        """Require each parent to remain the same real directory."""
+        for path, expected in zip(self.paths, self.statuses, strict=True):
+            current = path.lstat()
+            if not _is_real_directory(current) or not _same_entry(current, expected):
+                message = "output directory changed while it was being used"
+                raise OutputError(message)
+
+
+def _open_guarded_directories(
+    root: Path,
+    relative_parent: Path,
+) -> _PathDirectoryChain:
+    paths = [root]
+    for name in relative_parent.parts:
+        paths.append(paths[-1] / name)
+    statuses = tuple(path.lstat() for path in paths)
+    if not all(_is_real_directory(status) for status in statuses):
+        message = "secure root-bounded output is unavailable for reparse-point parents"
+        raise OutputError(message)
+    return _PathDirectoryChain(paths=tuple(paths), statuses=statuses)
 
 
 def _open_pinned_directories(
@@ -253,11 +297,15 @@ def _matching_path_entry(path: Path, expected: os.stat_result) -> bool:
 def _write_path_atomic(
     path: Path,
     content: str,
+    *,
+    chain: _PathDirectoryChain | None = None,
 ) -> None:
     parent = path.parent
     temporary_path: Path | None = None
     temporary_status: os.stat_result | None = None
     try:
+        if chain is not None:
+            chain.validate()
         descriptor, temporary_name = tempfile.mkstemp(
             dir=parent,
             prefix=f".{path.name}.",
@@ -269,8 +317,12 @@ def _write_path_atomic(
         if not _matching_path_entry(temporary_path, temporary_status):
             message = "output temporary file changed before replacement"
             raise OutputError(message)
+        if chain is not None:
+            chain.validate()
         temporary_path.replace(path)
         temporary_path = None
+        if chain is not None:
+            chain.validate()
     finally:
         if (
             temporary_path is not None
@@ -302,8 +354,13 @@ def write_text_atomic(path: Path, content: str, *, root: Path | None = None) -> 
             _write_path_atomic(path, content)
             return
         resolved_root, relative_path = _bounded_destination(path, root)
-        _require_pinned_directories()
-        _write_pinned_atomic(resolved_root, relative_path, content)
+        if _supports_pinned_directories():
+            _write_pinned_atomic(resolved_root, relative_path, content)
+        elif _supports_guarded_paths():
+            chain = _open_guarded_directories(resolved_root, relative_path.parent)
+            _write_path_atomic(resolved_root / relative_path, content, chain=chain)
+        else:
+            _require_pinned_directories()
     except OutputError:
         raise
     except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as error:

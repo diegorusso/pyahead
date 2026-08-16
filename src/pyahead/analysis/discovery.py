@@ -11,6 +11,7 @@ from pathspec import GitIgnoreSpec, PathSpec
 from pathspec.pattern import Pattern
 
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
+MAX_SOURCE_ENTRIES = 100_000
 
 _MAX_GITIGNORE_BYTES = MAX_SOURCE_BYTES
 _READ_CHUNK_BYTES = 64 * 1024
@@ -60,6 +61,7 @@ class DiscoveryOptions:
     exclude: tuple[str, ...] = ()
     respect_gitignore: bool = True
     max_file_size_bytes: int = MAX_SOURCE_BYTES
+    max_source_entries: int = MAX_SOURCE_ENTRIES
     allow_explicit_built_in_roots: bool = False
 
 
@@ -334,6 +336,9 @@ def _discovery_filter(root: Path, options: DiscoveryOptions) -> _DiscoveryFilter
     if options.max_file_size_bytes <= 0:
         message = "maximum source file size must be positive"
         raise DiscoveryError(message)
+    if options.max_source_entries <= 0:
+        message = "maximum source entry count must be positive"
+        raise DiscoveryError(message)
     return _DiscoveryFilter(
         include=_compile_path_spec(options.include, "include"),
         exclude=_compile_path_spec(options.exclude, "exclude"),
@@ -412,11 +417,48 @@ def _directory_symlink_issue(path: Path, root: Path) -> DiscoveryIssue:
     )
 
 
-def _directory_entries(  # noqa: C901 - one bounded os.walk policy coordinator.
+def _source_entry_limit_issue(
+    relative_path: PurePosixPath,
+    max_source_entries: int,
+) -> DiscoveryIssue:
+    """Represent deterministic early termination at the source-entry bound."""
+    return DiscoveryIssue(
+        relative_path=relative_path,
+        code="PYA1006",
+        message=(
+            f"source entry count exceeds the {max_source_entries}-entry analysis limit"
+        ),
+    )
+
+
+@dataclass
+class _SourceEntryBudget:
+    """Share one deduplicated source-entry bound across requested paths."""
+
+    limit: int
+    seen_paths: set[PurePosixPath] = field(default_factory=set)
+    overflowed: bool = False
+
+    def select(
+        self,
+        entry: DiscoveredFile | DiscoveryIssue,
+    ) -> DiscoveredFile | DiscoveryIssue | None:
+        """Return a new entry, a limit issue, or nothing for a duplicate."""
+        if entry.relative_path in self.seen_paths:
+            return None
+        if len(self.seen_paths) >= self.limit:
+            self.overflowed = True
+            return _source_entry_limit_issue(entry.relative_path, self.limit)
+        self.seen_paths.add(entry.relative_path)
+        return entry
+
+
+def _directory_entries(  # noqa: C901, PLR0912 - bounded walk policy coordinator.
     directory: Path,
     root: Path,
     options: DiscoveryOptions,
     discovery_filter: _DiscoveryFilter,
+    budget: _SourceEntryBudget,
 ) -> list[DiscoveredFile | DiscoveryIssue]:
     discovered: list[DiscoveredFile | DiscoveryIssue] = []
     built_in_boundary = (
@@ -428,6 +470,13 @@ def _directory_entries(  # noqa: C901 - one bounded os.walk policy coordinator.
     def raise_walk_error(error: OSError) -> None:
         message = "unable to enumerate a source directory"
         raise DiscoveryIncompleteError(message) from error
+
+    def append_entry(entry: DiscoveredFile | DiscoveryIssue) -> bool:
+        selected = budget.select(entry)
+        if selected is None:
+            return True
+        discovered.append(selected)
+        return not budget.overflowed
 
     for current, directory_names, file_names in os.walk(
         directory,
@@ -443,8 +492,10 @@ def _directory_entries(  # noqa: C901 - one bounded os.walk policy coordinator.
             child = current_path / name
             relative_child = _relative_logical_path(child, root)
             if child.is_symlink():
-                if not discovery_filter.symlink_excluded(relative_child):
-                    discovered.append(_directory_symlink_issue(child, root))
+                if not discovery_filter.symlink_excluded(
+                    relative_child
+                ) and not append_entry(_directory_symlink_issue(child, root)):
+                    return discovered
                 continue
             if discovery_filter.directory_excluded(relative_child):
                 continue
@@ -465,9 +516,9 @@ def _directory_entries(  # noqa: C901 - one bounded os.walk policy coordinator.
             if not discovery_filter.file_selected(relative_path):
                 continue
             try:
-                discovered.append(
-                    _relative_source(path, root, options.max_file_size_bytes)
-                )
+                entry = _relative_source(path, root, options.max_file_size_bytes)
+                if not append_entry(entry):
+                    return discovered
             except DiscoveryError:
                 continue
             except OSError as error:
@@ -548,6 +599,7 @@ def _selected_requested_entries(
     root: Path,
     options: DiscoveryOptions,
     discovery_filter: _DiscoveryFilter,
+    budget: _SourceEntryBudget,
 ) -> list[DiscoveredFile | DiscoveryIssue]:
     """Classify an explicit path safely before applying selection policy."""
     resolved = _resolve_requested_path(candidate)
@@ -562,7 +614,8 @@ def _selected_requested_entries(
             discovery_filter,
         ):
             return []
-        return [directory_symlink]
+        selected = budget.select(directory_symlink)
+        return [] if selected is None else [selected]
 
     relative_candidate = _relative_logical_path(candidate, root)
     if _built_in_excluded(
@@ -574,9 +627,17 @@ def _selected_requested_entries(
         if discovery_filter.directory_excluded(relative_candidate):
             entries: list[DiscoveredFile | DiscoveryIssue] = []
         else:
-            entries = _directory_entries(resolved, root, options, discovery_filter)
+            entries = _directory_entries(
+                resolved,
+                root,
+                options,
+                discovery_filter,
+                budget,
+            )
     elif discovery_filter.file_selected(relative_candidate):
-        entries = [_requested_entry(candidate, root, options)]
+        entry = _requested_entry(candidate, root, options)
+        selected = budget.select(entry)
+        entries = [] if selected is None else [selected]
     else:
         entries = []
     return entries
@@ -596,6 +657,7 @@ def discover_python_files(
     discovery_filter = _discovery_filter(resolved_root, effective_options)
 
     unique: dict[PurePosixPath, DiscoveredFile | DiscoveryIssue] = {}
+    budget = _SourceEntryBudget(effective_options.max_source_entries)
     paths = requested_paths or (Path(),)
     for requested_path in paths:
         candidate = (
@@ -608,9 +670,12 @@ def discover_python_files(
             resolved_root,
             effective_options,
             discovery_filter,
+            budget,
         )
         for entry in entries:
             unique[entry.relative_path] = entry
+        if budget.overflowed:
+            break
 
     ordered = tuple(unique[path] for path in sorted(unique))
     return DiscoveryResult(

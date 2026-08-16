@@ -305,6 +305,14 @@ def test_oversized_registry_python_minor_is_cli_invalid_input(
             "schema_version: 1\nrelease: test\nrules:\n" + ("  - a.yaml\n" * 10_100),
         ),
     ],
+    ids=(
+        "implicit-huge-integer",
+        "deep-sequence",
+        "alias",
+        "cycle",
+        "lone-surrogate",
+        "node-count",
+    ),
 )
 def test_adversarial_yaml_is_cli_invalid_input(
     tmp_path: Path,
