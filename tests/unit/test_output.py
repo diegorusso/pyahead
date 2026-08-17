@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import pyahead._windows_output as windows_output_module
 import pyahead.output as output_module
 from pyahead.output import OutputError, write_text_atomic
 
@@ -60,6 +61,116 @@ def test_root_bounded_output_replaces_within_pinned_parent(tmp_path: Path) -> No
 
     assert destination.read_text(encoding="utf-8") == "new\n"
     assert list(reports.glob(".report.json.*.tmp")) == []
+
+
+def test_root_bounded_output_dispatches_to_windows_handle_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The non-dir-fd Windows branch never falls back to path replacement."""
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    destination = reports / "report.json"
+    destination.write_text("old\n", encoding="utf-8")
+    observed: list[tuple[Path, Path, str]] = []
+
+    def fake_windows_write(root: Path, relative: Path, content: str) -> None:
+        observed.append((root, relative, content))
+
+    monkeypatch.setattr(output_module, "_supports_pinned_directories", lambda: False)
+    monkeypatch.setattr(output_module, "_supports_windows_handles", lambda: True)
+    monkeypatch.setattr(output_module, "write_windows_atomic", fake_windows_write)
+
+    write_text_atomic(destination, "new\n", root=tmp_path)
+
+    assert observed == [(tmp_path.resolve(), Path("reports/report.json"), "new\n")]
+    assert destination.read_text(encoding="utf-8") == "old\n"
+
+
+def test_root_bounded_windows_output_fails_closed_without_handle_apis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing Windows APIs cannot reactivate path-based replacement."""
+    destination = tmp_path / "report.json"
+    destination.write_text("old\n", encoding="utf-8")
+    monkeypatch.setattr(output_module, "_supports_pinned_directories", lambda: False)
+    monkeypatch.setattr(output_module, "_supports_windows_handles", lambda: True)
+    monkeypatch.setattr(
+        windows_output_module.ctypes,
+        "WinDLL",
+        None,
+        raising=False,
+    )
+
+    with pytest.raises(OutputError):
+        write_text_atomic(destination, "new\n", root=tmp_path)
+
+    assert destination.read_text(encoding="utf-8") == "old\n"
+    assert list(tmp_path.glob(".report.json.*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows directory handles")
+def test_windows_root_bounded_output_replaces_with_handle_anchoring(
+    tmp_path: Path,
+) -> None:
+    """Windows creates and replaces an output relative to pinned parents."""
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    destination = reports / "report.json"
+    destination.write_text("old\n", encoding="utf-8")
+
+    write_text_atomic(destination, "new\n", root=tmp_path)
+
+    assert destination.read_text(encoding="utf-8") == "new\n"
+    assert list(reports.glob(".report.json.*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows directory handles")
+def test_windows_parent_swap_at_final_replace_cannot_redirect_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pinned Windows parents block a reparse swap at the replace boundary."""
+    project = tmp_path / "project"
+    reports = project / "reports"
+    archived = project / "reports-before-swap"
+    outside = tmp_path / "outside"
+    reports.mkdir(parents=True)
+    outside.mkdir()
+    outside_destination = outside / "report.json"
+    outside_destination.write_text("outside sentinel\n", encoding="utf-8")
+
+    original_replace = windows_output_module._replace_windows_handle  # noqa: SLF001
+    swap_errors: list[OSError] = []
+
+    def attempt_swap_then_replace(
+        api: windows_output_module._WindowsAPI,
+        temporary_handle: int,
+        parent_handle: int,
+        destination_name: str,
+    ) -> None:
+        try:
+            reports.rename(archived)
+            reports.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            swap_errors.append(error)
+        original_replace(api, temporary_handle, parent_handle, destination_name)
+
+    monkeypatch.setattr(
+        windows_output_module,
+        "_replace_windows_handle",
+        attempt_swap_then_replace,
+    )
+
+    write_text_atomic(reports / "report.json", "new\n", root=project)
+
+    assert swap_errors
+    assert reports.is_dir()
+    assert not reports.is_symlink()
+    assert (reports / "report.json").read_text(encoding="utf-8") == "new\n"
+    assert outside_destination.read_text(encoding="utf-8") == "outside sentinel\n"
+    assert not archived.exists()
 
 
 def test_root_bounded_output_rejects_parent_swap_before_replacement(
