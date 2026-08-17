@@ -1,66 +1,126 @@
 # PyAhead
 
-PyAhead is intended to become a repository-level Python compatibility
-forecaster. Given a project's oldest supported Python version, it will show an
-evidence-backed timeline of known compatibility concerns in later Python
-releases. The complete product and technical contract is in
-[`docs/design.md`](docs/design.md).
+PyAhead is an evidence-backed Python compatibility forecaster. It scans a
+repository without importing or executing its code, then presents one timeline
+for each known CPython deprecation, removal, call change, or behavior change that
+matches the source.
+
+## Limitations — read before use
+
+PyAhead is a public alpha. A clean scan is **not proof of compatibility**. The
+bundled registry covers reviewed, statically representable Python-level entries
+from selected CPython sources; it does not cover arbitrary runtime behavior,
+dependencies, C extensions, reflection, generated code, or every Python API.
+Run the repository's tests on every supported target interpreter as well.
+
+The alpha does not execute target code, install target dependencies, infer
+general receiver types, resolve arbitrary dynamic imports, access the network,
+or send telemetry. Version helpers, user-defined constants, patch-level guards,
+and general control flow outside the documented lexical grammar remain unknown.
+Skipped, unreadable, oversized, unparseable, or over-limit source entries make
+analysis incomplete rather than silently clean. See
+[all documented limitations](docs/usage.md#limitations).
 
 ## Status
 
-The repository is at milestone M5: CPython registry curation. It can scan
-Python source with the bundled, source-linked CPython rules and render
-deterministic grouped text, JSON, or SARIF 2.1.0 with one multi-state finding
-per matched construct:
+Version `0.1.0a2` is the first public-alpha candidate. It provides deterministic
+text, JSON, and SARIF 2.1.0 reports; strict project configuration; baselines and
+rule-specific suppressions; version-guard and typing-context reachability; and a
+source-linked, coverage-audited CPython registry.
+
+PyAhead supports host Python 3.11 through 3.14 on Linux, macOS, and Windows.
+The host interpreter is independent of the baseline and horizon Python versions
+being assessed. Python 3.15 prerelease CI is advisory until support is claimed.
+
+Gate B is exercised by repository tests and clean wheel/sdist installation.
+Gate C remains external work: 100 active public repositories, at least 95%
+sampled precision for high-confidence findings, false-positive regressions, and
+ten maintainers willing to run PyAhead continuously.
+
+## Install
+
+After the alpha is published, install it in an isolated tool environment:
 
 ```console
-pyahead check . --baseline-python 3.11 --horizon-python 3.13
+pipx install pyahead==0.1.0a2
+# or run without a persistent tool environment
+uvx pyahead==0.1.0a2 --version
 ```
 
-Strict `[tool.pyahead]` configuration can supply the policy and discovery
-settings. When the baseline is omitted, PyAhead can infer the lowest supported
-registry minor from `[project].requires-python` and records that provenance in
-the report. Includes, excludes, hierarchical `.gitignore` rules, source roots,
-bounded file size, and the no-directory-symlink policy are deterministic. An
-explicit empty `source-roots` list is authoritative and disables project-module
-shadow inference; it does not fall back to conventional root and `src` layouts.
+Before publication, build and install the candidate from this repository:
 
-CI can write a report atomically and adopt existing findings as a baseline:
+```console
+uv build
+pipx install dist/pyahead-0.1.0a2-py3-none-any.whl
+```
+
+Installing PyAhead may contact the configured package index to obtain PyAhead
+and its dependencies. Running `pyahead check` itself is offline.
+
+## Quick start
+
+Scan a repository with an explicit inclusive policy:
+
+```console
+pyahead check . --baseline-python 3.11 --horizon-python 3.14
+```
+
+Or declare strict configuration in `pyproject.toml`:
+
+```toml
+[tool.pyahead]
+baseline-python = "3.11"
+horizon-python = "3.14"
+include = ["src/**/*.py", "tests/**/*.py"]
+exclude = ["src/generated/**"]
+source-roots = ["src"]
+minimum-confidence = "high"
+fail-on = "breaking"
+respect-gitignore = true
+show-unscheduled = true
+```
+
+Then run:
+
+```console
+pyahead check
+```
+
+When the baseline is omitted, PyAhead can infer the lowest supported registry
+minor from `[project].requires-python` and records that provenance in the
+report. It never infers the baseline from the host interpreter.
+
+Exit code 1 means an unsuppressed finding met the selected `fail-on` gate; 2
+means invalid command, configuration, or registry input; 3 means analysis was
+incomplete; and 4 means an unexpected internal failure. Exit 0 means only that
+the configured static scan completed without a gated finding.
+
+## CI and review workflows
+
+Write SARIF or deterministic JSON atomically:
 
 ```console
 pyahead check --format sarif --output pyahead.sarif
+pyahead check --format json --output pyahead.json --fail-on never
+```
+
+Adopt existing findings without hiding them from reports:
+
+```console
 pyahead baseline create --output .pyahead-baseline.json
 pyahead check --baseline-file .pyahead-baseline.json --fail-new-only
 ```
 
-Relative report-output, baseline-input, and baseline-creation paths are resolved
-beneath the selected project root, including when the command starts in a
-nested directory. Output paths that escape through `..` or a symlink are
-rejected.
+Inline suppressions are rule-specific and stay auditable:
 
-Inline `# pyahead: ignore[CPY0001] -- reason` comments and configured per-file
-ignores are rule-specific. Unknown rule IDs remain visible diagnostics rather
-than silently suppressing findings.
+```python
+import cgi  # pyahead: ignore[CPY0001] -- migration tracked in issue 42
+```
 
-Exit code 1 means an unsuppressed finding met the configured `fail-on` gate; 2
-means invalid input, 3 means analysis was incomplete, and 4 means an internal
-failure. A clean exit is not proof of compatibility.
+Unknown rule IDs remain visible diagnostics. Report, baseline, and output paths
+must remain beneath the selected project root, including through symlinks.
 
-M1 indexes conventional repository-root and `src/` runtime modules before
-classifying imports. Competing project modules are shown as analysis inferences
-instead of high-confidence standard-library findings. Source reads are limited
-to regular files no larger than 2 MiB; skipped entries make the scan incomplete.
-
-Common import-derived `sys.version_info` comparisons, three-valued Boolean
-guards, nested `if`/`elif` branches, `typing.TYPE_CHECKING`, and `.pyi` typing
-contexts narrow findings conservatively. Unknown conditions enter both
-branches, and patch-level guards remain unknown with a visible analysis
-inference rather than being rounded to a minor version.
-
-The strict registry supports release metadata, indexed module imports,
-qualified references and calls, call shapes, literal dynamic imports, and a
-fixed whitelist of built-in syntax patterns. Registry data can be validated,
-listed, and explained without scanning a repository:
+Inspect the bundled registry without scanning a repository:
 
 ```console
 pyahead registry validate
@@ -69,63 +129,43 @@ pyahead registry list
 pyahead explain CPY0001
 ```
 
-The M5 snapshot classifies selected entries from PEP 594, the Python 3.12,
-3.13, and 3.14 removal notes, and the centralized deprecation index. Coverage
-manifests distinguish implemented rules from partial receiver-type patterns,
-runtime-only evidence, C API roadmap work, duplicates, and entries outside the
-Python-source alpha. `registry coverage` reports these classifications and
-fails validation when a rule reference is missing or a curated rule has no
-implemented or partial source entry.
+## Documentation
 
-M5 does not execute target code, access the network while scanning, infer
-general receiver types, analyse C extensions, or provide a hosted service.
-Version helpers, user-defined constants, and general control flow outside the
-documented lexical guard grammar remain unknown. Those capabilities belong to
-later milestones in the design.
-
-Milestone M1.5 adds repository development automation without changing those
-product capabilities. Maintainers can use the resumable, independently verified
-milestone controller described in [`docs/autopilot.md`](docs/autopilot.md) for
-M2 onward. M6 requires `--push`: the controller verifies a unique immutable
-candidate on the configured Linux, macOS, and Windows GitHub Actions jobs before
-independent review can attach that exact commit to the range branch. GitHub
-commands and evidence are bound to the configured origin repository, and a
-one-time dispatch token plus complete bounded run enumeration distinguishes the
-candidate run from older or duplicate runs. Exact-SHA ref races and saved intents
-without a launched publication process are rejected rather than adopted.
+- [User guide](docs/usage.md)
+- [Registry authoring](docs/registry-authoring.md)
+- [Security and privacy](docs/security-and-privacy.md)
+- [Performance budgets](docs/usage.md#performance)
+- [100-repository corpus and false-positive review](docs/corpus-review.md)
+- [Release process](docs/releasing.md)
+- [Changelog](CHANGELOG.md)
+- [Product and technical design](docs/design.md)
 
 ## Development
 
-PyAhead requires Python 3.11 or newer. The development environment and lockfile
-are managed with [uv](https://docs.astral.sh/uv/):
+PyAhead requires Python 3.11 or newer. The locked development environment uses
+[uv](https://docs.astral.sh/uv/):
 
 ```console
-uv sync
+uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 uv run pytest
 uv build
 uv run pyahead --version
+uv run python scripts/install_smoke.py --dist-dir dist --kind wheel
+uv run python scripts/install_smoke.py --dist-dir dist --kind sdist
+uv run python scripts/benchmark.py --repeat 1 --output -
+git diff --check
 ```
 
-Note: project-wide coverage is enforced at repository scope (`fail_under=90`),
-so single-file pytest runs may fail coverage checks. Use `uv run pytest
-path/to/test.py --no-cov` when you need isolated test iteration.
+Project-wide branch coverage is enforced at 90%. A focused pytest invocation
+may therefore fail only because it did not cover the whole package; use
+`--no-cov` for isolated iteration, then run the complete suite.
 
-See [`docs/contributing.md`](docs/contributing.md) before proposing a change.
-Installing a built distribution does not require uv; packaging uses Hatchling
-through the standard Python build interface.
-
-To inspect the next automated development range without starting Codex or
-changing Git:
-
-```console
-python scripts/autopilot.py doctor
-python scripts/autopilot.py plan --from M2 --through M6
-python scripts/autopilot.py run --from M2 --through M6 --dry-run
-```
+Read [the contribution guide](docs/contributing.md) before proposing a change.
+The separate milestone controller is documented in [docs/autopilot.md](docs/autopilot.md).
 
 ## License
 
-PyAhead is licensed under the Apache License 2.0. See [`LICENSE`](LICENSE).
+PyAhead is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
