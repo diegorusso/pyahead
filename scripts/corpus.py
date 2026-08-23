@@ -187,7 +187,13 @@ def _load_manifest(path: Path) -> tuple[RepositorySpec, ...]:
     return tuple(sorted(specs, key=lambda spec: spec.repository_url))
 
 
-def _git_output(git: str, checkout: Path, arguments: list[str]) -> str:
+def _git_output(
+    git: str,
+    checkout: Path,
+    arguments: list[str],
+    *,
+    timeout: float = 30.0,
+) -> str:
     environment = os.environ.copy()
     for name in tuple(environment):
         if name.startswith("GIT_") or name in {
@@ -222,7 +228,7 @@ def _git_output(git: str, checkout: Path, arguments: list[str]) -> str:
         check=False,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=timeout,
     )
     if result.returncode != 0:
         message = "unable to verify a corpus checkout with Git"
@@ -230,16 +236,27 @@ def _git_output(git: str, checkout: Path, arguments: list[str]) -> str:
     return result.stdout.strip()
 
 
-def _verify_checkout(spec: RepositorySpec, *, git: str) -> None:
+def _verify_checkout(
+    spec: RepositorySpec,
+    *,
+    git: str,
+    timeout: float,
+) -> None:
     origin = _git_output(
         git,
         spec.checkout,
         ["config", "--get", "remote.origin.url"],
+        timeout=timeout,
     )
     if _repository_url(origin) != spec.repository_url:
         message = f"checkout origin does not match manifest for {spec.repository_url}"
         raise CorpusError(message)
-    head = _git_output(git, spec.checkout, ["rev-parse", "--verify", "HEAD"])
+    head = _git_output(
+        git,
+        spec.checkout,
+        ["rev-parse", "--verify", "HEAD"],
+        timeout=timeout,
+    )
     if head.lower() != spec.commit:
         message = f"checkout commit does not match manifest for {spec.repository_url}"
         raise CorpusError(message)
@@ -252,6 +269,7 @@ def _verify_checkout(spec: RepositorySpec, *, git: str) -> None:
             "--untracked-files=all",
             "--ignored=matching",
         ],
+        timeout=timeout,
     )
     if status:
         message = f"checkout is not clean for {spec.repository_url}"
@@ -558,7 +576,18 @@ def _parser() -> argparse.ArgumentParser:
         help="verify that an existing worksheet is bound to its corpus result",
     )
     parser.add_argument("--sample-size", type=_positive_integer, default=200)
-    parser.add_argument("--timeout", type=_positive_float, default=300.0)
+    parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=300.0,
+        help="maximum seconds for each PyAhead scan (default: 300)",
+    )
+    parser.add_argument(
+        "--git-timeout",
+        type=_positive_float,
+        default=30.0,
+        help="maximum seconds for each checkout identity check (default: 30)",
+    )
     return parser
 
 
@@ -638,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
         repositories: list[dict[str, Any]] = []
         for index, spec in enumerate(specs, start=1):
             sys.stderr.write(f"[{index}/{len(specs)}] scanning {spec.repository_url}\n")
-            _verify_checkout(spec, git=git)
+            _verify_checkout(spec, git=git, timeout=arguments.git_timeout)
             repositories.append(_repository_result(spec, timeout=arguments.timeout))
         document = {
             "repositories": repositories,

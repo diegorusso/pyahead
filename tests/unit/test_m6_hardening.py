@@ -16,6 +16,7 @@ from scripts import benchmark, corpus, install_smoke
 
 _CORPUS_SIZE = 100
 _DETERMINISM_RUNS = 2
+_GIT_TIMEOUT = 71.0
 _GIBIBYTE = 1_073_741_824
 _SAMPLE_SIZE = 2
 
@@ -293,6 +294,7 @@ def test_corpus_git_verification_disables_ambient_execution_paths(
     ) -> subprocess.CompletedProcess[str]:
         observed["command"] = command
         observed["environment"] = options["env"]
+        observed["timeout"] = options["timeout"]
         return subprocess.CompletedProcess(command, 0, stdout="verified\n", stderr="")
 
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
@@ -300,11 +302,18 @@ def test_corpus_git_verification_disables_ambient_execution_paths(
     monkeypatch.setenv("SSH_ASKPASS", str(tmp_path / "ssh-helper"))
     monkeypatch.setattr(corpus.subprocess, "run", fake_run)
 
-    assert corpus._git_output("/usr/bin/git", tmp_path, ["rev-parse", "HEAD"]) == (
-        "verified"
+    assert (
+        corpus._git_output(
+            "/usr/bin/git",
+            tmp_path,
+            ["rev-parse", "HEAD"],
+            timeout=_GIT_TIMEOUT,
+        )
+        == "verified"
     )
     command = cast("list[str]", observed["command"])
     environment = cast("dict[str, str]", observed["environment"])
+    assert observed["timeout"] == _GIT_TIMEOUT
     assert "core.fsmonitor=false" in command
     assert "submodule.recurse=false" in command
     assert "credential.interactive=false" in command

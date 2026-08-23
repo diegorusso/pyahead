@@ -58,8 +58,17 @@ uv run python scripts/corpus.py \
   --manifest corpus-manifest.json \
   --output corpus-results.json \
   --worksheet false-positive-review.csv \
-  --sample-size 200
+  --sample-size 200 \
+  --timeout 900 \
+  --git-timeout 120
 ```
+
+Both timeouts are positive per-subprocess bounds. `--timeout` applies to each
+PyAhead scan (default 300 seconds); `--git-timeout` applies independently to
+each read-only origin, commit, and cleanliness check (default 30 seconds).
+Choose explicit values from prior measured corpus evidence and keep them
+finite. Increasing a timeout does not bypass any identity or cleanliness
+check.
 
 The process stops before publication if a checkout is dirty, mis-pinned, a scan
 fails, output is malformed, or a report exceeds 64 MiB. It uses isolated Python

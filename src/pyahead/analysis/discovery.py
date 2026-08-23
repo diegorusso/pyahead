@@ -12,6 +12,7 @@ from pathspec.pattern import Pattern
 
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_SOURCE_ENTRIES = 100_000
+MIN_DYNAMIC_PATH_PARTS = 2
 
 _MAX_GITIGNORE_BYTES = MAX_SOURCE_BYTES
 _READ_CHUNK_BYTES = 64 * 1024
@@ -801,6 +802,31 @@ def project_module_paths(
         for module in modules:
             for prefix in _project_module_prefixes(module):
                 candidates[prefix].add(relative_path)
+    return {
+        module: tuple(sorted(paths, key=PurePosixPath.as_posix))
+        for module, paths in sorted(candidates.items())
+    }
+
+
+def dynamic_path_module_paths(
+    files: tuple[DiscoveredFile, ...],
+) -> dict[str, tuple[PurePosixPath, ...]]:
+    """Map modules that a dynamically added repository directory could expose.
+
+    Unlike :func:`project_module_paths`, this intentionally ignores configured
+    source-root boundaries.  Adding an arbitrary directory to ``sys.path`` can
+    expose a nested ``name.py`` or ``name/__init__.py`` as top-level ``name``.
+    The caller uses this index only after observing an exact import-derived
+    ``sys.path.append`` or ``sys.path.insert`` call.
+    """
+    candidates: defaultdict[str, set[PurePosixPath]] = defaultdict(set)
+    for file in files:
+        path = file.relative_path
+        if path.suffix != ".py" or len(path.parts) < MIN_DYNAMIC_PATH_PARTS:
+            continue
+        module = path.parent.name if path.stem == "__init__" else path.stem
+        if module.isidentifier():
+            candidates[module].add(path)
     return {
         module: tuple(sorted(paths, key=PurePosixPath.as_posix))
         for module, paths in sorted(candidates.items())

@@ -27,6 +27,10 @@ stabilizing.
 ### Changed
 
 - The package maturity classifier is now Alpha.
+- Exact `sys.path` mutation ambiguity and removal-safe `hasattr` short circuits
+  no longer produce high-confidence post-removal blockers.
+- Corpus scan and read-only Git verification subprocesses have separate,
+  configurable finite timeouts.
 
 ### Security
 

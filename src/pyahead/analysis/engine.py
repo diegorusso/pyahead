@@ -37,6 +37,7 @@ from pyahead.analysis.discovery import (
     DiscoveryOptions,
     DiscoveryResult,
     discover_python_files,
+    dynamic_path_module_paths,
     project_module_paths,
 )
 from pyahead.analysis.matchers import MatcherIndex, build_matcher_index
@@ -109,6 +110,7 @@ from pyahead.model import (
     SourcePosition,
     SourceRegion,
     StaticMatch,
+    SubjectKind,
     UsageContext,
 )
 from pyahead.registry import load_registry
@@ -117,6 +119,7 @@ from pyahead.versions import PythonMinor
 
 MAX_PARSE_NESTING = 200
 MAX_CST_DEPTH = 256
+HASATTR_ARGUMENT_COUNT = 2
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,14 @@ class _FindingContext:
     inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex]
     per_file_ignores: PerFileSuppressionIndex
     baseline_fingerprints: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _ImportPathMutation:
+    """An exact import-derived mutation of Python's module search path."""
+
+    operation: str
+    location: SourceLocation
 
 
 def _scope_name(scope: Scope | None) -> str:
@@ -240,6 +251,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         self._pushed_ifs: set[int] = set()
         self.matches: list[StaticMatch] = []
         self.inferences: list[AnalysisInference] = []
+        self.path_mutations: list[_ImportPathMutation] = []
 
     @property
     def _reachability(self) -> LexicalReachability:
@@ -356,6 +368,8 @@ class _MatcherVisitor(cst.CSTVisitor):
         node: cst.CSTNode,
         confidence: MatchConfidence,
         evidence: tuple[tuple[str, str | tuple[str, ...]], ...],
+        *,
+        reachable_versions: frozenset[PythonMinor] | None = None,
     ) -> None:
         reachability = self._reachability
         # Empty lexical states still count toward syntactic fingerprint ordinals.
@@ -372,11 +386,93 @@ class _MatcherVisitor(cst.CSTVisitor):
                 enclosing_scope=_scope_name(scope),
                 subject=binding.rule.subject,
                 confidence=confidence,
-                reachable_versions=reachability.versions,
+                reachable_versions=(
+                    reachability.versions
+                    if reachable_versions is None
+                    else reachable_versions
+                ),
                 usage_contexts=reachability.usage_contexts,
                 evidence=evidence,
             )
         )
+
+    def _exact_hasattr_guard(  # noqa: PLR0911 - strict guard grammar.
+        self,
+        expression: cst.BaseExpression,
+        qualified_name: str,
+    ) -> bool:
+        """Recognize one exact ``hasattr(module, "attribute")`` predicate."""
+        if isinstance(expression, cst.BooleanOperation) and isinstance(
+            expression.operator, cst.And
+        ):
+            return self._exact_hasattr_guard(
+                expression.left, qualified_name
+            ) or self._exact_hasattr_guard(expression.right, qualified_name)
+        if (
+            not isinstance(expression, cst.Call)
+            or len(expression.args) != HASATTR_ARGUMENT_COUNT
+        ):
+            return False
+        if any(
+            argument.keyword is not None or argument.star
+            for argument in expression.args
+        ):
+            return False
+        function = self._resolution(
+            expression.func,
+            "builtins.hasattr",
+            source=QualifiedNameSource.BUILTIN,
+        )
+        if function.confidence is not MatchConfidence.HIGH:
+            return False
+        module_name, separator, attribute_name = qualified_name.rpartition(".")
+        if not separator:
+            return False
+        attribute = expression.args[1].value
+        if not isinstance(attribute, cst.SimpleString):
+            return False
+        if attribute.evaluated_value != attribute_name:
+            return False
+        module = self._import_resolution(expression.args[0].value, module_name)
+        return module.confidence is MatchConfidence.HIGH
+
+    def _hasattr_guarded_versions(
+        self,
+        binding: IndexedMatcher,
+        node: cst.CSTNode,
+        qualified_name: str,
+    ) -> tuple[frozenset[PythonMinor], bool]:
+        """Exclude versions where short-circuit ``hasattr`` prevents access."""
+        current = node
+        while (
+            parent := self.get_metadata(ParentNodeProvider, current, None)
+        ) is not None:
+            if (
+                isinstance(parent, cst.BooleanOperation)
+                and isinstance(parent.operator, cst.And)
+                and parent.right is current
+                and self._exact_hasattr_guard(parent.left, qualified_name)
+            ):
+                removals = (
+                    event.python
+                    for event in binding.rule.events
+                    if event.kind is ChangeEventKind.REMOVED
+                )
+                removal = min(removals, default=None)
+                if removal is None:
+                    return self._reachability.versions, False
+                return (
+                    frozenset(
+                        version
+                        for version in self._reachability.versions
+                        if version < removal
+                    ),
+                    True,
+                )
+            if isinstance(parent, cst.BaseStatement):
+                break
+            current = parent
+        return self._reachability.versions, False
 
     def _record_import_inference(
         self,
@@ -611,15 +707,24 @@ class _MatcherVisitor(cst.CSTVisitor):
             resolution = self._import_resolution(node, matcher.qualified_name)
             if resolution.confidence is None:
                 continue
+            reachable_versions, guarded = self._hasattr_guarded_versions(
+                binding,
+                node,
+                matcher.qualified_name,
+            )
+            evidence: tuple[tuple[str, str | tuple[str, ...]], ...] = (
+                ("qualified_names", resolution.qualified_names),
+                ("reference_context", reference_context.value),
+                ("resolution", resolution.resolution),
+            )
+            if guarded:
+                evidence = (*evidence, ("reachability_guard", "hasattr-and"))
             self._record_match(
                 binding,
                 node,
                 resolution.confidence,
-                (
-                    ("qualified_names", resolution.qualified_names),
-                    ("reference_context", reference_context.value),
-                    ("resolution", resolution.resolution),
-                ),
+                evidence,
+                reachable_versions=reachable_versions,
             )
 
     def visit_Name(self, node: cst.Name) -> None:  # noqa: N802
@@ -654,11 +759,19 @@ class _MatcherVisitor(cst.CSTVisitor):
                 ("positional_count", str(len(arguments.positional))),
                 *evidence,
             )
+        reachable_versions, guarded = self._hasattr_guarded_versions(
+            binding,
+            node.func,
+            matcher.qualified_name,
+        )
+        if guarded:
+            evidence = (*evidence, ("reachability_guard", "hasattr-and"))
         self._record_match(
             binding,
             node.func,
             resolution.confidence,
             evidence,
+            reachable_versions=reachable_versions,
         )
 
     @staticmethod
@@ -739,6 +852,19 @@ class _MatcherVisitor(cst.CSTVisitor):
 
     def visit_Call(self, node: cst.Call) -> None:  # noqa: N802
         """Match qualified calls, call shapes, and literal dynamic imports."""
+        operation = terminal_name(node.func)
+        if operation in ("append", "insert"):
+            resolution = self._resolution(node.func, f"sys.path.{operation}")
+            if resolution.confidence is MatchConfidence.HIGH:
+                self.path_mutations.append(
+                    _ImportPathMutation(
+                        operation=operation,
+                        location=_location(
+                            self._path,
+                            self.get_metadata(PositionProvider, node),
+                        ),
+                    )
+                )
         for binding in self._indexed_bindings(node.func, self._index.qualified_calls):
             matcher = binding.matcher
             if isinstance(matcher, QualifiedCallMatcher):
@@ -947,12 +1073,13 @@ def _parse_file_with_context(
 ) -> tuple[
     tuple[StaticMatch, ...],
     tuple[AnalysisInference, ...],
+    tuple[_ImportPathMutation, ...],
     InlineSuppressionIndex,
     tuple[Diagnostic, ...],
 ]:
     source, read_diagnostic = _read_source(path, context.max_file_size_bytes)
     if read_diagnostic is not None:
-        return (), (), index_inline_suppressions(()), (read_diagnostic,)
+        return (), (), (), index_inline_suppressions(()), (read_diagnostic,)
     if source is None:  # pragma: no cover - guarded by the diagnostic result.
         msg = "source text is absent without a read diagnostic"
         raise RuntimeError(msg)
@@ -965,6 +1092,7 @@ def _parse_file_with_context(
     module, parse_diagnostic = _parse_module(source, path.relative_path)
     if parse_diagnostic is not None:
         return (
+            (),
             (),
             (),
             index_inline_suppressions(inline_directives),
@@ -1012,12 +1140,14 @@ def _parse_file_with_context(
         return (
             (),
             (),
+            (),
             inline_suppressions,
             (*suppression_diagnostics, diagnostic),
         )
     return (
         tuple(visitor.matches),
         tuple(visitor.inferences),
+        tuple(visitor.path_mutations),
         inline_suppressions,
         suppression_diagnostics,
     )
@@ -1060,16 +1190,18 @@ def _parse_file(
     Diagnostic | None,
 ]:
     """Retain the M2 focused matcher-test adapter."""
-    matches, inferences, _suppressions, diagnostics = _parse_file_with_context(
-        path,
-        _FileAnalysisContext(
-            matcher_index=matcher_index,
-            project_modules=project_modules,
-            target_versions=target_versions,
-            source_roots=(".", "src"),
-            max_file_size_bytes=2 * 1024 * 1024,
-            registry=_registry_from_matcher_index(matcher_index),
-        ),
+    matches, inferences, _mutations, _suppressions, diagnostics = (
+        _parse_file_with_context(
+            path,
+            _FileAnalysisContext(
+                matcher_index=matcher_index,
+                project_modules=project_modules,
+                target_versions=target_versions,
+                source_roots=(".", "src"),
+                max_file_size_bytes=2 * 1024 * 1024,
+                registry=_registry_from_matcher_index(matcher_index),
+            ),
+        )
     )
     return matches, inferences, diagnostics[0] if diagnostics else None
 
@@ -1249,6 +1381,114 @@ def _deduplicate_matches(matches: list[StaticMatch]) -> tuple[StaticMatch, ...]:
             evidence=tuple(evidence),
         )
     return tuple(deduplicated.values())
+
+
+def _replace_evidence(
+    evidence: tuple[tuple[str, str | tuple[str, ...]], ...],
+    **updates: str | tuple[str, ...],
+) -> tuple[tuple[str, str | tuple[str, ...]], ...]:
+    """Replace named evidence while retaining deterministic key order."""
+    values = dict(evidence)
+    values.update(updates)
+    return tuple(sorted(values.items()))
+
+
+def _dynamic_path_adjustments(
+    matches: list[StaticMatch],
+    registry: Registry,
+    dynamic_modules: dict[str, tuple[PurePosixPath, ...]],
+    mutations: list[_ImportPathMutation],
+) -> tuple[list[StaticMatch], tuple[AnalysisInference, ...]]:
+    """Prevent dynamic repository paths from fabricating an exact origin."""
+    if not mutations:
+        return matches, ()
+    rules = {rule.id: rule for rule in registry.rules}
+    operations = tuple(sorted({mutation.operation for mutation in mutations}))
+    mutation_locations = tuple(
+        sorted(
+            {
+                (
+                    f"{mutation.location.path.as_posix()}:"
+                    f"{mutation.location.region.start.line}:"
+                    f"{mutation.location.region.start.column}"
+                )
+                for mutation in mutations
+            }
+        )
+    )
+    adjusted: list[StaticMatch] = []
+    inferences: dict[tuple[SourceLocation, str], AnalysisInference] = {}
+    for match in matches:
+        match_evidence = dict(match.evidence)
+        if not ({"imported_module", "qualified_names"} & match_evidence.keys()):
+            adjusted.append(match)
+            continue
+        module = match.subject.partition(".")[0]
+        candidates = dynamic_modules.get(module, ())
+        rule = rules[match.rule_id]
+        has_insert = "insert" in operations
+        removals = tuple(
+            event.python
+            for event in rule.events
+            if event.kind is ChangeEventKind.REMOVED
+        )
+        append_after_removal = (
+            "append" in operations
+            and rule.subject_kind is SubjectKind.MODULE
+            and bool(removals)
+        )
+        if not candidates or not (has_insert or append_after_removal):
+            adjusted.append(match)
+            continue
+
+        candidate_paths = tuple(path.as_posix() for path in candidates)
+        resolution = (
+            "dynamic-sys-path-ambiguity"
+            if has_insert
+            else "stdlib-before-appended-project-module"
+        )
+        reachable_versions = match.reachable_versions
+        confidence = match.confidence
+        if has_insert:
+            confidence = MatchConfidence.MEDIUM
+        else:
+            removal = min(removals)
+            reachable_versions = frozenset(
+                version for version in reachable_versions if version < removal
+            )
+        adjusted.append(
+            replace(
+                match,
+                confidence=confidence,
+                reachable_versions=reachable_versions,
+                evidence=_replace_evidence(
+                    match.evidence,
+                    candidate_paths=candidate_paths,
+                    resolution=resolution,
+                    sys_path_mutations=mutation_locations,
+                    sys_path_operations=operations,
+                ),
+            )
+        )
+        key = (match.location, module)
+        inferences[key] = AnalysisInference(
+            code="PYA2001",
+            kind="module-resolution",
+            message=(
+                f"treated import origin for {module!r} as uncertain because "
+                "the repository mutates sys.path and contains a matching "
+                "nested module"
+            ),
+            location=match.location,
+            evidence=(
+                ("candidate_paths", candidate_paths),
+                ("imported_module", module),
+                ("resolution", resolution),
+                ("sys_path_mutations", mutation_locations),
+                ("sys_path_operations", operations),
+            ),
+        )
+    return adjusted, tuple(inferences[key] for key in sorted(inferences))
 
 
 def _findings(
@@ -1517,6 +1757,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         module_discovery.issues,
         None if resolved.source_roots_inferred else resolved.scan.source_roots,
     )
+    dynamic_modules = dynamic_path_module_paths(module_discovery.files)
     matcher_index = build_matcher_index(registry)
     file_context = _FileAnalysisContext(
         matcher_index=matcher_index,
@@ -1529,6 +1770,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
 
     matches: list[StaticMatch] = []
     inferences: list[AnalysisInference] = []
+    path_mutations: list[_ImportPathMutation] = []
     inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex] = {}
     diagnostics = [
         *suppression_diagnostics,
@@ -1540,6 +1782,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         (
             file_matches,
             file_inferences,
+            file_path_mutations,
             file_suppressions,
             file_diagnostics,
         ) = _parse_file_with_context(
@@ -1554,6 +1797,15 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         analyzed += 1
         matches.extend(file_matches)
         inferences.extend(file_inferences)
+        path_mutations.extend(file_path_mutations)
+
+    matches, path_inferences = _dynamic_path_adjustments(
+        matches,
+        registry,
+        dynamic_modules,
+        path_mutations,
+    )
+    inferences.extend(path_inferences)
 
     findings = _findings(
         matches,

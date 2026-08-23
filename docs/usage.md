@@ -97,8 +97,16 @@ pyahead check --minimum-confidence medium
 
 The analyzer understands import-derived aliases, ordinary lexical shadowing,
 common `sys.version_info` comparisons, three-valued Boolean guards, nested
-`if`/`elif` branches, `typing.TYPE_CHECKING`, and `.pyi` typing contexts.
-Unknown conditions conservatively enter both branches.
+`if`/`elif` branches, `typing.TYPE_CHECKING`, `.pyi` typing contexts, and the
+exact removal-safe `hasattr(imported_module, "attribute") and ...` short-circuit
+shape. Unknown conditions conservatively enter both branches.
+
+An exact import-derived `sys.path.insert` or `sys.path.append` plus a matching
+nested repository module produces visible `PYA2001` module-resolution evidence.
+Prepending lowers the origin to medium confidence. Appending preserves a
+standard-library module finding only for target versions where that module
+still exists; PyAhead does not pretend the post-removal import remains standard
+library code. Path expressions are not executed or evaluated.
 
 Explain registry evidence without scanning:
 
@@ -204,6 +212,8 @@ The public alpha deliberately does not:
 - infer general Python types or arbitrary dynamic imports and reflection;
 - understand user-defined version helpers, patch-level guards, or general
   interprocedural control flow;
+- evaluate arbitrary `sys.path` expressions or prove that a path-mutating
+  helper executes;
 - analyze C extensions or cover every CPython and third-party compatibility
   change;
 - rewrite source, open pull requests, or replace Ruff, pyupgrade, a type

@@ -13,6 +13,7 @@ from pyahead.analysis.discovery import (
     DiscoveryIncompleteError,
     DiscoveryOptions,
     discover_python_files,
+    dynamic_path_module_paths,
     project_module_names,
     project_module_paths,
 )
@@ -112,6 +113,28 @@ def test_project_module_paths_include_implicit_namespace_package_parents(
     assert modules["targetpkg.nested.old"] == (
         PurePosixPath("src/targetpkg/nested/old.py"),
     )
+
+
+def test_dynamic_path_modules_use_nested_file_and_package_basenames(
+    tmp_path: Path,
+) -> None:
+    """A repository directory added to sys.path can expose nested top levels."""
+    paths = [
+        tmp_path / "compat/asynchat.py",
+        tmp_path / "vendor/asyncore/__init__.py",
+        tmp_path / "root_only.py",
+        tmp_path / "compat/not-python.pyi",
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    result = discover_python_files(tmp_path, ())
+
+    assert dynamic_path_module_paths(result.files) == {
+        "asynchat": (PurePosixPath("compat/asynchat.py"),),
+        "asyncore": (PurePosixPath("vendor/asyncore/__init__.py"),),
+    }
 
 
 def test_discovery_does_not_follow_file_symlinks_outside_root(

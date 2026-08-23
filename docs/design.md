@@ -862,6 +862,18 @@ Star imports are unresolved by default. Do not pretend that an unqualified name 
 
 Build a project-module index from discovered source roots before analysing imports. Configured `source-roots` are authoritative. Otherwise, infer only conventional repository-root and `src/` layouts and expose the inference in the report. Explicit relative imports are local. If an absolute import could resolve to a repository module that shadows a standard-library or third-party name, treat it as ambiguous rather than high confidence. Uncertain packaging layouts must reduce confidence, not fabricate an origin.
 
+The M6 precision review adds one deliberately narrow dynamic-path exception.
+When the coordinated traversal observes an exact import-derived
+`sys.path.insert(...)` or `sys.path.append(...)`, build a second conservative
+index of nested repository `.py` basenames which such a directory could expose
+as top-level modules. Do not evaluate or trust the path argument. A matching
+`insert` reduces the affected import origin to medium confidence for the whole
+target window. A matching `append` leaves a removed standard-library module
+high confidence only while the standard-library module still exists; at and
+after removal its origin is ambiguous. Emit `PYA2001` with the candidate paths
+and mutation locations. Shadowed `sys` lookalikes, unrelated nested modules,
+and attribute-removal rules must not trigger this exception.
+
 ### 10.4 Match collection
 
 An internal `StaticMatch` contains:
@@ -932,6 +944,21 @@ Support `<`, `<=`, `>`, `>=`, `==`, `!=`, parentheses, `not`, `and`, and `or`.
 
 Also recognize import-derived `typing.TYPE_CHECKING` and aliases. Its true branch is typing-only and its false branch is runtime-only. Apply the same conservative rule to unknown aliases: uncertain context must not be used to suppress a finding.
 
+Recognize one additional removal-safe short-circuit shape:
+
+```python
+import ast
+if hasattr(ast, "NameConstant") and use(ast.NameConstant): ...
+```
+
+The callable must resolve exactly to built-in `hasattr`, its first argument
+must resolve exactly to the imported module that owns the matched attribute,
+and its second argument must be the same literal attribute name. Only access in
+the right-hand side of that `and` (including a longer all-`and` chain) is
+unreachable from the rule's removal version onward. Deprecation debt before
+removal remains visible. Shadowed `hasattr`, a different literal, `or`, and
+non-literal reflection remain unknown.
+
 ### 11.2 Evaluation algorithm
 
 Evaluate a recognized condition independently for every target minor version. The result for each target is `true`, `false`, or `unknown`.
@@ -973,6 +1000,10 @@ The alpha treats these as unknown:
 - Boolean expressions that mix `TYPE_CHECKING` with runtime version or feature predicates beyond a direct `not`;
 - conditions dependent on environment variables or package versions;
 - general control-flow reachability beyond lexical guards.
+
+The exact `hasattr(module, "attribute") and ...` shape above is part of the
+lexical grammar; it is not a claim to infer general attribute or control-flow
+reachability.
 
 Add support only with positive and negative fixtures. Never infer target unreachability from a condition the engine does not understand.
 
