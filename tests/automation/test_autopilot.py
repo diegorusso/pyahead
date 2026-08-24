@@ -4001,7 +4001,7 @@ def test_gate_c_stops_after_m6_and_requires_recorded_approval(
         "implementation",
         "review",
     ]
-    with pytest.raises(autopilot.BlockedError, match="awaiting external"):
+    with pytest.raises(autopilot.BlockedError, match="awaiting accountable"):
         fixture.make_autopilot().resume()
 
     fixture.make_autopilot().approve_gate(

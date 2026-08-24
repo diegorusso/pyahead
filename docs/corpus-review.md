@@ -1,7 +1,8 @@
 # 100-repository corpus and false-positive review
 
-Gate C is external evidence, not an automated claim. This protocol prepares a
-reproducible high-confidence sample while minimizing retained repository data.
+Gate C is human-reviewed evidence, not an automated claim. This protocol
+prepares a reproducible high-confidence sample while minimizing retained
+repository data.
 
 ## Select and acquire the corpus
 
@@ -140,10 +141,15 @@ recommended for borderline receiver, shadowing, and reachability cases.
 ## Complete Gate C evidence
 
 The accountable evidence document must also show that all false positives have
-regression tests and at least ten maintainers agreed to continuous use. Keep
-maintainer identities and consent in an appropriately access-controlled record;
-the corpus runner deliberately does not collect them. Gate C approval happens
-only after those external facts exist and are reviewed.
+regression tests, incomplete diagnostics and material limitations remain
+visible, and an accountable product owner or release group reviewed the corpus
+identity, precision calculation, and remediation. The corpus runner deliberately
+cannot create that approval. Gate C approval happens only after those facts are
+documented and reviewed.
+
+The public alpha does not require maintainer adoption before M7 or M8 because
+there is not yet an established audience with access to a published release.
+Continuous-use adoption remains a post-distribution product-success metric.
 
 Delete local checkouts and manifests according to the review retention policy.
 Keep only the approved minimal result, completed worksheet, hashes, regression

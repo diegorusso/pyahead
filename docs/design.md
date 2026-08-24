@@ -1,8 +1,8 @@
 # PyAhead: Product and Technical Design
 
 - **Status:** Implementation specification
-- **Document version:** 1.0
-- **Date:** 31 July 2026
+- **Document version:** 1.1
+- **Date:** 24 August 2026
 - **Repository:** <https://github.com/diegorusso/pyahead>
 - **Repository state at design time:** Private, empty, default branch `main`
 - **Initial implementation language:** Python
@@ -1775,13 +1775,19 @@ Do not exclude difficult error paths merely to meet a percentage.
 
 ### 20.4 Precision gate
 
-Before hosted work begins:
+Before dynamic-evidence work begins:
 
 - manually inspect a statistically useful sample of high-confidence findings across at least 100 active public repositories;
 - achieve at least 95% precision for high-confidence findings;
 - classify every false positive and add a regression fixture;
-- demonstrate that maintainers understand the timeline without verbal explanation;
-- obtain at least ten maintainers willing to run it continuously.
+- preserve incomplete diagnostics and material limitations in the evidence; and
+- obtain explicit approval from an accountable product owner or release group
+  after they review the reproducible corpus, precision calculation, false-positive
+  remediation, and limitations.
+
+Continuous-use adoption is measured after the public alpha is available to
+install. It is an important product-success metric, but it is not a prerequisite
+for implementing M7 or M8 while PyAhead has no established user audience.
 
 Recall is measured through the registry coverage manifests and curated test repositories. Optimise precision before expanding heuristic recall.
 
@@ -1861,12 +1867,14 @@ The project advances only when the preceding gate is met.
 - Every implemented rule has positive and negative fixtures.
 - Wheel and sdist install cleanly.
 
-### Gate C: external usefulness
+### Gate C: public-alpha precision
 
 - At least 100 active public repositories scanned.
 - At least 95% sampled precision for high-confidence findings.
 - False positives have regression tests.
-- At least ten maintainers agree to continuous use.
+- Incomplete diagnostics and material limitations are retained in the evidence.
+- An accountable product owner or release group reviews the evidence and
+  explicitly approves proceeding to dynamic-evidence work.
 
 ### Gate D: dynamic evidence
 
@@ -1990,8 +1998,8 @@ Acceptance:
   no state, Git, Codex, or remote mutation;
 - a failed push preserves local commits and resumes only publication;
 - M2–M6 may run unattended, execution stops after M6 in `awaiting_gate_C`, M7–M8
-  require recorded external evidence, M9 is refused in this repository, and M10
-  is refused until its design exists;
+  require recorded evidence and accountable approval, M9 is refused in this
+  repository, and M10 is refused until its design exists;
 - the full repository quality and build suite passes without a real M2 run.
 
 ### M1.5.1 — Exact-candidate hosted evidence
@@ -2356,6 +2364,19 @@ This milestone requires its own design document before implementation.
 
 **Reason:** The service consumes a stable public core while retaining an independent deployment and licensing boundary. It also prevents premature Django scaffolding from distorting the analyser repository.
 
+### ADR-012: Defer adoption validation until the public alpha is available
+
+**Decision:** Gate C validates reproducible corpus precision, false-positive
+remediation, retained limitations, and accountable human approval. It does not
+require ten maintainers to commit to continuous use before M7 or M8. Measure
+continuous-use adoption after an installable public alpha has been distributed.
+
+**Reason:** Before distribution, prospective maintainers cannot reasonably
+discover or continuously adopt PyAhead. Requiring adoption at this point would
+make access to the dynamic-evidence work that can improve adoption depend on an
+audience that does not yet exist. The engineering evidence remains mandatory,
+and Codex still cannot approve its own work.
+
 ---
 
 ## 25. Open decisions
@@ -2377,7 +2398,7 @@ These do not block M0–M4 unless stated.
 
 PyAhead is built one milestone at a time. M1.5 replaces repeated operator
 prompting with a repository-owned, resumable controller; it does not relax
-milestone boundaries, independent evidence, or external product gates. A single
+milestone boundaries, independent evidence, or human product gates. A single
 agent context that implements and approves multiple milestones creates too much
 opportunity for unverified assumptions and architectural drift.
 
@@ -2453,7 +2474,7 @@ accepted refs, staging, commits, pushes, workflow dispatch, and draft pull
 requests. Candidate refs are unique per repair attempt and are never rewritten
 or force-pushed. Child roles may not invoke the controller recursively or modify
 Git metadata. The controller hashes the harness, governance files, frozen
-contract, protected CI, selected quality-policy tables, ignored external gate
+contract, protected CI, selected quality-policy tables, ignored Gate C
 record, stable Git control metadata, and the semantic index at the relevant
 boundaries. The semantic index covers staged objects, modes, paths, merge
 stages, and index flags; the volatile physical index stat cache is excluded
@@ -2473,10 +2494,13 @@ re-running accepted Codex roles.
 
 M2 through M6 may run unattended, but M6 requires `--push`, exact-candidate
 hosted evidence, and a final independent review before its checkpoint can
-transition to `awaiting_gate_C`. Codex output cannot manufacture external
-usefulness. Record
-an accountable approval only after a non-empty evidence document exists inside
-the repository:
+transition to `awaiting_gate_C`. Gate C is an early-stage engineering gate:
+continuous-use adoption is evaluated after public distribution rather than
+before M7 or M8. Codex output cannot approve its own precision evidence. An
+accountable product owner or release group must review the pinned corpus,
+precision calculation, false-positive regressions, incomplete diagnostics, and
+limitations. Record that approval only after a non-empty evidence document
+exists inside the repository:
 
 ```console
 python scripts/autopilot.py gate approve C \

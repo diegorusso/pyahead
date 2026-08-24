@@ -33,9 +33,11 @@ The host interpreter is independent of the baseline and horizon Python versions
 being assessed. Python 3.15 prerelease CI is advisory until support is claimed.
 
 Gate B is exercised by repository tests and clean wheel/sdist installation.
-Gate C remains external work: 100 active public repositories, at least 95%
-sampled precision for high-confidence findings, false-positive regressions, and
-ten maintainers willing to run PyAhead continuously.
+Gate C requires evidence from 100 active public repositories, at least 95%
+sampled precision for high-confidence findings, false-positive regressions,
+retained limitations, and accountable product-owner approval. Continuous-use
+adoption is measured after the alpha is publicly available; it is not a
+prerequisite for the M7–M8 dynamic-evidence work.
 
 ## Install
 

@@ -27,6 +27,8 @@ stabilizing.
 ### Changed
 
 - The package maturity classifier is now Alpha.
+- Gate C now uses accountable review of reproducible public-corpus precision
+  evidence; continuous-use adoption is measured after public distribution.
 - Exact `sys.path` mutation ambiguity and removal-safe `hasattr` short circuits
   no longer produce high-confidence post-removal blockers.
 - Corpus scan and read-only Git verification subprocesses have separate,
