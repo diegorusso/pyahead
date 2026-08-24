@@ -569,7 +569,9 @@ id = "m6-supported-hosts"
 workflow = "CI"
 dispatch_input = "pyahead_autopilot_token"
 required_jobs = ["fixture-hosted"]
-timeout_seconds = 2
+# The fake GitHub CLI starts several Python and Git subprocesses.  Keep this
+# bounded, but allow enough time for process startup on slower Windows runners.
+timeout_seconds = 30
 poll_interval_seconds = 0.01
 
 {_milestone_toml()}
@@ -4001,7 +4003,7 @@ def test_gate_c_stops_after_m6_and_requires_recorded_approval(
         "implementation",
         "review",
     ]
-    with pytest.raises(autopilot.BlockedError, match="awaiting external"):
+    with pytest.raises(autopilot.BlockedError, match="awaiting accountable"):
         fixture.make_autopilot().resume()
 
     fixture.make_autopilot().approve_gate(

@@ -1,7 +1,7 @@
 """Unit and fixture tests for the M1 exact-import analysis."""
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 import pytest
@@ -9,7 +9,9 @@ import pytest
 from pyahead.analysis import ScanRequest, scan
 from pyahead.analysis.discovery import (
     MAX_SOURCE_BYTES,
+    DiscoveredFile,
     DiscoveryIncompleteError,
+    DiscoveryIssue,
     DiscoveryOptions,
     DiscoveryResult,
     discover_python_files,
@@ -605,6 +607,42 @@ def test_oversized_source_is_incomplete_without_being_read(tmp_path: Path) -> No
     assert report.counts.files_analyzed == 0
     assert report.counts.files_incomplete == 1
     assert report.diagnostics[0].code == "PYA1005"
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_source_entry_limit_fails_closed_before_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A truncated module index cannot produce high-confidence findings."""
+    source = tmp_path / "legacy.py"
+    source.write_text("import cgi\n", encoding="utf-8")
+    limited = DiscoveryResult(
+        files=(
+            DiscoveredFile(
+                relative_path=PurePosixPath("legacy.py"),
+                absolute_path=source,
+            ),
+        ),
+        issues=(
+            DiscoveryIssue(
+                relative_path=PurePosixPath("later.py"),
+                code="PYA1006",
+                message="source entry count exceeds the analysis limit",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "pyahead.analysis.engine.discover_python_files",
+        lambda *_args, **_kwargs: limited,
+    )
+
+    report = _scan(tmp_path)
+
+    assert report.findings == ()
+    assert report.counts.files_analyzed == 0
+    assert report.counts.files_incomplete == 1
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["PYA1006"]
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
