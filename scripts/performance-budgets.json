@@ -1,0 +1,24 @@
+{
+  "cases": [
+    {
+      "files": 1,
+      "max_regression_seconds": 5.0,
+      "max_seconds": 0.5,
+      "name": "one-file"
+    },
+    {
+      "files": 1000,
+      "max_regression_seconds": 40.0,
+      "max_seconds": 5.0,
+      "name": "1k-files"
+    },
+    {
+      "files": 10000,
+      "max_peak_rss_bytes": 1073741824,
+      "max_regression_seconds": 300.0,
+      "max_seconds": 30.0,
+      "name": "10k-files"
+    }
+  ],
+  "schema_version": 1
+}

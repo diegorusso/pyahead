@@ -27,7 +27,8 @@ new-ref porcelain update rather than accepting an exact-SHA no-op or indetermina
 upload; it creates the final candidate ref atomically through the repository-bound
 GitHub API and requires durable process plus commit-typed HTTP evidence. M6 CI
 must accept the `pyahead_autopilot_token` dispatch input and use it in the exact
-`PyAhead autopilot <token>` run title. Stop at Gate C before M7-M8. Refuse M9
+`PyAhead autopilot <token>` run title. Stop at Gate C before M7-M8; Gate C needs
+recorded corpus-precision evidence and accountable human approval. Refuse M9
 here and M10 without its design.
 
 Hosted failure logs must be non-empty: fall back from `gh run view` to the

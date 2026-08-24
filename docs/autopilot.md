@@ -4,7 +4,7 @@ The milestone autopilot turns the repeated implement, verify, review, and repair
 conversation into one resumable repository command. It processes one frozen
 `docs/design.md` milestone at a time. “Autonomous” means that an operator does
 not have to issue each follow-up prompt; it does not bypass milestone scope,
-independent evidence, security boundaries, external product gates, or human
+independent evidence, security boundaries, human product gates, or human
 merge review.
 
 It is development infrastructure. It does not implement or ship any PyAhead
@@ -38,7 +38,7 @@ tables, the frozen contract, and a deterministic digest of stable Git control
 metadata. The semantic index digest covers staged objects, modes, paths, merge
 stages, and index flags while deliberately ignoring the physical index stat
 cache that read-only Git commands may refresh. It also pins the ignored Gate C
-approval record so a child or verification process cannot manufacture external
+approval record so a child or verification process cannot manufacture human
 approval. A mismatch stops with all work preserved. The controller does not
 reset, checkout, force-push, or silently revert suspicious changes.
 
@@ -193,7 +193,7 @@ Exit codes are stable:
 | ---: | --- |
 | 0 | Requested work completed, or the requested range ended successfully at Gate C |
 | 2 | Invalid input, configuration, schema, or required CLI capability |
-| 3 | Agent or external gate blocker |
+| 3 | Agent or human gate blocker |
 | 4 | Verification, review protocol, or execution failure |
 | 5 | Clean operator interruption |
 | 6 | Unsafe state, concurrent run, recursion, or repository divergence |
@@ -359,7 +359,7 @@ Expected stops include:
 - protected governance, harness, contract, CI, quality-policy, semantic index,
   history, branch, or stable Git-metadata modification;
 - branch/history/remote divergence while paused;
-- Gate C awaiting external evidence;
+- Gate C awaiting accountable evidence review;
 - M9 or M10 policy refusal;
 - recoverable publication failure.
 
@@ -371,12 +371,16 @@ deletes, skips, or rewrites tests or thresholds to turn a failure into a pass.
 After the locally verified M6 candidate passes exact-SHA hosted checks, final
 read-only review, attachment, and checkpoint push, the state becomes
 `awaiting_gate_C`. This is mandatory even if M7 or M8 was included in the
-original range. External usefulness evidence must still be collected and judged
-by an accountable human or group; Codex cannot create the approval.
+original range. The pinned corpus, precision calculation, false-positive
+regressions, incomplete diagnostics, and material limitations must still be
+recorded and judged by an accountable product owner or release group; Codex
+cannot create the approval. Continuous-use adoption is deliberately measured
+after public distribution and is not a prerequisite for M7 or M8.
 
-Keep the non-empty evidence document inside the repository and, for a paused
-run, ensure it was already part of the recorded clean worktree. Record the
-decision locally:
+Keep the non-empty evidence document inside the repository. If the paused range
+continues beyond M6, it must already be part of the recorded clean worktree. For
+a range that ended at M6, merge the M6 and evidence changes first, return to
+clean synchronized `main`, and then record the decision locally:
 
 ```console
 python scripts/autopilot.py gate approve C \
@@ -442,7 +446,7 @@ Before making the draft PR ready for review or merging it manually:
 6. check for accidental later-milestone product work, generated runtime files,
    secrets, absolute machine paths, unsafe subprocesses, and destructive Git;
 7. run the full repository suite again in the final branch state;
-8. retain external Gate C evidence as external evidence, not as a fabricated
-   Codex acceptance claim.
+8. retain Gate C evidence as accountable human-reviewed evidence, not as a
+   fabricated Codex acceptance claim.
 
 The autopilot never performs the merge.

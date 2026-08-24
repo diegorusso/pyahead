@@ -149,7 +149,7 @@ class InvalidInputError(AutopilotError):
 
 
 class BlockedError(AutopilotError):
-    """Progress requires explicit external evidence or operator action."""
+    """Progress requires explicit evidence or operator action."""
 
     exit_code = ExitCode.BLOCKED
 
@@ -2728,7 +2728,7 @@ class Autopilot:
         return True
 
     def approve_gate(self, gate: str, evidence_path: Path, approved_by: str) -> None:
-        """Record human-owned external evidence without altering tracked files."""
+        """Record human-owned gate evidence without altering tracked files."""
         if gate != "C":
             raise InvalidInputError("only Gate C can currently be recorded")
         resolved = (
@@ -3570,7 +3570,8 @@ class Autopilot:
                     return ExitCode.SUCCESS
                 if not self.gate_approved("C"):
                     raise BlockedError(
-                        "run is awaiting external Gate C approval; record evidence then resume"
+                        "run is awaiting accountable Gate C approval; "
+                        "record evidence then resume"
                     )
                 self._save(state, "milestone_pending")
                 continue
@@ -4173,7 +4174,7 @@ class Autopilot:
         ):
             state["worktree_snapshot"] = dict(current_snapshot)
             state["last_error"] = (
-                "child or verification process modified the external Gate C "
+                "child or verification process modified the Gate C "
                 "approval record; changes were preserved"
             )
             self._save(state, "blocked")
@@ -6718,7 +6719,7 @@ class Autopilot:
             [
                 "",
                 "This pull request is intentionally draft. The orchestrator never merges it,",
-                "and external product gates cannot be satisfied by Codex output.",
+                "and human product gates cannot be satisfied by Codex output.",
                 "",
             ]
         )
@@ -6787,10 +6788,10 @@ class Autopilot:
             state["current_milestone"] = None
             state["protected_hashes"] = {}
         if milestone.stop_after_gate == "C":
-            state["last_error"] = "awaiting external Gate C evidence"
+            state["last_error"] = "awaiting accountable Gate C evidence"
             self._save(state, "awaiting_gate_C")
             self._update_pr_body_if_available(
-                state, "awaiting external Gate C evidence"
+                state, "awaiting accountable Gate C evidence"
             )
             self._write("M6 checkpoint complete; stopped at awaiting_gate_C.")
             return ExitCode.SUCCESS if index >= len(requested) else ExitCode.BLOCKED
@@ -6906,19 +6907,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     gate = subparsers.add_parser(
         "gate",
-        help="record or inspect external product-gate evidence",
+        help="record or inspect human-reviewed product-gate evidence",
     )
     gate_subparsers = gate.add_subparsers(dest="gate_command", required=True)
     approve = gate_subparsers.add_parser(
         "approve",
-        help="record an explicit evidence-backed external gate approval",
+        help="record an explicit evidence-backed human gate approval",
     )
     approve.add_argument("gate", choices=("C",), help="gate identifier")
     approve.add_argument(
         "--evidence",
         type=Path,
         required=True,
-        help="non-empty repository file documenting external Gate C evidence",
+        help="non-empty repository file documenting reviewed Gate C evidence",
     )
     approve.add_argument(
         "--approved-by",
@@ -6927,7 +6928,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gate_status = gate_subparsers.add_parser(
         "status",
-        help="show whether an external gate approval is recorded",
+        help="show whether a human gate approval is recorded",
     )
     gate_status.add_argument("gate", choices=("C",), help="gate identifier")
     return parser

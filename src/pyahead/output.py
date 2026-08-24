@@ -8,6 +8,8 @@ from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from pyahead._windows_output import write_windows_atomic
+
 
 class OutputError(OSError):
     """Raised when a requested output destination cannot be replaced."""
@@ -41,6 +43,10 @@ def _supports_pinned_directories() -> bool:
         and hasattr(os, "O_DIRECTORY")
         and hasattr(os, "O_NOFOLLOW")
     )
+
+
+def _supports_windows_handles() -> bool:
+    return os.name == "nt"
 
 
 def _require_pinned_directories() -> None:
@@ -302,8 +308,12 @@ def write_text_atomic(path: Path, content: str, *, root: Path | None = None) -> 
             _write_path_atomic(path, content)
             return
         resolved_root, relative_path = _bounded_destination(path, root)
-        _require_pinned_directories()
-        _write_pinned_atomic(resolved_root, relative_path, content)
+        if _supports_pinned_directories():
+            _write_pinned_atomic(resolved_root, relative_path, content)
+        elif _supports_windows_handles():
+            write_windows_atomic(resolved_root, relative_path, content)
+        else:
+            _require_pinned_directories()
     except OutputError:
         raise
     except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as error:

@@ -105,7 +105,7 @@ def test_sarif_validates_and_uses_stable_ci_identity_fields(
     assert document["version"] == "2.1.0"
     assert run["columnKind"] == "unicodeCodePoints"
     assert driver["name"] == "pyahead"
-    assert driver["semanticVersion"] == "0.1.0-alpha.1"
+    assert driver["semanticVersion"] == "0.1.0-alpha.2"
     assert [rule["id"] for rule in rules] == ["CPY0001"]
     assert result["ruleId"] == "CPY0001"
     assert result["level"] == "error"

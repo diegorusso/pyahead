@@ -13,11 +13,13 @@ from pyahead.analysis.discovery import (
     DiscoveryIncompleteError,
     DiscoveryOptions,
     discover_python_files,
+    dynamic_path_module_paths,
     project_module_names,
     project_module_paths,
 )
 
 _TWO_FILES = 2
+_THREE_FILES = 3
 
 
 def test_discovery_is_sorted_deduplicated_and_excludes_build_data(
@@ -111,6 +113,28 @@ def test_project_module_paths_include_implicit_namespace_package_parents(
     assert modules["targetpkg.nested.old"] == (
         PurePosixPath("src/targetpkg/nested/old.py"),
     )
+
+
+def test_dynamic_path_modules_use_nested_file_and_package_basenames(
+    tmp_path: Path,
+) -> None:
+    """A repository directory added to sys.path can expose nested top levels."""
+    paths = [
+        tmp_path / "compat/asynchat.py",
+        tmp_path / "vendor/asyncore/__init__.py",
+        tmp_path / "root_only.py",
+        tmp_path / "compat/not-python.pyi",
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    result = discover_python_files(tmp_path, ())
+
+    assert dynamic_path_module_paths(result.files) == {
+        "asynchat": (PurePosixPath("compat/asynchat.py"),),
+        "asyncore": (PurePosixPath("vendor/asyncore/__init__.py"),),
+    }
 
 
 def test_discovery_does_not_follow_file_symlinks_outside_root(
@@ -284,6 +308,48 @@ def test_discovery_skips_oversized_and_non_regular_sources(tmp_path: Path) -> No
     assert [
         (issue.relative_path.as_posix(), issue.code) for issue in result.issues
     ] == [("large.py", "PYA1005"), ("pipe.py", "PYA1004")]
+
+
+def test_discovery_stops_deterministically_at_source_entry_limit(
+    tmp_path: Path,
+) -> None:
+    """The bounded prefix and first omitted entry are stable and incomplete."""
+    for name in ("c.py", "a.py", "b.py"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = discover_python_files(
+        tmp_path,
+        (),
+        DiscoveryOptions(max_source_entries=2),
+    )
+
+    assert [item.relative_path.as_posix() for item in result.files] == ["a.py", "b.py"]
+    assert [(item.relative_path.as_posix(), item.code) for item in result.issues] == [
+        ("c.py", "PYA1006")
+    ]
+    assert result.files_discovered == _THREE_FILES
+
+
+def test_overlapping_requested_paths_share_one_source_entry_budget(
+    tmp_path: Path,
+) -> None:
+    """Repeated discovery roots do not manufacture a limit diagnostic."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.py").write_text("", encoding="utf-8")
+    (source / "b.py").write_text("", encoding="utf-8")
+
+    result = discover_python_files(
+        tmp_path,
+        (Path(), Path("src")),
+        DiscoveryOptions(max_source_entries=2),
+    )
+
+    assert [item.relative_path.as_posix() for item in result.files] == [
+        "src/a.py",
+        "src/b.py",
+    ]
+    assert result.issues == ()
 
 
 def test_unsafe_runtime_module_candidate_still_prevents_false_certainty(

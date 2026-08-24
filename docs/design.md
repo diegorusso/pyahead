@@ -1,8 +1,8 @@
 # PyAhead: Product and Technical Design
 
 - **Status:** Implementation specification
-- **Document version:** 1.0
-- **Date:** 31 July 2026
+- **Document version:** 1.1
+- **Date:** 24 August 2026
 - **Repository:** <https://github.com/diegorusso/pyahead>
 - **Repository state at design time:** Private, empty, default branch `main`
 - **Initial implementation language:** Python
@@ -862,6 +862,18 @@ Star imports are unresolved by default. Do not pretend that an unqualified name 
 
 Build a project-module index from discovered source roots before analysing imports. Configured `source-roots` are authoritative. Otherwise, infer only conventional repository-root and `src/` layouts and expose the inference in the report. Explicit relative imports are local. If an absolute import could resolve to a repository module that shadows a standard-library or third-party name, treat it as ambiguous rather than high confidence. Uncertain packaging layouts must reduce confidence, not fabricate an origin.
 
+The M6 precision review adds one deliberately narrow dynamic-path exception.
+When the coordinated traversal observes an exact import-derived
+`sys.path.insert(...)` or `sys.path.append(...)`, build a second conservative
+index of nested repository `.py` basenames which such a directory could expose
+as top-level modules. Do not evaluate or trust the path argument. A matching
+`insert` reduces the affected import origin to medium confidence for the whole
+target window. A matching `append` leaves a removed standard-library module
+high confidence only while the standard-library module still exists; at and
+after removal its origin is ambiguous. Emit `PYA2001` with the candidate paths
+and mutation locations. Shadowed `sys` lookalikes, unrelated nested modules,
+and attribute-removal rules must not trigger this exception.
+
 ### 10.4 Match collection
 
 An internal `StaticMatch` contains:
@@ -932,6 +944,21 @@ Support `<`, `<=`, `>`, `>=`, `==`, `!=`, parentheses, `not`, `and`, and `or`.
 
 Also recognize import-derived `typing.TYPE_CHECKING` and aliases. Its true branch is typing-only and its false branch is runtime-only. Apply the same conservative rule to unknown aliases: uncertain context must not be used to suppress a finding.
 
+Recognize one additional removal-safe short-circuit shape:
+
+```python
+import ast
+if hasattr(ast, "NameConstant") and use(ast.NameConstant): ...
+```
+
+The callable must resolve exactly to built-in `hasattr`, its first argument
+must resolve exactly to the imported module that owns the matched attribute,
+and its second argument must be the same literal attribute name. Only access in
+the right-hand side of that `and` (including a longer all-`and` chain) is
+unreachable from the rule's removal version onward. Deprecation debt before
+removal remains visible. Shadowed `hasattr`, a different literal, `or`, and
+non-literal reflection remain unknown.
+
 ### 11.2 Evaluation algorithm
 
 Evaluate a recognized condition independently for every target minor version. The result for each target is `true`, `false`, or `unknown`.
@@ -973,6 +1000,10 @@ The alpha treats these as unknown:
 - Boolean expressions that mix `TYPE_CHECKING` with runtime version or feature predicates beyond a direct `not`;
 - conditions dependent on environment variables or package versions;
 - general control-flow reachability beyond lexical guards.
+
+The exact `hasattr(module, "attribute") and ...` shape above is part of the
+lexical grammar; it is not a claim to infer general attribute or control-flow
+reachability.
 
 Add support only with positive and negative fixtures. Never infer target unreachability from a condition the engine does not understand.
 
@@ -1744,13 +1775,19 @@ Do not exclude difficult error paths merely to meet a percentage.
 
 ### 20.4 Precision gate
 
-Before hosted work begins:
+Before dynamic-evidence work begins:
 
 - manually inspect a statistically useful sample of high-confidence findings across at least 100 active public repositories;
 - achieve at least 95% precision for high-confidence findings;
 - classify every false positive and add a regression fixture;
-- demonstrate that maintainers understand the timeline without verbal explanation;
-- obtain at least ten maintainers willing to run it continuously.
+- preserve incomplete diagnostics and material limitations in the evidence; and
+- obtain explicit approval from an accountable product owner or release group
+  after they review the reproducible corpus, precision calculation, false-positive
+  remediation, and limitations.
+
+Continuous-use adoption is measured after the public alpha is available to
+install. It is an important product-success metric, but it is not a prerequisite
+for implementing M7 or M8 while PyAhead has no established user audience.
 
 Recall is measured through the registry coverage manifests and curated test repositories. Optimise precision before expanding heuristic recall.
 
@@ -1830,12 +1867,14 @@ The project advances only when the preceding gate is met.
 - Every implemented rule has positive and negative fixtures.
 - Wheel and sdist install cleanly.
 
-### Gate C: external usefulness
+### Gate C: public-alpha precision
 
 - At least 100 active public repositories scanned.
 - At least 95% sampled precision for high-confidence findings.
 - False positives have regression tests.
-- At least ten maintainers agree to continuous use.
+- Incomplete diagnostics and material limitations are retained in the evidence.
+- An accountable product owner or release group reviews the evidence and
+  explicitly approves proceeding to dynamic-evidence work.
 
 ### Gate D: dynamic evidence
 
@@ -1959,8 +1998,8 @@ Acceptance:
   no state, Git, Codex, or remote mutation;
 - a failed push preserves local commits and resumes only publication;
 - M2–M6 may run unattended, execution stops after M6 in `awaiting_gate_C`, M7–M8
-  require recorded external evidence, M9 is refused in this repository, and M10
-  is refused until its design exists;
+  require recorded evidence and accountable approval, M9 is refused in this
+  repository, and M10 is refused until its design exists;
 - the full repository quality and build suite passes without a real M2 run.
 
 ### M1.5.1 — Exact-candidate hosted evidence
@@ -2325,6 +2364,19 @@ This milestone requires its own design document before implementation.
 
 **Reason:** The service consumes a stable public core while retaining an independent deployment and licensing boundary. It also prevents premature Django scaffolding from distorting the analyser repository.
 
+### ADR-012: Defer adoption validation until the public alpha is available
+
+**Decision:** Gate C validates reproducible corpus precision, false-positive
+remediation, retained limitations, and accountable human approval. It does not
+require ten maintainers to commit to continuous use before M7 or M8. Measure
+continuous-use adoption after an installable public alpha has been distributed.
+
+**Reason:** Before distribution, prospective maintainers cannot reasonably
+discover or continuously adopt PyAhead. Requiring adoption at this point would
+make access to the dynamic-evidence work that can improve adoption depend on an
+audience that does not yet exist. The engineering evidence remains mandatory,
+and Codex still cannot approve its own work.
+
 ---
 
 ## 25. Open decisions
@@ -2346,7 +2398,7 @@ These do not block M0–M4 unless stated.
 
 PyAhead is built one milestone at a time. M1.5 replaces repeated operator
 prompting with a repository-owned, resumable controller; it does not relax
-milestone boundaries, independent evidence, or external product gates. A single
+milestone boundaries, independent evidence, or human product gates. A single
 agent context that implements and approves multiple milestones creates too much
 opportunity for unverified assumptions and architectural drift.
 
@@ -2422,7 +2474,7 @@ accepted refs, staging, commits, pushes, workflow dispatch, and draft pull
 requests. Candidate refs are unique per repair attempt and are never rewritten
 or force-pushed. Child roles may not invoke the controller recursively or modify
 Git metadata. The controller hashes the harness, governance files, frozen
-contract, protected CI, selected quality-policy tables, ignored external gate
+contract, protected CI, selected quality-policy tables, ignored Gate C
 record, stable Git control metadata, and the semantic index at the relevant
 boundaries. The semantic index covers staged objects, modes, paths, merge
 stages, and index flags; the volatile physical index stat cache is excluded
@@ -2442,10 +2494,13 @@ re-running accepted Codex roles.
 
 M2 through M6 may run unattended, but M6 requires `--push`, exact-candidate
 hosted evidence, and a final independent review before its checkpoint can
-transition to `awaiting_gate_C`. Codex output cannot manufacture external
-usefulness. Record
-an accountable approval only after a non-empty evidence document exists inside
-the repository:
+transition to `awaiting_gate_C`. Gate C is an early-stage engineering gate:
+continuous-use adoption is evaluated after public distribution rather than
+before M7 or M8. Codex output cannot approve its own precision evidence. An
+accountable product owner or release group must review the pinned corpus,
+precision calculation, false-positive regressions, incomplete diagnostics, and
+limitations. Record that approval only after a non-empty evidence document
+exists inside the repository:
 
 ```console
 python scripts/autopilot.py gate approve C \
