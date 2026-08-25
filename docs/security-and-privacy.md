@@ -22,6 +22,36 @@ These controls reduce risk; they do not make an untrusted checkout harmless for
 other tools. Do not run its tests, build backend, shell hooks, editor tasks, or
 Git configuration as part of a PyAhead static scan.
 
+## Explicit dynamic-evidence boundary
+
+The `pyahead.pytest_plugin` module is an opt-in user-CI component. Loading it
+with `pytest -p` means pytest executes the repository's tests with their normal
+code, dependency, secret, filesystem, and network authority. This execution is
+not performed by `pyahead check` or by a hosted PyAhead scanner. Use the plugin
+only in a CI environment already trusted to run that test suite.
+
+The plugin records deprecation-warning category and message, repository-relative
+location when available, pytest node ID, phase, occurrence count, concrete
+Python environment, pytest version, test count, exit code, collection
+completeness, and an explicit source commit. It omits absolute paths and
+external locations. Collection retains at most 10,000 unique records and 8 MiB
+of normalized warning text; omitted occurrences are counted without retaining
+their full records. Evidence files and ingestion are root-bounded and capped at
+16 MiB per artifact; incremental size truncation is explicit in the artifact.
+Ingestion
+also caps one scan at 64 paths, 64 MiB, and 100,000 warning records in total,
+then bounds relationship candidate checks and output records. Reports can still
+reveal test names, warning messages, and project structure, so protect them like
+other CI logs. Do not put secrets in warning messages or parameterized test IDs.
+
+Ingestion is offline and does not execute the artifact. A full commit must come
+from an explicit option or a documented CI environment variable; PyAhead does
+not invoke Git. Different-commit evidence is retained as visibly stale and is
+not linked to current findings. Subject, interpreter, policy, and timeline
+checks distinguish corroboration from location-only or conflicting
+associations. Observed warnings do not alter static gate counts or silently
+override static inference.
+
 ## Network-visible commands
 
 The following M6 operations can access a network outside `pyahead check`:

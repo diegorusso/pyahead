@@ -11,6 +11,7 @@ from pyahead.analysis import ScanRequest, scan
 from pyahead.analysis.discovery import DiscoveryError
 from pyahead.baseline import render_baseline
 from pyahead.config import resolve_project_root
+from pyahead.evidence import merge_evidence, resolve_source_commit
 from pyahead.model import (
     ConfigurationError,
     ExitCode,
@@ -174,6 +175,22 @@ def _scan_options(
             help="baseline beneath the selected root (relative paths use the root)",
         )
         parser.add_argument("--fail-new-only", action="store_true")
+        parser.add_argument(
+            "--evidence",
+            action="append",
+            default=[],
+            type=Path,
+            metavar="PATH",
+            help="ingest versioned user-CI warning evidence (repeatable)",
+        )
+        parser.add_argument(
+            "--source-commit",
+            metavar="SHA",
+            help=(
+                "full scanned commit for evidence freshness checks; CI environment "
+                "variables are used when omitted"
+            ),
+        )
 
 
 def _build_parser() -> ArgumentParser:
@@ -372,10 +389,27 @@ def _render_check(arguments: Namespace, report: ScanReport) -> str:
     return render_text(report)
 
 
+def _validate_evidence_arguments(arguments: Namespace) -> None:
+    if arguments.evidence and arguments.output_format == "sarif":
+        message = "--evidence reporting is supported with text or JSON, not SARIF"
+        raise ConfigurationError(message)
+    if arguments.source_commit is not None and not arguments.evidence:
+        message = "--source-commit requires --evidence"
+        raise ConfigurationError(message)
+
+
 def _run_check(arguments: Namespace) -> int:
     try:
+        _validate_evidence_arguments(arguments)
         request = _scan_request(arguments)
         report = scan(request)
+        if arguments.evidence:
+            report = merge_evidence(
+                report,
+                arguments.evidence,
+                root=request.root,
+                source_commit=resolve_source_commit(arguments.source_commit),
+            )
         rendered = _render_check(arguments, report)
         _write_output(
             rendered,
