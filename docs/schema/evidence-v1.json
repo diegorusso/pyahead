@@ -1,0 +1,217 @@
+{
+  "$id": "https://github.com/diegorusso/pyahead/blob/main/docs/schema/evidence-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "environment": {
+      "additionalProperties": false,
+      "properties": {
+        "implementation": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])(?!.*[\\ud800-\\udfff])[^\\u0000\\r\\n]+$",
+          "type": "string"
+        },
+        "platform": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])(?!.*[\\ud800-\\udfff])[^\\u0000\\r\\n]+$",
+          "type": "string"
+        },
+        "python_version": {
+          "maxLength": 64,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+._a-zA-Z0-9]*)?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "implementation",
+        "platform",
+        "python_version"
+      ],
+      "type": "object"
+    },
+    "provider": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "pytest-warnings",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])(?!.*[\\ud800-\\udfff])[^\\u0000\\r\\n]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "run": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "warnings_complete": {
+              "const": true
+            },
+            "warnings_dropped": {
+              "const": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "warnings_complete": {
+              "const": false
+            },
+            "warnings_dropped": {
+              "minimum": 1
+            }
+          }
+        }
+      ],
+      "properties": {
+        "exit_code": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "framework": {
+          "const": "pytest",
+          "type": "string"
+        },
+        "framework_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?![\\s\\S]*[\\r\\n])(?!.*[\\ud800-\\udfff])[^\\u0000\\r\\n]+$",
+          "type": "string"
+        },
+        "tests_collected": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warnings_complete": {
+          "type": "boolean"
+        },
+        "warnings_dropped": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "exit_code",
+        "framework",
+        "framework_version",
+        "tests_collected",
+        "warnings_complete",
+        "warnings_dropped"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "pattern": "^(?![\\s\\S]*[\\r\\n])[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "commit"
+      ],
+      "type": "object"
+    },
+    "warnings": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^(?![\\s\\S]*[\\r\\n])(?!.*[\\ud800-\\udfff])[^\\u0000\\r\\n]+$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "deprecation-warning",
+              "pending-deprecation-warning"
+            ],
+            "type": "string"
+          },
+          "location": {
+            "additionalProperties": false,
+            "properties": {
+              "line": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "maxLength": 4096,
+                "minLength": 1,
+                "pattern": "^(?![\\s\\S]*[\\r\\n])(?!.*[\\ud800-\\udfff])(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[^\\u0000\\r\\n/\\\\]+(?:/[^\\u0000\\r\\n/\\\\]+)*$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "line",
+              "path"
+            ],
+            "type": "object"
+          },
+          "message": {
+            "maxLength": 16384,
+            "minLength": 1,
+            "pattern": "^(?![\\s\\S]*[\\r\\n])(?!.*[\\ud800-\\udfff])[^\\u0000\\r\\n]+$",
+            "type": "string"
+          },
+          "occurrences": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "phase": {
+            "enum": [
+              "collect",
+              "config",
+              "runtest"
+            ],
+            "type": "string"
+          },
+          "test_node": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "pattern": "^(?![\\s\\S]*[\\r\\n])(?!.*[\\ud800-\\udfff])[^\\u0000\\r\\n]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "kind",
+          "message",
+          "occurrences",
+          "phase"
+        ],
+        "type": "object"
+      },
+      "maxItems": 100000,
+      "type": "array"
+    }
+  },
+  "required": [
+    "environment",
+    "provider",
+    "run",
+    "schema_version",
+    "source",
+    "warnings"
+  ],
+  "title": "PyAhead pytest warning evidence schema version 1",
+  "type": "object"
+}

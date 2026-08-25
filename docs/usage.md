@@ -163,6 +163,89 @@ SARIF uses stable rule IDs, relative paths, exact regions, and PyAhead
 fingerprints. Whether GitHub accepts a SARIF upload depends on repository and
 plan settings; PyAhead does not assume code scanning is enabled.
 
+### Pytest warning evidence in user CI
+
+PyAhead's first observed-evidence provider is an explicit pytest plugin. Tests
+and imports run only in the repository owner's CI job; `pyahead check` still
+does not execute target code, and no hosted scanner participates. Load the
+plugin explicitly from an environment containing both PyAhead and pytest (the
+plugin does not make pytest a PyAhead runtime dependency), and make pytest show
+the warning categories to collect:
+
+```console
+pytest -p pyahead.pytest_plugin \
+  --pyahead-evidence pyahead-pytest-warnings.json \
+  --pyahead-source-commit "$GITHUB_SHA" \
+  -W default::DeprecationWarning \
+  -W default::PendingDeprecationWarning
+
+pyahead check . \
+  --baseline-python 3.11 \
+  --horizon-python 3.14 \
+  --evidence pyahead-pytest-warnings.json \
+  --source-commit "$GITHUB_SHA" \
+  --format json \
+  --output pyahead.json
+```
+
+`--pyahead-source-commit` and `--source-commit` can be omitted when
+`PYAHEAD_COMMIT`, `GITHUB_SHA`, or `CI_COMMIT_SHA` supplies the same full
+40- or 64-character commit. PyAhead never invokes Git to guess this identity.
+Evidence paths must remain beneath the selected project root. The artifact is
+strict versioned JSON described by
+[`schema/evidence-v1.json`](schema/evidence-v1.json).
+
+A current warning is linked as corroboration only when its message identifies a
+static finding's rule or subject, its repository location overlaps that finding,
+and its CPython version agrees with the configured policy and finding timeline.
+Co-location without subject correlation is labelled `location-only`; an
+observed environment or timeline contradiction is labelled `conflicts`. Both
+remain in the unmatched warning list rather than being counted as duplicate
+evidence. The finding count and gate remain static. Evidence from another commit
+remains visible as `stale`, is never linked to current findings, and records both
+commit identities. Text and JSON reports distinguish inferred from observed
+evidence; SARIF ingestion is deliberately not offered in M7 because its
+dynamic-evidence representation is not yet defined.
+
+One minimal GitHub Actions job sequence is:
+
+```yaml
+- name: Run tests and collect PyAhead warnings
+  run: >-
+    pytest -p pyahead.pytest_plugin
+    --pyahead-evidence pyahead-pytest-warnings.json
+    --pyahead-source-commit "$GITHUB_SHA"
+    -W default::DeprecationWarning
+    -W default::PendingDeprecationWarning
+
+- name: Merge static and observed evidence
+  if: ${{ always() }}
+  run: >-
+    pyahead check .
+    --baseline-python 3.11
+    --horizon-python 3.14
+    --evidence pyahead-pytest-warnings.json
+    --source-commit "$GITHUB_SHA"
+    --format json
+    --output pyahead.json
+```
+
+The plugin finalizes its artifact even when pytest reports test failures. The
+artifact records pytest's exit code and collected-test count; it does not claim
+that warning-free tests cover every execution path. During collection it retains
+at most 10,000 unique warning records and 8 MiB of normalized warning text;
+every omitted occurrence is counted without retaining its record. Artifacts are
+capped at 16 MiB. If the deterministic warning list cannot fit, the serializer
+measures it incrementally, retains the largest fitting prefix, and records
+`warnings_complete: false` plus the omitted occurrence count in
+`warnings_dropped`; ingestion applies the same byte cap.
+One scan accepts at most 64 evidence paths, 64 MiB combined, and 100,000
+warning records across all selected artifacts. Relationship evaluation is
+indexed by repository path and source interval, with explicit aggregate caps
+of 1,000,000 candidate checks and 200,000 emitted relationship records.
+Inputs exceeding any aggregate cap fail as invalid evidence instead of risking
+unbounded memory use or silently dropping observations.
+
 Exit codes are stable:
 
 | Code | Meaning |

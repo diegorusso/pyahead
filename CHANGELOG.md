@@ -8,6 +8,12 @@ stabilizing.
 
 ### Added
 
+- Versioned pytest deprecation-warning evidence, explicit user-CI collection,
+  commit-aware ingestion, subject/timeline-aware static/observed relationships,
+  explicit per-artifact and aggregate resource limits, indexed relationship
+  processing, bounded collection-time warning retention, incremental artifact
+  sizing, and visible unmatched, conflicting, or stale observations in text and
+  JSON reports.
 - Deterministic repository discovery, Python-version reachability, strict
   configuration, baselines, rule-specific suppressions, JSON, and SARIF 2.1.0.
 - A source-linked CPython registry with explicit coverage manifests and

@@ -1,8 +1,12 @@
-"""Immutable domain models for the static analyser and compatibility registry."""
+"""Immutable domain models for analysis, evidence, and the registry."""
 
+from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
+from functools import cached_property
 from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Self, TypeAlias
 
 from pyahead.versions import PythonMinor, target_set
@@ -73,6 +77,21 @@ class MatchConfidence(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+class EvidenceFreshness(StrEnum):
+    """Whether observed evidence describes the commit being scanned."""
+
+    CURRENT = "current"
+    STALE = "stale"
+
+
+class EvidenceRelationshipKind(StrEnum):
+    """Evaluated relationship between an observation and static inference."""
+
+    CORROBORATES = "corroborates"
+    CONFLICTS = "conflicts"
+    LOCATION_ONLY = "location-only"
 
 
 class RegistryCertainty(StrEnum):
@@ -570,6 +589,83 @@ class Finding:
     baseline_status: BaselineStatus = BaselineStatus.NEW
 
 
+@dataclass(frozen=True, order=True)
+class EvidenceLocation:
+    """A repository-relative warning location without an inferred column."""
+
+    path: PurePosixPath
+    line: int
+
+
+@dataclass(frozen=True)
+class EvidenceEnvironment:
+    """Concrete interpreter environment that produced observed evidence."""
+
+    implementation: str
+    python_version: str
+    platform: str
+
+
+@dataclass(frozen=True)
+class EvidenceArtifact:
+    """Validated identity and coverage metadata for one ingested artifact."""
+
+    artifact_id: str
+    path: PurePosixPath
+    provider: str
+    provider_version: str
+    source_commit: str
+    freshness: EvidenceFreshness
+    environment: EvidenceEnvironment
+    framework: str
+    framework_version: str
+    tests_collected: int
+    exit_code: int
+    warning_count: int
+    warnings_complete: bool
+    warnings_dropped: int
+
+
+@dataclass(frozen=True, order=True)
+class EvidenceRelationship:
+    """One explicit observation-to-finding association and its rationale."""
+
+    finding_fingerprint: str
+    rule_id: str
+    subject: str
+    kind: EvidenceRelationshipKind
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ObservedWarning:
+    """One normalized warning observation, optionally linked to static findings."""
+
+    observation_id: str
+    artifact_id: str
+    provider: str
+    kind: str
+    category: str
+    message: str
+    phase: str
+    location: EvidenceLocation | None
+    test_node: str | None
+    occurrences: int
+    environment: EvidenceEnvironment
+    source_commit: str
+    freshness: EvidenceFreshness
+    relationships: tuple[EvidenceRelationship, ...]
+
+    @cached_property
+    def linked_fingerprints(self) -> tuple[str, ...]:
+        """Return only relationships established as genuine corroboration."""
+        return tuple(
+            relationship.finding_fingerprint
+            for relationship in self.relationships
+            if relationship.kind is EvidenceRelationshipKind.CORROBORATES
+        )
+
+
 @dataclass(frozen=True)
 class ScanCounts:
     """Deterministic scan completion counts."""
@@ -581,7 +677,7 @@ class ScanCounts:
 
 @dataclass(frozen=True)
 class ScanReport:
-    """Complete formatter-independent static scan result."""
+    """Complete formatter-independent static and observed-evidence result."""
 
     schema_version: int
     tool_version: str
@@ -598,6 +694,43 @@ class ScanReport:
         baseline_python="command-line",
         horizon_python="command-line",
     )
+    source_commit: str | None = None
+    evidence_artifacts: tuple[EvidenceArtifact, ...] = ()
+    observed_warnings: tuple[ObservedWarning, ...] = ()
+
+    @property
+    def has_evidence(self) -> bool:
+        """Whether a dynamic-evidence view was merged into this report."""
+        return self.source_commit is not None
+
+    @cached_property
+    def observations_by_fingerprint(
+        self,
+    ) -> Mapping[str, tuple[ObservedWarning, ...]]:
+        """Index linked observations once for deterministic formatter lookup."""
+        grouped: defaultdict[str, list[ObservedWarning]] = defaultdict(list)
+        for observation in self.observed_warnings:
+            for fingerprint in observation.linked_fingerprints:
+                grouped[fingerprint].append(observation)
+        return MappingProxyType(
+            {
+                fingerprint: tuple(observations)
+                for fingerprint, observations in grouped.items()
+            }
+        )
+
+    def observations_for(self, finding: Finding) -> tuple[ObservedWarning, ...]:
+        """Return observed warnings linked to one static finding."""
+        return self.observations_by_fingerprint.get(finding.fingerprint, ())
+
+    @cached_property
+    def unmatched_observations(self) -> tuple[ObservedWarning, ...]:
+        """Return observations not confidently linked to one static finding."""
+        return tuple(
+            observation
+            for observation in self.observed_warnings
+            if not observation.linked_fingerprints
+        )
 
     @property
     def visible_findings(self) -> tuple[Finding, ...]:
