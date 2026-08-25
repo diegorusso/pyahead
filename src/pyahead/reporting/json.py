@@ -6,9 +6,11 @@ from typing import TypeAlias
 from pyahead.model import (
     AnalysisInference,
     Diagnostic,
+    EvidenceArtifact,
     EvidenceValue,
     Finding,
     Impact,
+    ObservedWarning,
     ScanReport,
     SourceLocation,
 )
@@ -46,7 +48,12 @@ def _evidence(
     }
 
 
-def _finding(finding: Finding) -> dict[str, JsonValue]:
+def _finding(
+    finding: Finding,
+    *,
+    observations: tuple[ObservedWarning, ...] = (),
+    include_evidence: bool = False,
+) -> dict[str, JsonValue]:
     remediation: dict[str, JsonValue] = {"summary": finding.remediation.summary}
     if finding.remediation.documentation_url is not None:
         remediation["documentation_url"] = finding.remediation.documentation_url
@@ -106,6 +113,14 @@ def _finding(finding: Finding) -> dict[str, JsonValue]:
         if finding.suppression.pattern is not None:
             suppression["pattern"] = finding.suppression.pattern
         document["suppression"] = suppression
+    if include_evidence:
+        document["evidence"] = {
+            "inferred": {
+                "details": _evidence(finding.match_evidence),
+                "kind": "static-match",
+            },
+            "observed": [item.observation_id for item in observations],
+        }
     return document
 
 
@@ -147,7 +162,7 @@ def _summary(report: ScanReport) -> dict[str, JsonValue]:
         counts[finding.impact.value] += 1
         if finding.baseline_status.value == "new":
             new += 1
-    return {
+    summary: dict[str, JsonValue] = {
         "breaking": counts[Impact.BREAKING.value],
         "deprecated": counts[Impact.DEPRECATED.value],
         "informational": counts[Impact.INFORMATIONAL.value],
@@ -155,6 +170,85 @@ def _summary(report: ScanReport) -> dict[str, JsonValue]:
         "risk": counts[Impact.RISK.value],
         "suppressed": suppressed,
     }
+    if report.has_evidence:
+        summary.update(
+            {
+                "observed": len(report.observed_warnings),
+                "observed_stale": sum(
+                    item.freshness.value == "stale" for item in report.observed_warnings
+                ),
+                "observed_unmatched": len(report.unmatched_observations),
+            }
+        )
+    return summary
+
+
+def _artifact(artifact: EvidenceArtifact) -> dict[str, JsonValue]:
+    """Serialize one validated evidence artifact summary."""
+    return {
+        "artifact_id": artifact.artifact_id,
+        "environment": {
+            "implementation": artifact.environment.implementation,
+            "platform": artifact.environment.platform,
+            "python_version": artifact.environment.python_version,
+        },
+        "freshness": artifact.freshness.value,
+        "path": artifact.path.as_posix(),
+        "provider": {
+            "name": artifact.provider,
+            "version": artifact.provider_version,
+        },
+        "run": {
+            "exit_code": artifact.exit_code,
+            "framework": artifact.framework,
+            "framework_version": artifact.framework_version,
+            "tests_collected": artifact.tests_collected,
+            "warnings_complete": artifact.warnings_complete,
+            "warnings_dropped": artifact.warnings_dropped,
+        },
+        "source_commit": artifact.source_commit,
+        "warning_count": artifact.warning_count,
+    }
+
+
+def _observation(observation: ObservedWarning) -> dict[str, JsonValue]:
+    """Serialize one normalized warning and its static-finding links."""
+    document: dict[str, JsonValue] = {
+        "artifact_id": observation.artifact_id,
+        "category": observation.category,
+        "environment": {
+            "implementation": observation.environment.implementation,
+            "platform": observation.environment.platform,
+            "python_version": observation.environment.python_version,
+        },
+        "freshness": observation.freshness.value,
+        "kind": observation.kind,
+        "linked_fingerprints": list(observation.linked_fingerprints),
+        "message": observation.message,
+        "observation_id": observation.observation_id,
+        "occurrences": observation.occurrences,
+        "phase": observation.phase,
+        "provider": observation.provider,
+        "relationships": [
+            {
+                "finding_fingerprint": relationship.finding_fingerprint,
+                "kind": relationship.kind.value,
+                "reasons": list(relationship.reasons),
+                "rule_id": relationship.rule_id,
+                "subject": relationship.subject,
+            }
+            for relationship in observation.relationships
+        ],
+        "source_commit": observation.source_commit,
+    }
+    if observation.location is not None:
+        document["location"] = {
+            "line": observation.location.line,
+            "path": observation.location.path.as_posix(),
+        }
+    if observation.test_node is not None:
+        document["test_node"] = observation.test_node
+    return document
 
 
 def _configuration(report: ScanReport) -> dict[str, JsonValue]:
@@ -190,10 +284,18 @@ def _policy_provenance(report: ScanReport) -> dict[str, JsonValue]:
 
 def report_document(report: ScanReport) -> dict[str, JsonValue]:
     """Build the JSON document without timestamps or absolute paths."""
-    return {
+    observations_by_fingerprint = report.observations_by_fingerprint
+    document: dict[str, JsonValue] = {
         "configuration": _configuration(report),
         "diagnostics": [_diagnostic(item) for item in report.diagnostics],
-        "findings": [_finding(item) for item in report.visible_findings],
+        "findings": [
+            _finding(
+                item,
+                observations=observations_by_fingerprint.get(item.fingerprint, ()),
+                include_evidence=report.has_evidence,
+            )
+            for item in report.visible_findings
+        ],
         "gate": {
             "fail_on": report.configuration.fail_on.value,
             "failed": report.gate_failed,
@@ -220,6 +322,13 @@ def report_document(report: ScanReport) -> dict[str, JsonValue]:
         "summary": _summary(report),
         "tool": {"name": "pyahead", "version": report.tool_version},
     }
+    if report.has_evidence:
+        document["evidence"] = {
+            "artifacts": [_artifact(item) for item in report.evidence_artifacts],
+            "observations": [_observation(item) for item in report.observed_warnings],
+            "source_commit": report.source_commit,
+        }
+    return document
 
 
 def render_json(report: ScanReport) -> str:

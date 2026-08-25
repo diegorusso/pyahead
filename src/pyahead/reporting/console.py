@@ -2,14 +2,37 @@
 
 from collections import Counter
 from itertools import groupby
+from unicodedata import category as unicode_category
 
 from pyahead.model import (
     AnalysisInference,
     Diagnostic,
+    EvidenceArtifact,
     EvidenceValue,
     Finding,
+    ObservedWarning,
     ScanReport,
 )
+
+_UNICODE_BMP_MAX = 0xFFFF
+
+
+def _artifact_text(value: str) -> str:
+    """Escape controls that could manipulate a terminal or split a CI log."""
+    rendered: list[str] = []
+    for character in value:
+        codepoint = ord(character)
+        category = unicode_category(character)
+        if category in {"Cc", "Cf", "Cs", "Zl", "Zp"}:
+            escape = (
+                f"\\u{codepoint:04x}"
+                if codepoint <= _UNICODE_BMP_MAX
+                else f"\\U{codepoint:08x}"
+            )
+            rendered.append(escape)
+        else:
+            rendered.append(character)
+    return "".join(rendered)
 
 
 def _evidence_text(evidence: tuple[tuple[str, EvidenceValue], ...]) -> str:
@@ -19,7 +42,73 @@ def _evidence_text(evidence: tuple[tuple[str, EvidenceValue], ...]) -> str:
     return "; ".join(f"{key}={render(value)}" for key, value in evidence)
 
 
-def _finding_lines(finding: Finding) -> list[str]:
+def _observed_warning_line(
+    observation: ObservedWarning,
+    *,
+    source_commit: str,
+) -> str:
+    if observation.location is None:
+        where = "external or unavailable location"
+    else:
+        path = _artifact_text(observation.location.path.as_posix())
+        where = f"{path}:{observation.location.line}"
+    occurrence = (
+        f"; {observation.occurrences} occurrences"
+        if observation.occurrences != 1
+        else ""
+    )
+    stale = (
+        f"; stale for {observation.source_commit[:12]} (scan {source_commit[:12]})"
+        if observation.freshness.value == "stale"
+        else "; current commit"
+    )
+    relationships = ""
+    if observation.relationships:
+        rendered_relationships = ", ".join(
+            f"{relationship.rule_id}={relationship.kind.value} "
+            f"({', '.join(relationship.reasons)})"
+            for relationship in observation.relationships
+        )
+        relationships = f"; relationships: {rendered_relationships}"
+    return (
+        f"{observation.observation_id[:12]} "
+        f"{_artifact_text(observation.provider)} {where} "
+        f"[{_artifact_text(observation.category)}]: "
+        f"{_artifact_text(observation.message)} "
+        f"(Python {_artifact_text(observation.environment.python_version)}"
+        f"{occurrence}{stale}"
+        f"{relationships})"
+    )
+
+
+def _artifact_line(artifact: EvidenceArtifact, *, source_commit: str) -> str:
+    stale = (
+        f"stale for {artifact.source_commit[:12]} (scan {source_commit[:12]})"
+        if artifact.freshness.value == "stale"
+        else "current commit"
+    )
+    completeness = (
+        "warnings complete"
+        if artifact.warnings_complete
+        else f"warnings incomplete; {artifact.warnings_dropped} occurrences omitted"
+    )
+    return (
+        f"  {_artifact_text(artifact.path.as_posix())}: "
+        f"{_artifact_text(artifact.provider)} "
+        f"{_artifact_text(artifact.provider_version)}; "
+        f"Python {_artifact_text(artifact.environment.python_version)}; "
+        f"{_plural(artifact.tests_collected, 'test')} collected; "
+        f"{_plural(artifact.warning_count, 'warning')} captured; "
+        f"pytest exit code {artifact.exit_code}; {completeness}; {stale}"
+    )
+
+
+def _finding_lines(
+    finding: Finding,
+    *,
+    observations: tuple[ObservedWarning, ...] = (),
+    source_commit: str | None = None,
+) -> list[str]:
     start = finding.location.region.start
     path = finding.location.path.as_posix()
     timeline = "; ".join(
@@ -50,7 +139,12 @@ def _finding_lines(finding: Finding) -> list[str]:
             f"{finding.match_confidence.value} confidence{annotation})"
         ),
         f"    {finding.title}",
-        f"    Match evidence: {_evidence_text(finding.match_evidence)}",
+        (
+            "    Inferred evidence: "
+            if source_commit is not None
+            else "    Match evidence: "
+        )
+        + _evidence_text(finding.match_evidence),
         f"    Reachable targets: {', '.join(map(str, finding.reachable_versions))}",
         (
             "    Usage contexts: "
@@ -80,6 +174,16 @@ def _finding_lines(finding: Finding) -> list[str]:
             lines.append(f"    Suppression reason: {finding.suppression.reason}")
         if finding.suppression.pattern is not None:
             lines.append(f"    Suppression pattern: {finding.suppression.pattern}")
+    if source_commit is not None and observations:
+        lines.append("    Observed evidence:")
+        lines.extend(
+            "      "
+            + _observed_warning_line(
+                observation,
+                source_commit=source_commit,
+            )
+            for observation in observations
+        )
     lines.extend(
         f"    Source: {source.title} — {source.url}" for source in finding.sources
     )
@@ -123,7 +227,9 @@ def _timeline_group_summary(findings: tuple[Finding, ...]) -> str:
     return _plural(len(findings), nouns[impact.value])
 
 
-def _timeline_lines(findings: tuple[Finding, ...]) -> list[str]:
+def _timeline_lines(report: ScanReport) -> list[str]:
+    findings = report.visible_findings
+    observations_by_fingerprint = report.observations_by_fingerprint
     lines: list[str] = []
     for group_index, (version, grouped) in enumerate(
         groupby(findings, key=lambda finding: finding.action_version)
@@ -135,8 +241,54 @@ def _timeline_lines(findings: tuple[Finding, ...]) -> list[str]:
         for finding_index, finding in enumerate(group):
             if finding_index:
                 lines.append("")
-            lines.extend(_finding_lines(finding))
+            lines.extend(
+                _finding_lines(
+                    finding,
+                    observations=observations_by_fingerprint.get(
+                        finding.fingerprint,
+                        (),
+                    ),
+                    source_commit=report.source_commit,
+                )
+            )
     return lines
+
+
+def _observed_evidence_lines(report: ScanReport) -> list[str]:
+    source_commit = report.source_commit
+    if source_commit is None:
+        return []
+    lines = ["", "Observed evidence artifacts:"]
+    lines.extend(
+        _artifact_line(artifact, source_commit=source_commit)
+        for artifact in report.evidence_artifacts
+    )
+    if report.unmatched_observations:
+        lines.extend(["", "Unmatched observed warnings:"])
+        lines.extend(
+            "  "
+            + _observed_warning_line(
+                observation,
+                source_commit=source_commit,
+            )
+            for observation in report.unmatched_observations
+        )
+    return lines
+
+
+def _observed_evidence_summary(report: ScanReport) -> str:
+    if not report.has_evidence:
+        return ""
+    unmatched_count = len(report.unmatched_observations)
+    linked_count = len(report.observed_warnings) - unmatched_count
+    stale_count = sum(
+        observation.freshness.value == "stale"
+        for observation in report.observed_warnings
+    )
+    return (
+        f"; {_plural(len(report.observed_warnings), 'observed warning')} "
+        f"({linked_count} linked, {unmatched_count} unmatched, {stale_count} stale)"
+    )
 
 
 def render_text(report: ScanReport) -> str:
@@ -168,11 +320,18 @@ def render_text(report: ScanReport) -> str:
 
     visible_findings = report.visible_findings
     if visible_findings:
-        lines.extend(_timeline_lines(visible_findings))
+        lines.extend(_timeline_lines(report))
     else:
         lines.extend(
             [
-                "No known compatibility findings for this registry and policy.",
+                (
+                    "No known static compatibility findings for this registry "
+                    "and policy."
+                    if report.has_evidence
+                    else (
+                        "No known compatibility findings for this registry and policy."
+                    )
+                ),
                 "This is not proof of compatibility.",
             ]
         )
@@ -192,6 +351,8 @@ def render_text(report: ScanReport) -> str:
         for inference in report.inferences:
             lines.extend(_inference_lines(inference))
 
+    lines.extend(_observed_evidence_lines(report))
+
     active_findings = tuple(
         finding for finding in report.findings if finding.suppression is None
     )
@@ -209,6 +370,7 @@ def render_text(report: ScanReport) -> str:
         if suppressed_count
         else ""
     )
+    evidence_summary = _observed_evidence_summary(report)
     lines.extend(
         [
             "",
@@ -217,7 +379,7 @@ def render_text(report: ScanReport) -> str:
                 f"({impact_summary}); "
                 f"{_plural(report.counts.files_analyzed, 'file')} analyzed; "
                 f"{_plural(report.counts.files_incomplete, 'file')} incomplete"
-                f"{suppression_summary}."
+                f"{suppression_summary}{evidence_summary}."
             ),
         ]
     )

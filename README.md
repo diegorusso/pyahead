@@ -32,6 +32,12 @@ PyAhead supports host Python 3.11 through 3.14 on Linux, macOS, and Windows.
 The host interpreter is independent of the baseline and horizon Python versions
 being assessed. Python 3.15 prerelease CI is advisory until support is claimed.
 
+After Gate C, the first opt-in dynamic provider can collect deprecation warnings
+with an explicit pytest plugin in the repository owner's CI, then merge its
+versioned artifact with `pyahead check --evidence`. Observed warnings stay
+separate from static inference; unmatched and different-commit evidence remains
+visible. PyAhead does not run those tests in a hosted scanner.
+
 Gate B is exercised by repository tests and clean wheel/sdist installation.
 Gate C requires evidence from 100 active public repositories, at least 95%
 sampled precision for high-confidence findings, false-positive regressions,
