@@ -304,7 +304,7 @@ def test_current_duplicate_static_and_observed_evidence_links_without_recounting
 def test_artifact_console_fields_escape_terminal_controls(tmp_path: Path) -> None:
     """Artifact paths and text cannot inject controls into terminal output."""
     report = _static_report(tmp_path)
-    artifact = tmp_path / "warnings-\x1b[2J.json"
+    artifact = tmp_path / "warnings-\u2028line.json"
     warning = _warning(
         path="observed/\x1b[2J.py",
         message="clear\x1b[2J split\u2028line",
@@ -516,7 +516,7 @@ def test_producer_and_ingester_share_exact_artifact_byte_boundary(
     at_limit = _document_with_serialized_size(MAX_EVIDENCE_BYTES)
     rendered_at_limit = render_evidence_document(at_limit)
     artifact = tmp_path / "warnings.json"
-    artifact.write_text(rendered_at_limit, encoding="utf-8")
+    artifact.write_bytes(rendered_at_limit.encode())
 
     assert len(rendered_at_limit.encode()) == MAX_EVIDENCE_BYTES
     merged = merge_evidence(
@@ -546,7 +546,7 @@ def test_producer_and_ingester_share_exact_artifact_byte_boundary(
     capped = render_evidence_document(above_limit)
     capped_document = cast("dict[str, object]", json.loads(capped))
     capped_run = cast("dict[str, object]", capped_document["run"])
-    artifact.write_text(capped, encoding="utf-8")
+    artifact.write_bytes(capped.encode())
     capped_merged = merge_evidence(
         report,
         (artifact,),
