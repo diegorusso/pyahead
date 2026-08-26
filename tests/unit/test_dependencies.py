@@ -4800,6 +4800,24 @@ def test_malformed_pylock_file_url_is_unverified_not_an_internal_error(
     assert "provenance" in result.reason
 
 
+def test_dependency_configuration_rejects_an_input_changed_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stable-read failures retain a deterministic configuration diagnostic."""
+    project = tmp_path / "pyproject.toml"
+    project.write_text(_configuration_toml(), encoding="utf-8")
+
+    def changed_input(*_args: object) -> bytes:
+        message = "input file changed while being read"
+        raise OSError(message)
+
+    monkeypatch.setattr(dependency_module, "_read_rooted_file", changed_input)
+
+    with pytest.raises(ConfigurationError, match="changed while being read"):
+        load_dependency_configuration(tmp_path)
+
+
 def test_dependency_input_and_resolver_resources_are_bounded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4821,10 +4839,6 @@ def test_dependency_input_and_resolver_resources_are_bounded(
     config_directory.mkdir()
     with pytest.raises(ConfigurationError, match="not a regular file"):
         load_dependency_configuration(tmp_path, config_directory)
-    with monkeypatch.context() as context:
-        context.setattr(dependency_module.os.path, "samestat", lambda *_args: False)
-        with pytest.raises(ConfigurationError, match="changed while being read"):
-            load_dependency_configuration(tmp_path)
 
     monkeypatch.setattr(dependency_module, "_MAX_METADATA_INPUTS", 0)
     with pytest.raises(ConfigurationError, match="too many"):

@@ -108,6 +108,7 @@ _MAX_ARCHIVE_MEMBERS = 10_000
 _MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
 _MAX_TOTAL_ARCHIVE_EXPANDED_BYTES = 1024 * 1024 * 1024
 _MAX_TAR_CONTROL_BYTES = 2 * 1024 * 1024
+_POSIX_FORCE_KILL_SIGNAL = int(getattr(signal, "SIGKILL", 9))
 _MAX_ZIP_CENTRAL_DIRECTORY_BYTES = 8 * 1024 * 1024
 _MAX_TEXT_LENGTH = 4096
 _MAX_REQUIREMENTS = 10_000
@@ -4553,7 +4554,7 @@ class _ProcessContainment:
                 return
             if os.name != "nt":
                 try:
-                    os.killpg(self.process.pid, signal.SIGKILL)
+                    os.killpg(self.process.pid, _POSIX_FORCE_KILL_SIGNAL)
                 except OSError:
                     pass
                 else:
@@ -4606,7 +4607,7 @@ def _retry_process_group_termination(
     interruption: BaseException | None = None
     for _attempt in range(2):
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(process.pid, _POSIX_FORCE_KILL_SIGNAL)
         except OSError:
             break
         except BaseException as error:  # noqa: BLE001

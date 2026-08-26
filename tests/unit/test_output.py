@@ -2,6 +2,7 @@
 
 import ctypes
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -31,6 +32,16 @@ def _fake_windows_api(
         nt_create_file=overrides.get("nt_create_file", default),
         nt_set_information=overrides.get("nt_set_information", default),
     )
+
+
+def _fake_stat(mode: int, inode: int, *, device: int = 1) -> os.stat_result:
+    return os.stat_result((mode, inode, device, 1, 0, 0, 0, 0, 0, 0))
+
+
+def _isolate_output_os(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    isolated = SimpleNamespace(**vars(os))
+    monkeypatch.setattr(output_module, "os", isolated)
+    return isolated
 
 
 def test_atomic_output_replaces_only_after_complete_write(tmp_path: Path) -> None:
@@ -131,6 +142,417 @@ def test_root_bounded_windows_output_fails_closed_without_handle_apis(
 
     assert destination.read_text(encoding="utf-8") == "old\n"
     assert list(tmp_path.glob(".report.json.*.tmp")) == []
+
+
+def test_posix_pinned_capability_and_flags_are_exercised_portably(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSIX capability checks remain testable when the host is Windows."""
+    _isolate_output_os(monkeypatch)
+    directory_bit = 1 << 28
+    no_follow_bit = 1 << 29
+    monkeypatch.setattr(
+        output_module.os,
+        "supports_dir_fd",
+        {os.open, os.rename, os.stat, os.unlink},
+    )
+    monkeypatch.setattr(
+        output_module.os,
+        "O_DIRECTORY",
+        directory_bit,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        output_module.os,
+        "O_NOFOLLOW",
+        no_follow_bit,
+        raising=False,
+    )
+
+    directory_flags = output_module._directory_flags()  # noqa: SLF001
+    assert directory_flags & (directory_bit | no_follow_bit) == (
+        directory_bit | no_follow_bit
+    )
+    temporary_flags = output_module._temporary_flags()  # noqa: SLF001
+    required_temporary_flags = (
+        output_module.os.O_WRONLY
+        | output_module.os.O_CREAT
+        | output_module.os.O_EXCL
+        | no_follow_bit
+    )
+    assert temporary_flags & required_temporary_flags == required_temporary_flags
+    assert output_module._supports_pinned_directories()  # noqa: SLF001
+
+    monkeypatch.setattr(
+        output_module.os,
+        "supports_dir_fd",
+        {os.open, os.rename, os.stat},
+    )
+    assert not output_module._supports_pinned_directories()  # noqa: SLF001
+    with pytest.raises(OutputError, match="secure root-bounded output"):
+        output_module._require_pinned_directories()  # noqa: SLF001
+
+
+def test_posix_pinned_chain_opens_validates_and_closes_with_fakes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Descriptor ancestry is retained and rechecked without native dir-fd APIs."""
+    _isolate_output_os(monkeypatch)
+    root_status = tmp_path.lstat()
+    reports_status = _fake_stat(stat.S_IFDIR | 0o700, 21)
+    nested_status = _fake_stat(stat.S_IFDIR | 0o700, 22)
+    expected_parent_descriptor = 12
+    descriptors = iter((10, 11, 12))
+    statuses = {10: root_status, 11: reports_status, 12: nested_status}
+    opened: list[tuple[object, int, int, int | None]] = []
+    closed: list[int] = []
+
+    def fake_open(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        assert flags == output_module._directory_flags()  # noqa: SLF001
+        opened.append((path, flags, mode, dir_fd))
+        return next(descriptors)
+
+    def fake_stat(
+        name: str,
+        *,
+        dir_fd: int,
+        follow_symlinks: bool,
+    ) -> os.stat_result:
+        assert follow_symlinks is False
+        assert (dir_fd, name) in {(10, "reports"), (11, "nested")}
+        return reports_status if name == "reports" else nested_status
+
+    monkeypatch.setattr(output_module.os, "open", fake_open)
+    monkeypatch.setattr(output_module.os, "fstat", statuses.__getitem__)
+    monkeypatch.setattr(output_module.os, "stat", fake_stat)
+    monkeypatch.setattr(output_module.os, "close", closed.append)
+
+    chain = output_module._open_pinned_directories(  # noqa: SLF001
+        tmp_path,
+        Path("reports/nested"),
+    )
+
+    assert chain.parent_descriptor == expected_parent_descriptor
+    assert chain.descriptors == (10, 11, 12)
+    assert chain.names == ("reports", "nested")
+    directory_flags = output_module._directory_flags()  # noqa: SLF001
+    assert opened == [
+        (tmp_path, directory_flags, 0o777, None),
+        ("reports", directory_flags, 0o777, 10),
+        ("nested", directory_flags, 0o777, 11),
+    ]
+    assert closed == []
+    chain.validate()
+    chain.close()
+    assert closed == [12, 11, 10]
+
+
+def test_posix_pinned_chain_rejects_rebinding_and_closes_best_effort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pinned bindings fail closed and one close failure cannot leak later fds."""
+    _isolate_output_os(monkeypatch)
+    root_status = tmp_path.lstat()
+    child_status = _fake_stat(stat.S_IFDIR | 0o700, 31)
+    chain = output_module._PinnedDirectoryChain(  # noqa: SLF001
+        root=tmp_path,
+        descriptors=(20, 21),
+        statuses=(root_status, child_status),
+        names=("reports",),
+    )
+
+    monkeypatch.setattr(
+        output_module.os,
+        "stat",
+        lambda *_args, **_kwargs: _fake_stat(stat.S_IFDIR | 0o700, 32),
+    )
+    with pytest.raises(OutputError, match="output directory changed"):
+        chain.validate()
+
+    rebound_root = output_module._PinnedDirectoryChain(  # noqa: SLF001
+        root=tmp_path,
+        descriptors=(20,),
+        statuses=(_fake_stat(stat.S_IFDIR | 0o700, 99),),
+        names=(),
+    )
+    with pytest.raises(OutputError, match="output directory changed"):
+        rebound_root.validate()
+
+    closed: list[int] = []
+    failing_descriptor = 21
+
+    def close_best_effort(descriptor: int) -> None:
+        closed.append(descriptor)
+        if descriptor == failing_descriptor:
+            message = "simulated close failure"
+            raise OSError(message)
+
+    monkeypatch.setattr(output_module.os, "close", close_best_effort)
+    chain.close()
+    assert closed == [21, 20]
+
+
+def test_posix_pinned_open_rejects_changed_root_and_non_directory_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Open-time pinning closes every acquired descriptor on validation failure."""
+    _isolate_output_os(monkeypatch)
+    root_status = tmp_path.lstat()
+    changed_root = _fake_stat(stat.S_IFDIR | 0o700, root_status.st_ino + 1)
+    descriptors = iter((40,))
+    closed: list[int] = []
+    monkeypatch.setattr(
+        output_module.os,
+        "open",
+        lambda *_args, **_kwargs: next(descriptors),
+    )
+    monkeypatch.setattr(output_module.os, "fstat", lambda _descriptor: changed_root)
+    monkeypatch.setattr(output_module.os, "close", closed.append)
+
+    with pytest.raises(OutputError, match="output root changed"):
+        output_module._open_pinned_directories(tmp_path, Path("reports"))  # noqa: SLF001
+    assert closed == [40]
+
+    descriptors = iter((50, 51))
+    closed.clear()
+    statuses = {
+        50: root_status,
+        51: _fake_stat(stat.S_IFREG | 0o600, 51),
+    }
+    monkeypatch.setattr(output_module.os, "fstat", statuses.__getitem__)
+
+    with pytest.raises(OutputError, match="parents must be real directories"):
+        output_module._open_pinned_directories(tmp_path, Path("reports"))  # noqa: SLF001
+    assert closed == [51, 50]
+
+
+def test_posix_pinned_temporary_allocation_retries_only_collisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned temporary is exclusive, bounded, and never retries other errors."""
+    _isolate_output_os(monkeypatch)
+    names = iter((".report.first.tmp", ".report.second.tmp"))
+    opened: list[tuple[str, int, int, int]] = []
+    expected_status = _fake_stat(stat.S_IFREG | 0o600, 61)
+
+    def fake_open(
+        name: str,
+        flags: int,
+        mode: int,
+        *,
+        dir_fd: int,
+    ) -> int:
+        opened.append((name, flags, mode, dir_fd))
+        if len(opened) == 1:
+            raise FileExistsError
+        return 61
+
+    monkeypatch.setattr(output_module, "_temporary_name", lambda _name: next(names))
+    monkeypatch.setattr(output_module.os, "open", fake_open)
+    monkeypatch.setattr(output_module.os, "fstat", lambda _descriptor: expected_status)
+
+    assert output_module._create_temporary_at(7, "report.json") == (  # noqa: SLF001
+        61,
+        ".report.second.tmp",
+        expected_status,
+    )
+    temporary_flags = output_module._temporary_flags()  # noqa: SLF001
+    assert opened == [
+        (".report.first.tmp", temporary_flags, 0o600, 7),
+        (".report.second.tmp", temporary_flags, 0o600, 7),
+    ]
+
+    monkeypatch.setattr(output_module, "_TEMPORARY_ATTEMPTS", 2)
+    monkeypatch.setattr(output_module, "_temporary_name", lambda _name: "collision")
+    monkeypatch.setattr(
+        output_module.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileExistsError()),
+    )
+    with pytest.raises(OutputError, match="allocate a unique output temporary"):
+        output_module._create_temporary_at(7, "report.json")  # noqa: SLF001
+
+    denied = PermissionError("denied")
+    monkeypatch.setattr(
+        output_module.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(denied),
+    )
+    with pytest.raises(PermissionError) as raised:
+        output_module._create_temporary_at(7, "report.json")  # noqa: SLF001
+    assert raised.value is denied
+
+
+def test_posix_pinned_temporary_validation_and_cleanup_use_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacement and cleanup act only on the exact regular temporary inode."""
+    _isolate_output_os(monkeypatch)
+    expected = _fake_stat(stat.S_IFREG | 0o600, 71)
+    changed = _fake_stat(stat.S_IFREG | 0o600, 72)
+    parent_descriptor = 8
+    unlinked: list[tuple[str, int]] = []
+    current_status = expected
+
+    def fake_stat(
+        name: str,
+        *,
+        dir_fd: int,
+        follow_symlinks: bool,
+    ) -> os.stat_result:
+        assert name == "temporary"
+        assert dir_fd == parent_descriptor
+        assert follow_symlinks is False
+        return current_status
+
+    monkeypatch.setattr(output_module.os, "stat", fake_stat)
+    monkeypatch.setattr(
+        output_module.os,
+        "unlink",
+        lambda name, *, dir_fd: unlinked.append((name, dir_fd)),
+    )
+
+    output_module._validate_temporary_at(  # noqa: SLF001
+        parent_descriptor, "temporary", expected
+    )
+    output_module._unlink_temporary_at(  # noqa: SLF001
+        parent_descriptor, "temporary", expected
+    )
+    assert unlinked == [("temporary", parent_descriptor)]
+
+    current_status = changed
+    with pytest.raises(OutputError, match="temporary file changed"):
+        output_module._validate_temporary_at(  # noqa: SLF001
+            parent_descriptor, "temporary", expected
+        )
+    output_module._unlink_temporary_at(  # noqa: SLF001
+        parent_descriptor, "temporary", expected
+    )
+    assert unlinked == [("temporary", parent_descriptor)]
+
+    directory = _fake_stat(stat.S_IFDIR | 0o700, 71)
+    current_status = directory
+    with pytest.raises(OutputError, match="temporary file changed"):
+        output_module._validate_temporary_at(  # noqa: SLF001
+            parent_descriptor, "temporary", expected
+        )
+
+    def fail_stat(
+        name: str,
+        *,
+        dir_fd: int,
+        follow_symlinks: bool,
+    ) -> os.stat_result:
+        assert name == "temporary"
+        assert dir_fd == parent_descriptor
+        assert follow_symlinks is False
+        message = "simulated lookup failure"
+        raise OSError(message)
+
+    monkeypatch.setattr(output_module.os, "stat", fail_stat)
+    output_module._unlink_temporary_at(  # noqa: SLF001
+        parent_descriptor, "temporary", expected
+    )
+
+
+def test_posix_pinned_atomic_orders_validation_replacement_and_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pinned writer validates around replacement and cleans failed writes."""
+    _isolate_output_os(monkeypatch)
+    events: list[object] = []
+    expected = _fake_stat(stat.S_IFREG | 0o600, 81)
+    chain = SimpleNamespace(
+        parent_descriptor=9,
+        validate=lambda: events.append("validate"),
+        close=lambda: events.append("close"),
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_open_pinned_directories",
+        lambda root, parent: events.append(("open", root, parent)) or chain,
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_create_temporary_at",
+        lambda parent, name: (
+            events.append(("create", parent, name)) or (82, ".report.tmp", expected)
+        ),
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_write_descriptor",
+        lambda descriptor, content: events.append(("write", descriptor, content)),
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_validate_temporary_at",
+        lambda parent, name, status: events.append(
+            ("validate-temporary", parent, name, status)
+        ),
+    )
+    monkeypatch.setattr(
+        output_module.os,
+        "replace",
+        lambda source, destination, *, src_dir_fd, dst_dir_fd: events.append(
+            ("replace", source, destination, src_dir_fd, dst_dir_fd)
+        ),
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_unlink_temporary_at",
+        lambda parent, name, status: events.append(("unlink", parent, name, status)),
+    )
+
+    output_module._write_pinned_atomic(  # noqa: SLF001
+        tmp_path,
+        Path("reports/report.json"),
+        "payload",
+    )
+    assert events == [
+        ("open", tmp_path, Path("reports")),
+        "validate",
+        ("create", 9, "report.json"),
+        ("write", 82, "payload"),
+        "validate",
+        ("validate-temporary", 9, ".report.tmp", expected),
+        ("replace", ".report.tmp", "report.json", 9, 9),
+        "validate",
+        "close",
+    ]
+
+    events.clear()
+
+    def fail_write(descriptor: int, content: str) -> None:
+        events.append(("write", descriptor, content))
+        message = "simulated write failure"
+        raise OSError(message)
+
+    monkeypatch.setattr(output_module, "_write_descriptor", fail_write)
+    with pytest.raises(OSError, match="simulated write failure"):
+        output_module._write_pinned_atomic(  # noqa: SLF001
+            tmp_path,
+            Path("reports/report.json"),
+            "payload",
+        )
+    assert events == [
+        ("open", tmp_path, Path("reports")),
+        "validate",
+        ("create", 9, "report.json"),
+        ("write", 82, "payload"),
+        ("unlink", 9, ".report.tmp", expected),
+        "close",
+    ]
 
 
 def test_windows_rename_buffer_includes_complete_structure() -> None:
