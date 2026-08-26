@@ -1,7 +1,10 @@
 """Tests for atomic output-file replacement."""
 
+import ctypes
 import os
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -9,6 +12,36 @@ import pytest
 import pyahead._windows_output as windows_output_module
 import pyahead.output as output_module
 from pyahead.output import OutputError, write_text_atomic
+
+
+def _fake_windows_api(
+    **overrides: windows_output_module._CFunction,
+) -> windows_output_module._WindowsAPI:
+    def succeed(*_arguments: object) -> object:
+        return 1
+
+    default = cast("windows_output_module._CFunction", succeed)  # noqa: SLF001
+    return windows_output_module._WindowsAPI(  # noqa: SLF001
+        create_file=overrides.get("create_file", default),
+        close_handle=overrides.get("close_handle", default),
+        flush_file_buffers=overrides.get("flush_file_buffers", default),
+        get_file_information=overrides.get("get_file_information", default),
+        read_file=overrides.get("read_file", default),
+        set_file_information=overrides.get("set_file_information", default),
+        write_file=overrides.get("write_file", default),
+        nt_create_file=overrides.get("nt_create_file", default),
+        nt_set_information=overrides.get("nt_set_information", default),
+    )
+
+
+def _fake_stat(mode: int, inode: int, *, device: int = 1) -> os.stat_result:
+    return os.stat_result((mode, inode, device, 1, 0, 0, 0, 0, 0, 0))
+
+
+def _isolate_output_os(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    isolated = SimpleNamespace(**vars(os))
+    monkeypatch.setattr(output_module, "os", isolated)
+    return isolated
 
 
 def test_atomic_output_replaces_only_after_complete_write(tmp_path: Path) -> None:
@@ -111,6 +144,417 @@ def test_root_bounded_windows_output_fails_closed_without_handle_apis(
     assert list(tmp_path.glob(".report.json.*.tmp")) == []
 
 
+def test_posix_pinned_capability_and_flags_are_exercised_portably(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSIX capability checks remain testable when the host is Windows."""
+    _isolate_output_os(monkeypatch)
+    directory_bit = 1 << 28
+    no_follow_bit = 1 << 29
+    monkeypatch.setattr(
+        output_module.os,
+        "supports_dir_fd",
+        {os.open, os.rename, os.stat, os.unlink},
+    )
+    monkeypatch.setattr(
+        output_module.os,
+        "O_DIRECTORY",
+        directory_bit,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        output_module.os,
+        "O_NOFOLLOW",
+        no_follow_bit,
+        raising=False,
+    )
+
+    directory_flags = output_module._directory_flags()  # noqa: SLF001
+    assert directory_flags & (directory_bit | no_follow_bit) == (
+        directory_bit | no_follow_bit
+    )
+    temporary_flags = output_module._temporary_flags()  # noqa: SLF001
+    required_temporary_flags = (
+        output_module.os.O_WRONLY
+        | output_module.os.O_CREAT
+        | output_module.os.O_EXCL
+        | no_follow_bit
+    )
+    assert temporary_flags & required_temporary_flags == required_temporary_flags
+    assert output_module._supports_pinned_directories()  # noqa: SLF001
+
+    monkeypatch.setattr(
+        output_module.os,
+        "supports_dir_fd",
+        {os.open, os.rename, os.stat},
+    )
+    assert not output_module._supports_pinned_directories()  # noqa: SLF001
+    with pytest.raises(OutputError, match="secure root-bounded output"):
+        output_module._require_pinned_directories()  # noqa: SLF001
+
+
+def test_posix_pinned_chain_opens_validates_and_closes_with_fakes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Descriptor ancestry is retained and rechecked without native dir-fd APIs."""
+    _isolate_output_os(monkeypatch)
+    root_status = tmp_path.lstat()
+    reports_status = _fake_stat(stat.S_IFDIR | 0o700, 21)
+    nested_status = _fake_stat(stat.S_IFDIR | 0o700, 22)
+    expected_parent_descriptor = 12
+    descriptors = iter((10, 11, 12))
+    statuses = {10: root_status, 11: reports_status, 12: nested_status}
+    opened: list[tuple[object, int, int, int | None]] = []
+    closed: list[int] = []
+
+    def fake_open(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        assert flags == output_module._directory_flags()  # noqa: SLF001
+        opened.append((path, flags, mode, dir_fd))
+        return next(descriptors)
+
+    def fake_stat(
+        name: str,
+        *,
+        dir_fd: int,
+        follow_symlinks: bool,
+    ) -> os.stat_result:
+        assert follow_symlinks is False
+        assert (dir_fd, name) in {(10, "reports"), (11, "nested")}
+        return reports_status if name == "reports" else nested_status
+
+    monkeypatch.setattr(output_module.os, "open", fake_open)
+    monkeypatch.setattr(output_module.os, "fstat", statuses.__getitem__)
+    monkeypatch.setattr(output_module.os, "stat", fake_stat)
+    monkeypatch.setattr(output_module.os, "close", closed.append)
+
+    chain = output_module._open_pinned_directories(  # noqa: SLF001
+        tmp_path,
+        Path("reports/nested"),
+    )
+
+    assert chain.parent_descriptor == expected_parent_descriptor
+    assert chain.descriptors == (10, 11, 12)
+    assert chain.names == ("reports", "nested")
+    directory_flags = output_module._directory_flags()  # noqa: SLF001
+    assert opened == [
+        (tmp_path, directory_flags, 0o777, None),
+        ("reports", directory_flags, 0o777, 10),
+        ("nested", directory_flags, 0o777, 11),
+    ]
+    assert closed == []
+    chain.validate()
+    chain.close()
+    assert closed == [12, 11, 10]
+
+
+def test_posix_pinned_chain_rejects_rebinding_and_closes_best_effort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pinned bindings fail closed and one close failure cannot leak later fds."""
+    _isolate_output_os(monkeypatch)
+    root_status = tmp_path.lstat()
+    child_status = _fake_stat(stat.S_IFDIR | 0o700, 31)
+    chain = output_module._PinnedDirectoryChain(  # noqa: SLF001
+        root=tmp_path,
+        descriptors=(20, 21),
+        statuses=(root_status, child_status),
+        names=("reports",),
+    )
+
+    monkeypatch.setattr(
+        output_module.os,
+        "stat",
+        lambda *_args, **_kwargs: _fake_stat(stat.S_IFDIR | 0o700, 32),
+    )
+    with pytest.raises(OutputError, match="output directory changed"):
+        chain.validate()
+
+    rebound_root = output_module._PinnedDirectoryChain(  # noqa: SLF001
+        root=tmp_path,
+        descriptors=(20,),
+        statuses=(_fake_stat(stat.S_IFDIR | 0o700, 99),),
+        names=(),
+    )
+    with pytest.raises(OutputError, match="output directory changed"):
+        rebound_root.validate()
+
+    closed: list[int] = []
+    failing_descriptor = 21
+
+    def close_best_effort(descriptor: int) -> None:
+        closed.append(descriptor)
+        if descriptor == failing_descriptor:
+            message = "simulated close failure"
+            raise OSError(message)
+
+    monkeypatch.setattr(output_module.os, "close", close_best_effort)
+    chain.close()
+    assert closed == [21, 20]
+
+
+def test_posix_pinned_open_rejects_changed_root_and_non_directory_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Open-time pinning closes every acquired descriptor on validation failure."""
+    _isolate_output_os(monkeypatch)
+    root_status = tmp_path.lstat()
+    changed_root = _fake_stat(stat.S_IFDIR | 0o700, root_status.st_ino + 1)
+    descriptors = iter((40,))
+    closed: list[int] = []
+    monkeypatch.setattr(
+        output_module.os,
+        "open",
+        lambda *_args, **_kwargs: next(descriptors),
+    )
+    monkeypatch.setattr(output_module.os, "fstat", lambda _descriptor: changed_root)
+    monkeypatch.setattr(output_module.os, "close", closed.append)
+
+    with pytest.raises(OutputError, match="output root changed"):
+        output_module._open_pinned_directories(tmp_path, Path("reports"))  # noqa: SLF001
+    assert closed == [40]
+
+    descriptors = iter((50, 51))
+    closed.clear()
+    statuses = {
+        50: root_status,
+        51: _fake_stat(stat.S_IFREG | 0o600, 51),
+    }
+    monkeypatch.setattr(output_module.os, "fstat", statuses.__getitem__)
+
+    with pytest.raises(OutputError, match="parents must be real directories"):
+        output_module._open_pinned_directories(tmp_path, Path("reports"))  # noqa: SLF001
+    assert closed == [51, 50]
+
+
+def test_posix_pinned_temporary_allocation_retries_only_collisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned temporary is exclusive, bounded, and never retries other errors."""
+    _isolate_output_os(monkeypatch)
+    names = iter((".report.first.tmp", ".report.second.tmp"))
+    opened: list[tuple[str, int, int, int]] = []
+    expected_status = _fake_stat(stat.S_IFREG | 0o600, 61)
+
+    def fake_open(
+        name: str,
+        flags: int,
+        mode: int,
+        *,
+        dir_fd: int,
+    ) -> int:
+        opened.append((name, flags, mode, dir_fd))
+        if len(opened) == 1:
+            raise FileExistsError
+        return 61
+
+    monkeypatch.setattr(output_module, "_temporary_name", lambda _name: next(names))
+    monkeypatch.setattr(output_module.os, "open", fake_open)
+    monkeypatch.setattr(output_module.os, "fstat", lambda _descriptor: expected_status)
+
+    assert output_module._create_temporary_at(7, "report.json") == (  # noqa: SLF001
+        61,
+        ".report.second.tmp",
+        expected_status,
+    )
+    temporary_flags = output_module._temporary_flags()  # noqa: SLF001
+    assert opened == [
+        (".report.first.tmp", temporary_flags, 0o600, 7),
+        (".report.second.tmp", temporary_flags, 0o600, 7),
+    ]
+
+    monkeypatch.setattr(output_module, "_TEMPORARY_ATTEMPTS", 2)
+    monkeypatch.setattr(output_module, "_temporary_name", lambda _name: "collision")
+    monkeypatch.setattr(
+        output_module.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileExistsError()),
+    )
+    with pytest.raises(OutputError, match="allocate a unique output temporary"):
+        output_module._create_temporary_at(7, "report.json")  # noqa: SLF001
+
+    denied = PermissionError("denied")
+    monkeypatch.setattr(
+        output_module.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(denied),
+    )
+    with pytest.raises(PermissionError) as raised:
+        output_module._create_temporary_at(7, "report.json")  # noqa: SLF001
+    assert raised.value is denied
+
+
+def test_posix_pinned_temporary_validation_and_cleanup_use_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacement and cleanup act only on the exact regular temporary inode."""
+    _isolate_output_os(monkeypatch)
+    expected = _fake_stat(stat.S_IFREG | 0o600, 71)
+    changed = _fake_stat(stat.S_IFREG | 0o600, 72)
+    parent_descriptor = 8
+    unlinked: list[tuple[str, int]] = []
+    current_status = expected
+
+    def fake_stat(
+        name: str,
+        *,
+        dir_fd: int,
+        follow_symlinks: bool,
+    ) -> os.stat_result:
+        assert name == "temporary"
+        assert dir_fd == parent_descriptor
+        assert follow_symlinks is False
+        return current_status
+
+    monkeypatch.setattr(output_module.os, "stat", fake_stat)
+    monkeypatch.setattr(
+        output_module.os,
+        "unlink",
+        lambda name, *, dir_fd: unlinked.append((name, dir_fd)),
+    )
+
+    output_module._validate_temporary_at(  # noqa: SLF001
+        parent_descriptor, "temporary", expected
+    )
+    output_module._unlink_temporary_at(  # noqa: SLF001
+        parent_descriptor, "temporary", expected
+    )
+    assert unlinked == [("temporary", parent_descriptor)]
+
+    current_status = changed
+    with pytest.raises(OutputError, match="temporary file changed"):
+        output_module._validate_temporary_at(  # noqa: SLF001
+            parent_descriptor, "temporary", expected
+        )
+    output_module._unlink_temporary_at(  # noqa: SLF001
+        parent_descriptor, "temporary", expected
+    )
+    assert unlinked == [("temporary", parent_descriptor)]
+
+    directory = _fake_stat(stat.S_IFDIR | 0o700, 71)
+    current_status = directory
+    with pytest.raises(OutputError, match="temporary file changed"):
+        output_module._validate_temporary_at(  # noqa: SLF001
+            parent_descriptor, "temporary", expected
+        )
+
+    def fail_stat(
+        name: str,
+        *,
+        dir_fd: int,
+        follow_symlinks: bool,
+    ) -> os.stat_result:
+        assert name == "temporary"
+        assert dir_fd == parent_descriptor
+        assert follow_symlinks is False
+        message = "simulated lookup failure"
+        raise OSError(message)
+
+    monkeypatch.setattr(output_module.os, "stat", fail_stat)
+    output_module._unlink_temporary_at(  # noqa: SLF001
+        parent_descriptor, "temporary", expected
+    )
+
+
+def test_posix_pinned_atomic_orders_validation_replacement_and_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pinned writer validates around replacement and cleans failed writes."""
+    _isolate_output_os(monkeypatch)
+    events: list[object] = []
+    expected = _fake_stat(stat.S_IFREG | 0o600, 81)
+    chain = SimpleNamespace(
+        parent_descriptor=9,
+        validate=lambda: events.append("validate"),
+        close=lambda: events.append("close"),
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_open_pinned_directories",
+        lambda root, parent: events.append(("open", root, parent)) or chain,
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_create_temporary_at",
+        lambda parent, name: (
+            events.append(("create", parent, name)) or (82, ".report.tmp", expected)
+        ),
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_write_descriptor",
+        lambda descriptor, content: events.append(("write", descriptor, content)),
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_validate_temporary_at",
+        lambda parent, name, status: events.append(
+            ("validate-temporary", parent, name, status)
+        ),
+    )
+    monkeypatch.setattr(
+        output_module.os,
+        "replace",
+        lambda source, destination, *, src_dir_fd, dst_dir_fd: events.append(
+            ("replace", source, destination, src_dir_fd, dst_dir_fd)
+        ),
+    )
+    monkeypatch.setattr(
+        output_module,
+        "_unlink_temporary_at",
+        lambda parent, name, status: events.append(("unlink", parent, name, status)),
+    )
+
+    output_module._write_pinned_atomic(  # noqa: SLF001
+        tmp_path,
+        Path("reports/report.json"),
+        "payload",
+    )
+    assert events == [
+        ("open", tmp_path, Path("reports")),
+        "validate",
+        ("create", 9, "report.json"),
+        ("write", 82, "payload"),
+        "validate",
+        ("validate-temporary", 9, ".report.tmp", expected),
+        ("replace", ".report.tmp", "report.json", 9, 9),
+        "validate",
+        "close",
+    ]
+
+    events.clear()
+
+    def fail_write(descriptor: int, content: str) -> None:
+        events.append(("write", descriptor, content))
+        message = "simulated write failure"
+        raise OSError(message)
+
+    monkeypatch.setattr(output_module, "_write_descriptor", fail_write)
+    with pytest.raises(OSError, match="simulated write failure"):
+        output_module._write_pinned_atomic(  # noqa: SLF001
+            tmp_path,
+            Path("reports/report.json"),
+            "payload",
+        )
+    assert events == [
+        ("open", tmp_path, Path("reports")),
+        "validate",
+        ("create", 9, "report.json"),
+        ("write", 82, "payload"),
+        ("unlink", 9, ".report.tmp", expected),
+        "close",
+    ]
+
+
 def test_windows_rename_buffer_includes_complete_structure() -> None:
     """The variable rename buffer satisfies the documented Windows ABI size."""
     calls: list[tuple[object, ...]] = []
@@ -125,6 +569,7 @@ def test_windows_rename_buffer_includes_complete_structure() -> None:
         close_handle=function,
         flush_file_buffers=function,
         get_file_information=function,
+        read_file=function,
         set_file_information=function,
         write_file=function,
         nt_create_file=function,
@@ -148,6 +593,810 @@ def test_windows_rename_buffer_includes_complete_structure() -> None:
         windows_output_module._FileRenameInformation.file_name.offset  # noqa: SLF001
         + len(destination_name.encode("utf-16-le")),
     )
+
+
+def test_windows_read_directory_chain_does_not_request_write_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read-only dependency inspection never asks to add files to directories."""
+    root_access: list[int] = []
+    expected_handle = 10
+
+    def create_file(*arguments: object) -> object:
+        root_access.append(cast("int", arguments[1]))
+        return expected_handle
+
+    def succeed(*_arguments: object) -> object:
+        return 1
+
+    create_function = cast(
+        "windows_output_module._CFunction",  # noqa: SLF001
+        create_file,
+    )
+    function = cast("windows_output_module._CFunction", succeed)  # noqa: SLF001
+    api = windows_output_module._WindowsAPI(  # noqa: SLF001
+        create_file=create_function,
+        close_handle=function,
+        flush_file_buffers=function,
+        get_file_information=function,
+        read_file=function,
+        set_file_information=function,
+        write_file=function,
+        nt_create_file=function,
+        nt_set_information=function,
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_is_real_directory",
+        lambda *_arguments: True,
+    )
+
+    handle = windows_output_module._open_root(  # noqa: SLF001
+        api, tmp_path, for_write=False
+    )
+    write_handle = windows_output_module._open_root(  # noqa: SLF001
+        api, tmp_path, for_write=True
+    )
+
+    assert handle == expected_handle
+    assert write_handle == expected_handle
+    assert root_access[0] & windows_output_module._FILE_ADD_FILE == 0  # noqa: SLF001
+    assert root_access[1] & windows_output_module._FILE_ADD_FILE  # noqa: SLF001
+
+    failed_root_closes: list[int] = []
+
+    def fail_root_validation(*_arguments: object) -> bool:
+        message = "simulated GetFileInformationByHandleEx failure"
+        raise OSError(message)
+
+    monkeypatch.setattr(
+        windows_output_module, "_is_real_directory", fail_root_validation
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_close_handle",
+        lambda _api, raw_handle: failed_root_closes.append(raw_handle),
+    )
+
+    with pytest.raises(OSError, match="GetFileInformation"):
+        windows_output_module._open_root(  # noqa: SLF001
+            api, tmp_path, for_write=False
+        )
+
+    assert failed_root_closes == [expected_handle]
+
+    parent_access: list[int] = []
+
+    def open_relative(
+        _api: windows_output_module._WindowsAPI,
+        _parent: int,
+        _name: str,
+        creation: windows_output_module._NtCreateOptions,
+    ) -> int:
+        parent_access.append(creation.desired_access)
+        return 20 + len(parent_access)
+
+    monkeypatch.setattr(
+        windows_output_module,
+        "_open_root",
+        lambda *_arguments, **_kwargs: 20,
+    )
+    monkeypatch.setattr(windows_output_module, "_nt_create_relative", open_relative)
+    monkeypatch.setattr(
+        windows_output_module,
+        "_require_real_directory",
+        lambda *_arguments: None,
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_close_handle",
+        lambda _api, _handle: None,
+    )
+
+    chain = windows_output_module._open_directory_chain(  # noqa: SLF001
+        api,
+        tmp_path,
+        Path("one/two"),
+        for_write=False,
+    )
+    chain.close(api)
+
+    assert parent_access
+    assert all(
+        access & windows_output_module._FILE_ADD_FILE == 0  # noqa: SLF001
+        for access in parent_access
+    )
+
+    interrupted_handles: list[int] = []
+    opened_parents = 0
+
+    def interrupt_second_parent(
+        _api: windows_output_module._WindowsAPI,
+        _parent: int,
+        _name: str,
+        _creation: windows_output_module._NtCreateOptions,
+    ) -> int:
+        nonlocal opened_parents
+        opened_parents += 1
+        if opened_parents > 1:
+            raise KeyboardInterrupt
+        return 21
+
+    monkeypatch.setattr(
+        windows_output_module, "_nt_create_relative", interrupt_second_parent
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_close_handle",
+        lambda _api, handle: interrupted_handles.append(handle),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        windows_output_module._open_directory_chain(  # noqa: SLF001
+            api,
+            tmp_path,
+            Path("one/two"),
+            for_write=False,
+        )
+
+    assert interrupted_handles == [21, 20]
+
+
+def test_windows_handle_reader_retains_only_limit_plus_one_bytes() -> None:
+    """The Windows ReadFile loop cannot retain an unbounded input payload."""
+    payload = b"abcdef"
+    requests: list[int] = []
+
+    def read_file(
+        _handle: object,
+        buffer: object,
+        requested: object,
+        read_pointer: object,
+        _overlapped: object,
+    ) -> object:
+        size = cast("int", requested)
+        requests.append(size)
+        chunk = payload[:size]
+        windows_output_module.ctypes.memmove(buffer, chunk, len(chunk))
+        read_value = windows_output_module.ctypes.cast(
+            read_pointer,
+            windows_output_module.ctypes.POINTER(windows_output_module._DWORD),  # noqa: SLF001
+        )
+        read_value.contents.value = len(chunk)
+        return 1
+
+    def succeed(*_arguments: object) -> object:
+        return 1
+
+    function = cast("windows_output_module._CFunction", succeed)  # noqa: SLF001
+    reader = cast("windows_output_module._CFunction", read_file)  # noqa: SLF001
+    api = windows_output_module._WindowsAPI(  # noqa: SLF001
+        create_file=function,
+        close_handle=function,
+        flush_file_buffers=function,
+        get_file_information=function,
+        read_file=reader,
+        set_file_information=function,
+        write_file=function,
+        nt_create_file=function,
+        nt_set_information=function,
+    )
+
+    result = windows_output_module._read_windows_handle(  # noqa: SLF001
+        api, handle=1, limit=2
+    )
+
+    assert result == b"abc"
+    assert requests == [3]
+
+
+def test_windows_rooted_reader_uses_relative_handle_and_closes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public Windows reader owns both its leaf and directory handles."""
+    closed: list[object] = []
+    observed_write_modes: list[bool] = []
+    observed_creation: list[windows_output_module._NtCreateOptions] = []
+    expected_closed_handles = 2
+
+    def close_handle(handle: object) -> object:
+        closed.append(handle)
+        return 1
+
+    def succeed(*_arguments: object) -> object:
+        return 1
+
+    function = cast("windows_output_module._CFunction", succeed)  # noqa: SLF001
+    closer = cast("windows_output_module._CFunction", close_handle)  # noqa: SLF001
+    api = windows_output_module._WindowsAPI(  # noqa: SLF001
+        create_file=function,
+        close_handle=closer,
+        flush_file_buffers=function,
+        get_file_information=function,
+        read_file=function,
+        set_file_information=function,
+        write_file=function,
+        nt_create_file=function,
+        nt_set_information=function,
+    )
+    chain = windows_output_module._WindowsDirectoryChain(handles=(11,))  # noqa: SLF001
+
+    def open_chain(
+        _api: windows_output_module._WindowsAPI,
+        _root: Path,
+        _parent: Path,
+        *,
+        for_write: bool,
+    ) -> windows_output_module._WindowsDirectoryChain:
+        observed_write_modes.append(for_write)
+        return chain
+
+    def open_leaf(
+        _api: windows_output_module._WindowsAPI,
+        _parent: int,
+        _name: str,
+        creation: windows_output_module._NtCreateOptions,
+    ) -> int:
+        observed_creation.append(creation)
+        return 12
+
+    monkeypatch.setattr(windows_output_module, "_windows_api", lambda: api)
+    monkeypatch.setattr(windows_output_module, "_open_directory_chain", open_chain)
+    monkeypatch.setattr(windows_output_module, "_nt_create_relative", open_leaf)
+    monkeypatch.setattr(
+        windows_output_module, "_is_real_file", lambda *_arguments: True
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_read_windows_handle",
+        lambda *_arguments: b"payload",
+    )
+
+    result = windows_output_module.read_windows_rooted_file(
+        tmp_path,
+        Path("nested/input.metadata"),
+        limit=64,
+    )
+
+    assert result == b"payload"
+    assert observed_write_modes == [False]
+    assert observed_creation[0].desired_access & windows_output_module._FILE_READ_DATA  # noqa: SLF001
+    assert observed_creation[0].share_access == windows_output_module._FILE_SHARE_READ  # noqa: SLF001
+    assert not (
+        observed_creation[0].share_access & windows_output_module._FILE_SHARE_WRITE  # noqa: SLF001
+    )
+    assert not (
+        observed_creation[0].options & windows_output_module._FILE_NON_DIRECTORY_FILE  # noqa: SLF001
+    )
+    assert len(closed) == expected_closed_handles
+
+    with pytest.raises(OSError, match="alternate data streams"):
+        windows_output_module.read_windows_rooted_file(
+            tmp_path,
+            Path("input:stream"),
+            limit=64,
+        )
+
+
+def test_windows_api_configuration_binds_all_required_functions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loader configures each required kernel and NT entry point."""
+    loaded: list[tuple[str, bool]] = []
+
+    def new_function() -> windows_output_module._CFunction:
+        def function(*_arguments: object) -> object:
+            return 1
+
+        return cast("windows_output_module._CFunction", function)  # noqa: SLF001
+
+    kernel32 = SimpleNamespace(
+        CreateFileW=new_function(),
+        CloseHandle=new_function(),
+        FlushFileBuffers=new_function(),
+        GetFileInformationByHandleEx=new_function(),
+        ReadFile=new_function(),
+        SetFileInformationByHandle=new_function(),
+        WriteFile=new_function(),
+    )
+    ntdll = SimpleNamespace(
+        NtCreateFile=new_function(),
+        NtSetInformationFile=new_function(),
+    )
+
+    def factory(name: str, *, use_last_error: bool) -> object:
+        loaded.append((name, use_last_error))
+        return kernel32 if name == "kernel32" else ntdll
+
+    monkeypatch.setattr(windows_output_module.ctypes, "WinDLL", factory, raising=False)
+
+    api = windows_output_module._windows_api()  # noqa: SLF001
+
+    assert loaded == [("kernel32", True), ("ntdll", True)]
+    bindings = (
+        (api.create_file, kernel32.CreateFileW, 7, windows_output_module._HANDLE),  # noqa: SLF001
+        (api.close_handle, kernel32.CloseHandle, 1, ctypes.c_int),
+        (api.flush_file_buffers, kernel32.FlushFileBuffers, 1, ctypes.c_int),
+        (
+            api.get_file_information,
+            kernel32.GetFileInformationByHandleEx,
+            4,
+            ctypes.c_int,
+        ),
+        (api.read_file, kernel32.ReadFile, 5, ctypes.c_int),
+        (
+            api.set_file_information,
+            kernel32.SetFileInformationByHandle,
+            4,
+            ctypes.c_int,
+        ),
+        (api.write_file, kernel32.WriteFile, 5, ctypes.c_int),
+        (
+            api.nt_create_file,
+            ntdll.NtCreateFile,
+            11,
+            windows_output_module._NTSTATUS,  # noqa: SLF001
+        ),
+        (
+            api.nt_set_information,
+            ntdll.NtSetInformationFile,
+            5,
+            windows_output_module._NTSTATUS,  # noqa: SLF001
+        ),
+    )
+    for configured, native, argument_count, result_type in bindings:
+        assert configured is native
+        assert len(configured.argtypes) == argument_count
+        assert configured.restype is result_type
+
+    def unavailable(_factory: object) -> windows_output_module._WindowsAPI:
+        message = "missing entry point"
+        raise AttributeError(message)
+
+    monkeypatch.setattr(windows_output_module, "_configured_windows_api", unavailable)
+    with pytest.raises(OSError, match="APIs are unavailable") as captured:
+        windows_output_module._windows_api()  # noqa: SLF001
+    assert isinstance(captured.value.__cause__, AttributeError)
+
+
+def test_windows_path_and_attribute_helpers_cover_reparse_failures(
+    tmp_path: Path,
+) -> None:
+    """Path rendering and attribute checks distinguish real files from reparses."""
+    assert (
+        windows_output_module._extended_path(  # noqa: SLF001
+            Path(r"\\?\C:\project")
+        )
+        == r"\\?\C:\project"
+    )
+    assert (
+        windows_output_module._extended_path(  # noqa: SLF001
+            Path(r"\\server\share\folder")
+        )
+        == r"\\?\UNC\server\share\folder"
+    )
+    assert windows_output_module._extended_path(tmp_path).startswith("\\\\?\\")  # noqa: SLF001
+
+    attributes = windows_output_module._FILE_ATTRIBUTE_DIRECTORY  # noqa: SLF001
+
+    def get_information(
+        _handle: object,
+        _information_class: object,
+        information_pointer: object,
+        _size: object,
+    ) -> object:
+        information = windows_output_module.ctypes.cast(
+            information_pointer,
+            windows_output_module.ctypes.POINTER(
+                windows_output_module._FileAttributeTagInfo  # noqa: SLF001
+            ),
+        )
+        information.contents.file_attributes = attributes
+        return 1
+
+    getter = cast(
+        "windows_output_module._CFunction",  # noqa: SLF001
+        get_information,
+    )
+    api = _fake_windows_api(get_file_information=getter)
+
+    assert windows_output_module._is_real_directory(api, 3)  # noqa: SLF001
+    assert not windows_output_module._is_real_file(api, 3)  # noqa: SLF001
+
+    attributes = 0
+    assert windows_output_module._is_real_file(api, 3)  # noqa: SLF001
+    assert not windows_output_module._is_real_directory(api, 3)  # noqa: SLF001
+
+    attributes = windows_output_module._FILE_ATTRIBUTE_DIRECTORY  # noqa: SLF001
+    attributes |= windows_output_module._FILE_ATTRIBUTE_REPARSE_POINT  # noqa: SLF001
+    assert not windows_output_module._is_real_directory(api, 3)  # noqa: SLF001
+    assert not windows_output_module._is_real_file(api, 3)  # noqa: SLF001
+    with pytest.raises(OSError, match="trusted root"):
+        windows_output_module._require_real_root(api, 3)  # noqa: SLF001
+    with pytest.raises(OSError, match="path parents"):
+        windows_output_module._require_real_directory(api, 3)  # noqa: SLF001
+
+    failing = cast(
+        "windows_output_module._CFunction",  # noqa: SLF001
+        lambda *_arguments: 0,
+    )
+    with pytest.raises(OSError, match="GetFileInformationByHandleEx failed"):
+        windows_output_module._is_real_file(  # noqa: SLF001
+            _fake_windows_api(get_file_information=failing),
+            3,
+        )
+
+
+def test_windows_nt_relative_open_success_and_failures() -> None:
+    """NT relative opens reject both failed statuses and absent handles."""
+    creation = windows_output_module._NtCreateOptions(  # noqa: SLF001
+        desired_access=1,
+        share_access=2,
+        disposition=3,
+        attributes=4,
+        options=5,
+    )
+
+    expected_handle = 42
+
+    def open_handle(handle_pointer: object, *_arguments: object) -> object:
+        handle = windows_output_module.ctypes.cast(
+            handle_pointer,
+            windows_output_module.ctypes.POINTER(windows_output_module._HANDLE),  # noqa: SLF001
+        )
+        handle.contents.value = expected_handle
+        return 0
+
+    opener = cast("windows_output_module._CFunction", open_handle)  # noqa: SLF001
+    assert (
+        windows_output_module._nt_create_relative(  # noqa: SLF001
+            _fake_windows_api(nt_create_file=opener),
+            7,
+            "artifact.whl",
+            creation,
+        )
+        == expected_handle
+    )
+
+    failed = cast(
+        "windows_output_module._CFunction",  # noqa: SLF001
+        lambda *_arguments: -1,
+    )
+    with pytest.raises(OSError, match=r"NTSTATUS 0xffffffff"):
+        windows_output_module._nt_create_relative(  # noqa: SLF001
+            _fake_windows_api(nt_create_file=failed),
+            7,
+            "artifact.whl",
+            creation,
+        )
+
+    invalid = cast(
+        "windows_output_module._CFunction",  # noqa: SLF001
+        lambda *_arguments: 0,
+    )
+    with pytest.raises(OSError, match="invalid handle"):
+        windows_output_module._nt_create_relative(  # noqa: SLF001
+            _fake_windows_api(nt_create_file=invalid),
+            7,
+            "artifact.whl",
+            creation,
+        )
+
+    oversized = "x" * (windows_output_module._MAX_UNICODE_STRING_BYTES // 2 + 1)  # noqa: SLF001
+    with pytest.raises(OSError, match="component is too long"):
+        windows_output_module._unicode_string(oversized)  # noqa: SLF001
+
+
+def test_windows_temporary_open_retries_only_name_collisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Temporary allocation retries collisions but propagates other failures."""
+    attempts = 0
+    expected_attempts = 2
+    expected_handle = 44
+    operation = "NtCreateFile"
+
+    def collide_once(*_arguments: object) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise windows_output_module._NtStatusError(  # noqa: SLF001
+                operation,
+                windows_output_module._STATUS_OBJECT_NAME_COLLISION,  # noqa: SLF001
+            )
+        return expected_handle
+
+    monkeypatch.setattr(windows_output_module, "_nt_create_relative", collide_once)
+    assert (
+        windows_output_module._create_temporary_handle(  # noqa: SLF001
+            _fake_windows_api(),
+            3,
+            "report.json",
+        )
+        == expected_handle
+    )
+    assert attempts == expected_attempts
+
+    def deny(*_arguments: object) -> int:
+        raise windows_output_module._NtStatusError(operation, -2)  # noqa: SLF001
+
+    monkeypatch.setattr(windows_output_module, "_nt_create_relative", deny)
+    with pytest.raises(OSError, match=r"NTSTATUS 0xfffffffe"):
+        windows_output_module._create_temporary_handle(  # noqa: SLF001
+            _fake_windows_api(),
+            3,
+            "report.json",
+        )
+
+    monkeypatch.setattr(windows_output_module, "_TEMPORARY_ATTEMPTS", 2)
+
+    def collide(*_arguments: object) -> int:
+        raise windows_output_module._NtStatusError(  # noqa: SLF001
+            operation,
+            windows_output_module._STATUS_OBJECT_NAME_COLLISION,  # noqa: SLF001
+        )
+
+    monkeypatch.setattr(windows_output_module, "_nt_create_relative", collide)
+    with pytest.raises(OSError, match="allocate a unique"):
+        windows_output_module._create_temporary_handle(  # noqa: SLF001
+            _fake_windows_api(),
+            3,
+            "report.json",
+        )
+
+
+def test_windows_handle_io_reports_partial_and_failed_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Handle I/O is chunked and fails closed on partial or failed API calls."""
+    writes: list[bytes] = []
+
+    def write_file(
+        _handle: object,
+        buffer: object,
+        requested: object,
+        written_pointer: object,
+        _overlapped: object,
+    ) -> object:
+        size = cast("int", requested)
+        writes.append(windows_output_module.ctypes.string_at(buffer, size))
+        written = windows_output_module.ctypes.cast(
+            written_pointer,
+            windows_output_module.ctypes.POINTER(windows_output_module._DWORD),  # noqa: SLF001
+        )
+        written.contents.value = size
+        return 1
+
+    writer = cast("windows_output_module._CFunction", write_file)  # noqa: SLF001
+    monkeypatch.setattr(windows_output_module, "_WRITE_CHUNK_BYTES", 2)
+    windows_output_module._write_windows_handle(  # noqa: SLF001
+        _fake_windows_api(write_file=writer),
+        5,
+        "abc",
+    )
+    assert writes == [b"ab", b"c"]
+
+    def partial_write(
+        _handle: object,
+        _buffer: object,
+        _requested: object,
+        written_pointer: object,
+        _overlapped: object,
+    ) -> object:
+        written = windows_output_module.ctypes.cast(
+            written_pointer,
+            windows_output_module.ctypes.POINTER(windows_output_module._DWORD),  # noqa: SLF001
+        )
+        written.contents.value = 0
+        return 1
+
+    partial = cast("windows_output_module._CFunction", partial_write)  # noqa: SLF001
+    with pytest.raises(OSError, match="partial output write"):
+        windows_output_module._write_windows_handle(  # noqa: SLF001
+            _fake_windows_api(write_file=partial),
+            5,
+            "x",
+        )
+
+    failed = cast(
+        "windows_output_module._CFunction",  # noqa: SLF001
+        lambda *_arguments: 0,
+    )
+    with pytest.raises(OSError, match="ReadFile failed"):
+        windows_output_module._read_windows_handle(  # noqa: SLF001
+            _fake_windows_api(read_file=failed),
+            5,
+            3,
+        )
+
+    def end_of_file(
+        _handle: object,
+        _buffer: object,
+        _requested: object,
+        read_pointer: object,
+        _overlapped: object,
+    ) -> object:
+        read = windows_output_module.ctypes.cast(
+            read_pointer,
+            windows_output_module.ctypes.POINTER(windows_output_module._DWORD),  # noqa: SLF001
+        )
+        read.contents.value = 0
+        return 1
+
+    reader = cast("windows_output_module._CFunction", end_of_file)  # noqa: SLF001
+    assert (
+        windows_output_module._read_windows_handle(  # noqa: SLF001
+            _fake_windows_api(read_file=reader),
+            5,
+            3,
+        )
+        == b""
+    )
+
+
+def test_windows_atomic_writer_cleans_handles_on_success_and_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Atomic replacement deletes only failed temporaries and closes all handles."""
+    closed: list[int] = []
+    deleted: list[int] = []
+
+    def close_handle(handle: object) -> object:
+        closed.append(cast("windows_output_module._HANDLE", handle).value or 0)  # noqa: SLF001
+        return 1
+
+    closer = cast("windows_output_module._CFunction", close_handle)  # noqa: SLF001
+    api = _fake_windows_api(close_handle=closer)
+    chain = windows_output_module._WindowsDirectoryChain(handles=(8, 9))  # noqa: SLF001
+    monkeypatch.setattr(windows_output_module, "_windows_api", lambda: api)
+    monkeypatch.setattr(
+        windows_output_module,
+        "_open_directory_chain",
+        lambda *_arguments, **_keywords: chain,
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_create_temporary_handle",
+        lambda *_arguments: 10,
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_write_windows_handle",
+        lambda *_arguments: None,
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_replace_windows_handle",
+        lambda *_arguments: None,
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_delete_windows_handle",
+        lambda _api, handle: deleted.append(handle),
+    )
+
+    windows_output_module.write_windows_atomic(
+        tmp_path,
+        Path("reports/report.json"),
+        "payload",
+    )
+    assert deleted == []
+    assert closed == [10, 9, 8]
+
+    closed.clear()
+
+    def fail_write(*_arguments: object) -> None:
+        message = "simulated write failure"
+        raise OSError(message)
+
+    monkeypatch.setattr(windows_output_module, "_write_windows_handle", fail_write)
+    with pytest.raises(OSError, match="simulated write failure"):
+        windows_output_module.write_windows_atomic(
+            tmp_path,
+            Path("reports/report.json"),
+            "payload",
+        )
+    assert deleted == [10]
+    assert closed == [10, 9, 8]
+
+    closed.clear()
+
+    def interrupt_delete(_api: object, _handle: int) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        windows_output_module,
+        "_delete_windows_handle",
+        interrupt_delete,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        windows_output_module.write_windows_atomic(
+            tmp_path,
+            Path("reports/report.json"),
+            "payload",
+        )
+    assert closed == [10, 9, 8]
+
+    with pytest.raises(OSError, match="alternate data streams"):
+        windows_output_module.write_windows_atomic(
+            tmp_path,
+            Path("report:stream"),
+            "payload",
+        )
+
+
+def test_windows_temporary_deletion_checks_native_result() -> None:
+    """Temporary cleanup distinguishes a confirmed delete from native failure."""
+    calls: list[int] = []
+
+    def delete(
+        handle: object,
+        _information_class: object,
+        _information: object,
+        _size: object,
+    ) -> object:
+        calls.append(cast("windows_output_module._HANDLE", handle).value or 0)  # noqa: SLF001
+        return 1
+
+    deletion = cast("windows_output_module._CFunction", delete)  # noqa: SLF001
+    windows_output_module._delete_windows_handle(  # noqa: SLF001
+        _fake_windows_api(set_file_information=deletion),
+        17,
+    )
+    assert calls == [17]
+
+    failed = cast(
+        "windows_output_module._CFunction",  # noqa: SLF001
+        lambda *_arguments: 0,
+    )
+    with pytest.raises(OSError, match="FileDispositionInfo"):
+        windows_output_module._delete_windows_handle(  # noqa: SLF001
+            _fake_windows_api(set_file_information=failed),
+            17,
+        )
+
+
+def test_windows_rooted_reader_rejects_non_regular_leaf_and_closes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reparse or directory leaf is rejected while every handle is retained."""
+    closed: list[int] = []
+
+    def close_handle(handle: object) -> object:
+        closed.append(cast("windows_output_module._HANDLE", handle).value or 0)  # noqa: SLF001
+        return 1
+
+    closer = cast("windows_output_module._CFunction", close_handle)  # noqa: SLF001
+    api = _fake_windows_api(close_handle=closer)
+    chain = windows_output_module._WindowsDirectoryChain(handles=(12,))  # noqa: SLF001
+    monkeypatch.setattr(windows_output_module, "_windows_api", lambda: api)
+    monkeypatch.setattr(
+        windows_output_module,
+        "_open_directory_chain",
+        lambda *_arguments, **_keywords: chain,
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_nt_create_relative",
+        lambda *_arguments: 13,
+    )
+    monkeypatch.setattr(
+        windows_output_module,
+        "_is_real_file",
+        lambda *_arguments: False,
+    )
+
+    with pytest.raises(OSError, match="real regular file"):
+        windows_output_module.read_windows_rooted_file(
+            tmp_path,
+            Path("nested/artifact.whl"),
+            64,
+        )
+    assert closed == [13, 12]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows directory handles")

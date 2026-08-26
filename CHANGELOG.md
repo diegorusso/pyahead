@@ -8,6 +8,26 @@ stabilizing.
 
 ### Added
 
+- Opt-in dependency compatibility reports with declared environment targets,
+  separate application and library semantics, direct build-free wheel/sdist
+  metadata inspection, target marker evaluation, `Requires-Python` and wheel
+  availability distinctions, and an isolated `uv` adapter with explicit
+  offline, network, index, and timeout controls. Wheel structure, direct URL,
+  coherent-target, and complete transitive-dependency evidence fail closed;
+  closed-wheelhouse artifact absence remains distinct from proven constraint
+  conflicts and operational index failures, library artifact samples remain
+  incomplete availability evidence, and resolver-selected extras require exact
+  `Provides-Extra` provenance. Nested dependency extras reach a fixed point, and
+  archive member, shared expanded-data, and decoder limits are enforced before
+  unbounded object creation, decompression, or LZMA dictionary allocation.
+  Dependency evaluation and correlation share a bounded work budget, and public
+  metadata records must preserve exact container identity. Target-selected
+  metadata now exclusively supplies extras and dependency edges; conflicting
+  artifact declarations, ambiguous local-version pins, unreachable resolver
+  packages, legacy source-metadata dynamism, malformed markers, impossible
+  target versions, resolver output, aggregate metadata, and sdist identity
+  boundaries fail closed as invalid input or explicit incomplete evidence, as
+  appropriate.
 - Versioned pytest deprecation-warning evidence, explicit user-CI collection,
   commit-aware ingestion, subject/timeline-aware static/observed relationships,
   explicit per-artifact and aggregate resource limits, indexed relationship

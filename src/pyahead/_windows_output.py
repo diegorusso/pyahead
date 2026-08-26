@@ -1,4 +1,4 @@
-"""Handle-anchored, reparse-safe output replacement for Windows."""
+"""Handle-anchored, reparse-safe file input and output for Windows."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ _NTSTATUS = ctypes.c_int32
 _DELETE = 0x00010000
 _FILE_ADD_FILE = 0x00000002
 _FILE_LIST_DIRECTORY = 0x00000001
+_FILE_READ_DATA = 0x00000001
 _FILE_READ_ATTRIBUTES = 0x00000080
 _FILE_TRAVERSE = 0x00000020
 _FILE_WRITE_DATA = 0x00000002
@@ -50,6 +51,7 @@ _FILE_DISPOSITION_INFO_CLASS = 4
 _STATUS_OBJECT_NAME_COLLISION = 0xC0000035
 _TEMPORARY_ATTEMPTS = 128
 _WRITE_CHUNK_BYTES = 1024 * 1024
+_READ_CHUNK_BYTES = 1024 * 1024
 _MAX_UNICODE_STRING_BYTES = 0xFFFC
 
 
@@ -113,6 +115,7 @@ class _WindowsAPI:
     close_handle: _CFunction
     flush_file_buffers: _CFunction
     get_file_information: _CFunction
+    read_file: _CFunction
     set_file_information: _CFunction
     write_file: _CFunction
     nt_create_file: _CFunction
@@ -203,6 +206,12 @@ def _configured_windows_api(factory: _WinDLLFactory) -> _WindowsAPI:
             [_HANDLE, ctypes.c_int, ctypes.c_void_p, _DWORD],
             ctypes.c_int,
         ),
+        read_file=_function(
+            kernel32,
+            "ReadFile",
+            [_HANDLE, ctypes.c_void_p, _DWORD, ctypes.POINTER(_DWORD), ctypes.c_void_p],
+            ctypes.c_int,
+        ),
         set_file_information=_function(
             kernel32,
             "SetFileInformationByHandle",
@@ -268,7 +277,7 @@ def _require_success(result: object, operation: str) -> None:
         raise OSError(message)
 
 
-def _is_real_directory(api: _WindowsAPI, handle: int) -> bool:
+def _file_attribute_information(api: _WindowsAPI, handle: int) -> _FileAttributeTagInfo:
     information = _FileAttributeTagInfo()
     _require_success(
         api.get_file_information(
@@ -279,20 +288,40 @@ def _is_real_directory(api: _WindowsAPI, handle: int) -> bool:
         ),
         "GetFileInformationByHandleEx",
     )
+    return information
+
+
+def _is_real_directory(api: _WindowsAPI, handle: int) -> bool:
+    information = _file_attribute_information(api, handle)
     return bool(
         information.file_attributes & _FILE_ATTRIBUTE_DIRECTORY
         and not information.file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT
     )
 
 
-def _open_root(api: _WindowsAPI, root: Path) -> int:
+def _is_real_file(api: _WindowsAPI, handle: int) -> bool:
+    information = _file_attribute_information(api, handle)
+    return not bool(
+        information.file_attributes
+        & (_FILE_ATTRIBUTE_DIRECTORY | _FILE_ATTRIBUTE_REPARSE_POINT)
+    )
+
+
+def _require_real_root(api: _WindowsAPI, handle: int) -> None:
+    if not _is_real_directory(api, handle):
+        message = "trusted root must be a real directory"
+        raise OSError(message)
+
+
+def _open_root(api: _WindowsAPI, root: Path, *, for_write: bool) -> int:
+    desired_access = (
+        _FILE_LIST_DIRECTORY | _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+    )
+    if for_write:
+        desired_access |= _FILE_ADD_FILE
     raw_handle = api.create_file(
         _extended_path(root),
-        _FILE_ADD_FILE
-        | _FILE_LIST_DIRECTORY
-        | _FILE_TRAVERSE
-        | _FILE_READ_ATTRIBUTES
-        | _SYNCHRONIZE,
+        desired_access,
         _FILE_SHARE_READ | _FILE_SHARE_WRITE,
         None,
         _OPEN_EXISTING,
@@ -302,12 +331,13 @@ def _open_root(api: _WindowsAPI, root: Path) -> int:
     handle = cast("int | None", raw_handle)
     invalid_handle = ctypes.c_void_p(-1).value
     if handle is None or handle == invalid_handle:
-        message = "unable to open the trusted output root without reparses"
+        message = "unable to open the trusted root without reparses"
         raise OSError(message)
-    if not _is_real_directory(api, handle):
+    try:
+        _require_real_root(api, handle)
+    except BaseException:
         _close_handle(api, handle)
-        message = "trusted output root must be a real directory"
-        raise OSError(message)
+        raise
     return handle
 
 
@@ -372,8 +402,10 @@ def _open_directory_chain(
     api: _WindowsAPI,
     root: Path,
     relative_parent: Path,
+    *,
+    for_write: bool,
 ) -> _WindowsDirectoryChain:
-    handles = [_open_root(api, root)]
+    handles = [_open_root(api, root, for_write=for_write)]
     try:
         for name in relative_parent.parts:
             handle = _nt_create_relative(
@@ -382,11 +414,11 @@ def _open_directory_chain(
                 name,
                 _NtCreateOptions(
                     desired_access=(
-                        _FILE_ADD_FILE
-                        | _FILE_LIST_DIRECTORY
+                        _FILE_LIST_DIRECTORY
                         | _FILE_TRAVERSE
                         | _FILE_READ_ATTRIBUTES
                         | _SYNCHRONIZE
+                        | (_FILE_ADD_FILE if for_write else 0)
                     ),
                     share_access=_FILE_SHARE_READ | _FILE_SHARE_WRITE,
                     disposition=_FILE_OPEN,
@@ -401,7 +433,7 @@ def _open_directory_chain(
             )
             handles.append(handle)
             _require_real_directory(api, handle)
-    except Exception:
+    except BaseException:
         for handle in reversed(handles):
             _close_handle(api, handle)
         raise
@@ -410,7 +442,7 @@ def _open_directory_chain(
 
 def _require_real_directory(api: _WindowsAPI, handle: int) -> None:
     if not _is_real_directory(api, handle):
-        message = "output parents must be real directories"
+        message = "path parents must be real directories"
         raise OSError(message)
 
 
@@ -470,6 +502,30 @@ def _write_windows_handle(api: _WindowsAPI, handle: int, content: str) -> None:
     )
 
 
+def _read_windows_handle(api: _WindowsAPI, handle: int, limit: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = limit + 1
+    while remaining:
+        requested = min(_READ_CHUNK_BYTES, remaining)
+        buffer = ctypes.create_string_buffer(requested)
+        read = _DWORD()
+        _require_success(
+            api.read_file(
+                _HANDLE(handle),
+                ctypes.byref(buffer),
+                requested,
+                ctypes.byref(read),
+                None,
+            ),
+            "ReadFile",
+        )
+        if read.value == 0:
+            break
+        chunks.append(buffer.raw[: read.value])
+        remaining -= read.value
+    return b"".join(chunks)
+
+
 def _replace_windows_handle(
     api: _WindowsAPI,
     temporary_handle: int,
@@ -511,13 +567,15 @@ def _replace_windows_handle(
 
 def _delete_windows_handle(api: _WindowsAPI, handle: int) -> None:
     information = _FileDispositionInfo(delete_file=1)
-    with suppress(Exception):
+    _require_success(
         api.set_file_information(
             _HANDLE(handle),
             _FILE_DISPOSITION_INFO_CLASS,
             ctypes.byref(information),
             ctypes.sizeof(information),
-        )
+        ),
+        "SetFileInformationByHandle(FileDispositionInfo)",
+    )
 
 
 def write_windows_atomic(root: Path, relative_path: Path, content: str) -> None:
@@ -526,7 +584,7 @@ def write_windows_atomic(root: Path, relative_path: Path, content: str) -> None:
         message = "Windows output destinations cannot name alternate data streams"
         raise OSError(message)
     api = _windows_api()
-    chain = _open_directory_chain(api, root, relative_path.parent)
+    chain = _open_directory_chain(api, root, relative_path.parent, for_write=True)
     temporary_handle: int | None = None
     replaced = False
     try:
@@ -544,11 +602,46 @@ def write_windows_atomic(root: Path, relative_path: Path, content: str) -> None:
         )
         replaced = True
     finally:
-        if temporary_handle is not None:
-            if not replaced:
-                _delete_windows_handle(api, temporary_handle)
-            _close_handle(api, temporary_handle)
+        try:
+            if temporary_handle is not None:
+                try:
+                    if not replaced:
+                        _delete_windows_handle(api, temporary_handle)
+                finally:
+                    _close_handle(api, temporary_handle)
+        finally:
+            chain.close(api)
+
+
+def read_windows_rooted_file(root: Path, relative_path: Path, limit: int) -> bytes:
+    """Read one bounded regular file through a pinned, reparse-safe chain."""
+    if ":" in relative_path.name:
+        message = "Windows input paths cannot name alternate data streams"
+        raise OSError(message)
+    api = _windows_api()
+    chain = _open_directory_chain(api, root, relative_path.parent, for_write=False)
+    handle: int | None = None
+    try:
+        handle = _nt_create_relative(
+            api,
+            chain.parent_handle,
+            relative_path.name,
+            _NtCreateOptions(
+                desired_access=_FILE_READ_DATA | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+                share_access=_FILE_SHARE_READ,
+                disposition=_FILE_OPEN,
+                attributes=0,
+                options=(_FILE_SYNCHRONOUS_IO_NONALERT | _FILE_OPEN_REPARSE_POINT),
+            ),
+        )
+        if not _is_real_file(api, handle):
+            message = "input must be a real regular file"
+            raise OSError(message)
+        return _read_windows_handle(api, handle, limit)
+    finally:
+        if handle is not None:
+            _close_handle(api, handle)
         chain.close(api)
 
 
-__all__ = ["write_windows_atomic"]
+__all__ = ["read_windows_rooted_file", "write_windows_atomic"]

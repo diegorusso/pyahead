@@ -11,6 +11,12 @@ from pyahead.analysis import ScanRequest, scan
 from pyahead.analysis.discovery import DiscoveryError
 from pyahead.baseline import render_baseline
 from pyahead.config import resolve_project_root
+from pyahead.dependencies import (
+    collect_dependency_report,
+    load_dependency_configuration,
+    render_dependency_json,
+    render_dependency_text,
+)
 from pyahead.evidence import merge_evidence, resolve_source_commit
 from pyahead.model import (
     ConfigurationError,
@@ -207,6 +213,54 @@ def _build_parser() -> ArgumentParser:
 
     check = subparsers.add_parser("check", help="scan Python source")
     _scan_options(check, include_report_output=True)
+
+    dependencies = subparsers.add_parser(
+        "dependencies",
+        help="inspect opt-in dependency compatibility evidence",
+    )
+    dependencies.add_argument(
+        "--root",
+        type=Path,
+        metavar="PATH",
+        help="project root (otherwise inferred from the current directory)",
+    )
+    dependencies.add_argument(
+        "--config",
+        type=Path,
+        metavar="PATH",
+        help="configuration containing [tool.pyahead.dependencies]",
+    )
+    dependencies.add_argument(
+        "--network",
+        action=BooleanOptionalAction,
+        default=None,
+        help="explicitly enable or disable resolver network access",
+    )
+    dependencies.add_argument(
+        "--resolve",
+        action=BooleanOptionalAction,
+        default=None,
+        help="explicitly enable or disable the isolated resolver",
+    )
+    dependencies.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="finite positive deadline for each resolver process",
+    )
+    dependencies.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="output_format",
+    )
+    dependencies.add_argument(
+        "--output",
+        type=Path,
+        metavar="PATH",
+        help="write complete output atomically; use - for stdout",
+    )
 
     baseline = subparsers.add_parser(
         "baseline", help="create deterministic finding baselines"
@@ -483,6 +537,40 @@ def _run_baseline_create(arguments: Namespace) -> int:
     return int(ExitCode.SUCCESS)
 
 
+def _run_dependencies(arguments: Namespace) -> int:
+    try:
+        root = resolve_project_root(Path.cwd(), arguments.root)
+        configuration = load_dependency_configuration(
+            root,
+            arguments.config,
+            network_override=arguments.network,
+            resolve_override=arguments.resolve,
+            timeout_override=arguments.timeout_seconds,
+        )
+        report = collect_dependency_report(configuration, root=root)
+        rendered = (
+            render_dependency_json(report)
+            if arguments.output_format == "json"
+            else render_dependency_text(report)
+        )
+        _write_output(
+            rendered,
+            _root_bounded_output_path(
+                arguments.output,
+                root,
+                label="dependency report",
+            ),
+            root=root,
+        )
+    except (ConfigurationError, OutputError) as error:
+        sys.stderr.write(f"pyahead: error: {error}\n")
+        return int(ExitCode.INVALID_INPUT)
+    except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
+        sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
+        return int(ExitCode.INTERNAL_ERROR)
+    return int(report.exit_code)
+
+
 def _selected_registry_source(arguments: Namespace) -> Path | None:
     path = cast("Path | None", arguments.registry_path)
     option = cast("Path | None", arguments.registry_option)
@@ -551,6 +639,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     if arguments.command == "check":
         result = _run_check(arguments)
+    elif arguments.command == "dependencies":
+        result = _run_dependencies(arguments)
     elif arguments.command == "baseline":
         if arguments.baseline_command is None:
             arguments.command_parser.print_help()

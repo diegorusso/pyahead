@@ -52,6 +52,112 @@ checks distinguish corroboration from location-only or conflicting
 associations. Observed warnings do not alter static gate counts or silently
 override static inference.
 
+## Explicit dependency-evidence boundary
+
+`pyahead dependencies` is opt-in and separate from the default static scan.
+Direct metadata inspection opens only root-bounded regular files, limits input
+and metadata sizes, preflights ZIP member counts and declared expanded sizes,
+preflights physical tar headers and control-record sizes, and then streams tar
+members through a bounded decompressor without retaining the member list. All
+archive reads in one inspection share a 1 GiB expanded-byte budget, including
+both tar preflight and metadata passes. ZIP LZMA is rejected before decoder
+construction because the standard-library path cannot impose a dictionary-memory
+limit; stored, deflated, and BZIP2 members remain supported.
+Multi-disk and ZIP64 containers are conservatively retained as incomplete
+evidence. One run accepts at most 256 metadata inputs and 512 MiB in aggregate;
+each input is capped at 128 MiB and its selected metadata at 2 MiB. It reads a
+wheel's `METADATA` or the single identity-matching top-level
+`<name>-<version>/PKG-INFO` from an sdist without extracting files. It does not
+import the package, execute its configuration, or invoke a build backend.
+Compatibility-tag inputs are capped at 256 compressed values and 4,096 expanded
+tags, with the Cartesian product checked before filename, configuration, or
+wheel-header parsing expands it.
+Root marker evaluation accepts at most 256 configured extras, and each metadata
+artifact accepts at most 256 `Provides-Extra` fields before transitive-extra
+propagation. Each configured or metadata requirement may request at most 256
+extras. Across one run, inspected artifacts may contain at most 100,000
+`Requires-Dist` fields and the declared target, extra, tag, artifact, and
+requirement products may require at most 1,000,000 dependency-evaluation work
+units. Statically excessive products fail before target evaluation or resolver
+execution, and one shared runtime counter also bounds repeated marker
+evaluations, artifact and constraint comparisons, tag matching, and
+transitive-extra propagation.
+The dependency TOML document is read with a 2 MiB pre-parse cap.
+Configuration and metadata reads traverse from a pinned repository root through
+directory descriptors on POSIX and reparse-safe relative handles on Windows;
+ancestor or leaf binding changes fail closed. POSIX reads also compare
+mutation-sensitive file attributes before and after reading, while Windows leaf
+handles deny concurrent write sharing, so ordinary in-place changes fail closed.
+Terminal-facing Core Metadata fields, including every `Requires-Dist`, reject
+control characters and oversized values before they enter a report.
+Standalone Core Metadata does not establish artifact availability by itself and
+remains unverified for that dimension.
+For sdists and provenance-unknown standalone metadata using Core Metadata older
+than 2.2, `Requires-Python`, `Requires-Dist`, and `Provides-Extra` are treated as
+implicitly dynamic under the legacy metadata rules. Legacy wheel metadata is
+already a built-artifact declaration and remains final.
+
+Wheel availability additionally requires a matching top-level `.dist-info`
+identity, `WHEEL` and `RECORD`, a supported major `Wheel-Version`, a boolean
+`Root-Is-Purelib`, and agreement between internal and filename tags. Core
+Metadata direct URL dependencies are incomplete evidence and stop resolver
+execution; they are never passed through to `uv`.
+
+The optional `uv` resolver runs as a subprocess in a fresh temporary directory.
+The executable must resolve to a regular file outside the scanned repository;
+repository content is never accepted as the resolver. Configured artifacts must
+also have basenames that remain unique after Unicode NFC normalization and
+case-folding before they are flattened into the temporary wheelhouse.
+It receives a small environment allowlist, ignores project sources and ambient
+configuration and credentials, disables source builds, keyring access, and
+Python downloads, and uses an isolated home, temporary area, and cache. Offline
+mode is the default and supplies `--offline`, `--no-index`, and a temporary
+wheelhouse containing only configured artifacts whose bytes are revalidated
+against the directly inspected SHA-256 digest. Online use requires an explicit
+switch and an explicit HTTP(S) index URL without embedded credentials, query,
+or fragment. Do not place credentials in repository configuration;
+authenticated index design is deferred. Every resolver process has a finite
+explicit deadline capped at 86,400 seconds. Stdout and stderr are separately
+capped at 4 MiB; the reader accepts at most 8 MiB from the resolver result and
+10,000 package
+records. The result read limit is not an operating-system quota on temporary
+disk growth while `uv` is running; use a disk-limited execution environment
+when an online index is not fully trusted. PyAhead isolates the resolver tree in
+a dedicated POSIX process group or Windows Job Object and terminates descendants
+during cleanup. Windows resolver processes remain suspended until Job assignment
+has succeeded. A timeout, missing resolver, output
+overflow, unclosed output pipe, undecodable output, unrecognized resolver
+failure, or malformed output is incomplete evidence, never a compatibility
+failure. Stored diagnostics remove control characters and isolated-workspace
+paths, as well as host-interpreter fallback warnings that are not target
+evidence.
+Only when offline resolution is requested for exact application pins can the
+closed wheelhouse prove that a package, requested version, or target-compatible
+wheel is unavailable. Metadata-only gaps and library artifact gaps remain
+unverified because the configured sample may not be a complete platform
+inventory. A library `==` pin without an explicit local segment also admits
+unseen local versions and cannot make one sampled exclusion definitive.
+Resolver-selected packages prove requested extras only when the exact inspected
+metadata declares them. Online index lookup failures also remain unverified. A
+successful result must contain exactly the package closure reachable from the
+active configured roots; SHA-bound but unreachable packages make it incomplete.
+An empty closure remains valid when all configured requirement markers are
+inactive. A public-version application pin such as `==1.0` remains unverified
+when multiple supplied local variants satisfy it without exact resolver
+selection. A solver failure is reported only for reviewed unsatisfiable grammar
+from a recognized exact `uv` version after availability and Python-version
+diagnostics are excluded. It must corroborate independently contradictory exact
+or simple bounded active constraints. Uncorroborated transitive solver text and
+generic "no solution" text are insufficient.
+
+Resolver execution reads third-party wheel metadata as part of solving but
+cannot build source distributions. When network use is enabled, it may contact
+the configured index plus artifact or redirect hosts referenced by that index;
+the index option is not a host-level egress allowlist. Reports record package
+names, exact versions, artifact hashes, dependency declarations, target
+platform values, resolver version, and bounded failure text; treat them as
+repository-sensitive CI data.
+
 ## Network-visible commands
 
 The following M6 operations can access a network outside `pyahead check`:
@@ -60,6 +166,12 @@ The following M6 operations can access a network outside `pyahead check`:
 - `uv sync`, `uv build`, or publication when required artifacts are not cached;
 - operator-owned Git acquisition of public corpus repositories;
 - explicit release publication to a package index or Git hosting service.
+
+The M8 `pyahead dependencies` resolver can also access its explicitly configured
+package index, plus artifact or redirect hosts selected by that index, only when
+network use is enabled. The index option is not an egress allowlist. Direct
+metadata inspection and offline dependency resolution do not access an index or
+follow metadata direct URLs.
 
 `scripts/install_smoke.py --offline` sets supported installer offline controls,
 inherits only the caller's already locked runtime dependencies, installs the
