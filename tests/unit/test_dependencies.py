@@ -1685,6 +1685,7 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
     artifacts, _issues = inspect_dependency_metadata((wheel,), root=tmp_path)
     calls = 0
     environments: list[dict[str, str]] = []
+    decoders: list[tuple[object, object]] = []
 
     def fake_run(
         command: list[str], **kwargs: object
@@ -1692,6 +1693,7 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
         nonlocal calls
         calls += 1
         environments.append(cast("dict[str, str]", kwargs["env"]))
+        decoders.append((kwargs.get("encoding"), kwargs.get("errors")))
         if calls == 1:
             return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
         output = Path(command[command.index("--output-file") + 1])
@@ -1717,6 +1719,7 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
     assert set(environments[1]).isdisjoint({"PIP_INDEX_URL", "UV_INDEX_URL"})
     assert "pyahead-resolver-" in environments[1]["HOME"]
     assert environments[1]["UV_NO_CONFIG"] == "1"
+    assert decoders == [("utf-8", "strict"), ("utf-8", "strict")]
 
 
 def test_resolver_provenance_names_only_the_selected_platform_artifact(
@@ -2786,6 +2789,18 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
     )
     assert result.status is ResolutionStatus.UNVERIFIED
     assert "execute" in result.reason
+
+    def decoding_error(*_args: object, **_kwargs: object) -> None:
+        codec = "utf-8"
+        reason = "invalid start byte"
+        raise UnicodeDecodeError(codec, b"\xff", 0, 1, reason)
+
+    monkeypatch.setattr(dependency_module.subprocess, "run", decoding_error)
+    result = UvResolverAdapter().resolve(
+        _configuration(resolve=True, network=True), _target(), (), root=tmp_path
+    )
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert "decode" in result.reason
 
 
 @pytest.mark.parametrize("output", ["not a requirement", "demo>=1"])

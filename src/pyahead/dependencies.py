@@ -3304,7 +3304,8 @@ def _resolve_in_workspace(
             cwd=workspace.directory,
             env=environment,
             stdin=subprocess.DEVNULL,
-            text=True,
+            encoding="utf-8",
+            errors="strict",
             timeout=configuration.timeout_seconds,
         )
         version = (
@@ -3349,7 +3350,8 @@ def _resolve_in_workspace(
             cwd=workspace.directory,
             env=environment,
             stdin=subprocess.DEVNULL,
-            text=True,
+            encoding="utf-8",
+            errors="strict",
             timeout=configuration.timeout_seconds,
         )
     except subprocess.TimeoutExpired:
@@ -3364,8 +3366,10 @@ def _resolve_in_workspace(
                 "remains unverified"
             ),
         )
-    except OSError:
-        return _resolver_unverified("unable to execute the isolated resolver", version)
+    except (OSError, UnicodeError):
+        return _resolver_unverified(
+            "unable to execute or decode isolated resolver output", version
+        )
     return _interpret_resolver_process(
         process,
         version=version,
