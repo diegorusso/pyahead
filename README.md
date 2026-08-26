@@ -13,10 +13,12 @@ from selected CPython sources; it does not cover arbitrary runtime behavior,
 dependencies, C extensions, reflection, generated code, or every Python API.
 Run the repository's tests on every supported target interpreter as well.
 
-The alpha does not execute target code, install target dependencies, infer
-general receiver types, resolve arbitrary dynamic imports, access the network,
-or send telemetry. Version helpers, user-defined constants, patch-level guards,
-and general control flow outside the documented lexical grammar remain unknown.
+The default static command does not execute target code, install target
+dependencies, infer general receiver types, resolve arbitrary dynamic imports,
+access the network, or send telemetry. Dependency evidence is a separate opt-in
+command with explicit targets, network policy, and deadlines. Version helpers,
+user-defined constants, patch-level guards, and general control flow outside
+the documented lexical grammar remain unknown.
 Skipped, unreadable, oversized, unparseable, or over-limit source entries make
 analysis incomplete rather than silently clean. See
 [all documented limitations](docs/usage.md#limitations).
@@ -25,18 +27,25 @@ analysis incomplete rather than silently clean. See
 
 Version `0.1.0a2` is the first public-alpha candidate. It provides deterministic
 text, JSON, and SARIF 2.1.0 reports; strict project configuration; baselines and
-rule-specific suppressions; version-guard and typing-context reachability; and a
-source-linked, coverage-audited CPython registry.
+rule-specific suppressions; version-guard and typing-context reachability; a
+source-linked, coverage-audited CPython registry; opt-in pytest warning
+evidence; and opt-in dependency metadata and isolated-resolution evidence.
 
 PyAhead supports host Python 3.11 through 3.14 on Linux, macOS, and Windows.
 The host interpreter is independent of the baseline and horizon Python versions
 being assessed. Python 3.15 prerelease CI is advisory until support is claimed.
 
-After Gate C, the first opt-in dynamic provider can collect deprecation warnings
-with an explicit pytest plugin in the repository owner's CI, then merge its
-versioned artifact with `pyahead check --evidence`. Observed warnings stay
-separate from static inference; unmatched and different-commit evidence remains
-visible. PyAhead does not run those tests in a hosted scanner.
+The first opt-in dynamic provider collects deprecation warnings with an explicit
+pytest plugin in the repository owner's CI, then merges its versioned artifact
+with `pyahead check --evidence`. Observed warnings stay separate from static
+inference; unmatched and different-commit evidence remains visible. PyAhead
+does not run those tests in a hosted scanner.
+
+`pyahead dependencies` separately inspects supplied wheel, source-distribution,
+or Core Metadata files without executing build backends. An optional isolated
+`uv` adapter has explicit offline/online and timeout controls. Dependency
+results distinguish declared incompatibility, failed resolution, missing target
+wheels, and incomplete evidence.
 
 Gate B is exercised by repository tests and clean wheel/sdist installation.
 Gate C requires evidence from 100 active public repositories, at least 95%

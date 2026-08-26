@@ -52,6 +52,55 @@ checks distinguish corroboration from location-only or conflicting
 associations. Observed warnings do not alter static gate counts or silently
 override static inference.
 
+## Explicit dependency-evidence boundary
+
+`pyahead dependencies` is opt-in and separate from the default static scan.
+Direct metadata inspection opens only root-bounded regular files, limits input
+and metadata sizes, preflights ZIP member counts and declared expanded sizes,
+preflights physical tar headers and control-record sizes, and then streams tar
+members through a bounded decompressor without retaining the member list.
+Multi-disk and ZIP64 containers are conservatively retained as incomplete
+evidence. It reads a
+wheel's `METADATA` or an sdist's `PKG-INFO` without extracting files. It does not
+import the package, execute its configuration, or invoke a build backend.
+Standalone Core Metadata does not establish artifact availability by itself and
+remains unverified for that dimension.
+
+Wheel availability additionally requires a matching top-level `.dist-info`
+identity, `WHEEL` and `RECORD`, and agreement between internal and filename
+tags. Core Metadata direct URL dependencies are incomplete evidence and stop
+resolver execution; they are never passed through to `uv`.
+
+The optional `uv` resolver runs as a subprocess in a fresh temporary directory.
+It receives a small environment allowlist, ignores project sources and ambient
+configuration and credentials, disables source builds, keyring access, and
+Python downloads, and uses an isolated home, temporary area, and cache. Offline
+mode is the default and supplies `--offline`, `--no-index`, and a temporary
+wheelhouse containing only configured artifacts whose bytes are revalidated
+against the directly inspected SHA-256 digest. Online use requires an explicit
+switch and an explicit HTTP(S) index URL without embedded credentials, query,
+or fragment. Do not place credentials in repository configuration;
+authenticated index design is deferred. Every resolver process has a finite
+explicit deadline. A timeout, missing resolver, unrecognized resolver failure,
+or malformed output is incomplete evidence, never a compatibility failure.
+For exact application pins only, the closed offline wheelhouse can prove that a
+package, requested version, or target-compatible wheel is unavailable. Library
+artifact gaps remain unverified even for exact constraints or metadata-only
+inspection because the configured sample is not a complete platform inventory.
+Resolver-selected packages prove requested extras only when the exact inspected
+metadata declares them. Online index lookup failures also remain unverified. A
+solver failure is reported only when a recognized exact `uv` version
+corroborates independently contradictory active constraints; generic "no
+solution" text is insufficient.
+
+Resolver execution reads third-party wheel metadata as part of solving but
+cannot build source distributions. When network use is enabled, it may contact
+the configured index plus artifact or redirect hosts referenced by that index;
+the index option is not a host-level egress allowlist. Reports record package
+names, exact versions, artifact hashes, dependency declarations, target
+platform values, resolver version, and bounded failure text; treat them as
+repository-sensitive CI data.
+
 ## Network-visible commands
 
 The following M6 operations can access a network outside `pyahead check`:
@@ -60,6 +109,12 @@ The following M6 operations can access a network outside `pyahead check`:
 - `uv sync`, `uv build`, or publication when required artifacts are not cached;
 - operator-owned Git acquisition of public corpus repositories;
 - explicit release publication to a package index or Git hosting service.
+
+The M8 `pyahead dependencies` resolver can also access its explicitly configured
+package index, plus artifact or redirect hosts selected by that index, only when
+network use is enabled. The index option is not an egress allowlist. Direct
+metadata inspection and offline dependency resolution do not access an index or
+follow metadata direct URLs.
 
 `scripts/install_smoke.py --offline` sets supported installer offline controls,
 inherits only the caller's already locked runtime dependencies, installs the

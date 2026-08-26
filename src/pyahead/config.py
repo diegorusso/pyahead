@@ -27,6 +27,7 @@ from pyahead.versions import InvalidPythonMinorError, PythonMinor
 _CONFIG_KEYS = frozenset(
     {
         "baseline-python",
+        "dependencies",
         "exclude",
         "fail-on",
         "horizon-python",

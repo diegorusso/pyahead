@@ -246,6 +246,165 @@ of 1,000,000 candidate checks and 200,000 emitted relationship records.
 Inputs exceeding any aggregate cap fail as invalid evidence instead of risking
 unbounded memory use or silently dropping observations.
 
+### Dependency compatibility evidence
+
+Dependency analysis is a separate opt-in command. It does not change static
+findings or make `pyahead check` network-visible:
+
+```console
+pyahead dependencies --format json --output pyahead-dependencies.json
+```
+
+Configuration must explicitly distinguish an application from a library.
+Applications use exact `==` pins because the configured lock set and deployment
+target are authoritative. Libraries may use ranges and repeat targets to
+describe their supported matrix; one library lock is not treated as universal
+evidence.
+
+```toml
+[tool.pyahead.dependencies]
+project-kind = "application"
+requirements = ["httpx==0.28.1"]
+extras = []
+metadata = [
+  "wheelhouse/httpx-0.28.1-py3-none-any.whl",
+]
+resolve = false
+network = false
+timeout-seconds = 30
+resolver = "uv"
+
+[[tool.pyahead.dependencies.targets]]
+name = "cpython-3.13-linux-x86_64"
+python-full-version = "3.13.7"
+implementation-name = "cpython"
+implementation-version = "3.13.7"
+os-name = "posix"
+sys-platform = "linux"
+platform-machine = "x86_64"
+platform-python-implementation = "CPython"
+platform-system = "Linux"
+platform-release = ""
+platform-version = ""
+compatible-tags = [
+  "cp313-cp313-manylinux_2_17_x86_64",
+  "py3-none-any",
+]
+resolver-platform = "x86_64-manylinux_2_17"
+```
+
+Every marker value comes from the declared target. PyAhead does not fill marker
+fields from the host running the command. Each result names the exact package
+version, metadata version, repository-relative artifact path, archive metadata
+member, SHA-256 digest, `Requires-Python`, evaluated `Requires-Dist` entries, and
+metadata artifact IDs used for the conclusion.
+
+An active configured requirement is joined to evidence by normalized package
+name, requested extras, and version constraint. Missing names, wrong application
+pins, out-of-range library versions, and unprovided extras are incomplete
+evidence unless a complete resolver result accounts for the requirement using
+the exact selected metadata. A resolver-selected base distribution does not
+prove an extra that its `Provides-Extra` fields do not declare.
+Unrelated supplied metadata remains listed but is not assessed as if it were a
+declared dependency.
+
+Every active `Requires-Dist` entry is also reported with the exact parent
+package version, application pins, inspected metadata IDs, and resolver-selected
+versions used to cover it. In application mode, the entry must match one
+simultaneously consistent exact pin plus inspected metadata, or a complete
+resolver result. In library mode, a supplied artifact set is not a universal
+solve: active transitive requirements require complete resolver evidence.
+Requested dependency extras are propagated through inspected metadata to a
+fixed point, so an optional dependency of a transitive extra remains visible.
+The configured `extras` list supplies the root project's marker context; it
+does not implicitly request the same-named extra from every dependency. Package
+extras activate only through an explicit `name[extra]` requirement. With a
+complete resolution, PyAhead follows the reachable selected dependency
+closure using only each resolver package's exact `metadata_used` artifact IDs;
+unselected same-version artifacts cannot contribute dependency edges.
+Missing transitive packages and conflicting simultaneously active constraints
+make the report incomplete.
+
+Direct inspection accepts wheels, `.tar.gz`/`.zip` source distributions with a
+single `PKG-INFO`, and standalone Core Metadata files. It reads archive members
+as data, never extracts them, imports package code, or invokes a PEP 517 build
+backend. A matching wheel is `available`. When no declared target tag matches,
+the result is `artifact-unavailable`; a supplied sdist records
+`source-build-possible` without attempting or claiming that the source builds.
+`Requires-Python` exclusion is reported separately as `declared-incompatible`.
+An sdist or standalone metadata field declared `Dynamic` is not treated as a
+final compatibility declaration. A wheel that retains source-only `Dynamic`
+fields is malformed evidence and is reported incomplete.
+
+Compressed input size, ZIP central-directory member counts and declared
+expanded sizes, physical tar headers and control records, incrementally
+decompressed tar bytes, logical tar member counts, retained tar member objects,
+and the selected metadata payload are bounded before they can become unbounded
+object graphs or decompression work. Multi-disk and ZIP64 containers are
+reported as incomplete unsupported evidence.
+
+Wheel availability additionally requires a matching top-level `.dist-info`
+directory, `WHEEL` and `RECORD` members, and exact agreement between the
+filename and internal `Tag` fields. A direct URL in `Requires-Dist` is rejected
+as incomplete evidence before resolver discovery; configured dependency
+metadata cannot introduce an undeclared `file:`, HTTP, or HTTPS source.
+
+Resolver use must be requested with `resolve = true` or `--resolve`. Offline is
+the default. The adapter copies only the configured artifacts into a temporary
+wheelhouse, disables indexes, caches, configuration discovery, source builds,
+and Python downloads, and records the exact `uv` version and selected package
+versions. Online resolution additionally requires both `network = true` and an
+explicit credential-free `index-url`; `--network` cannot fall back to an
+ambient index. `--no-network` can override and disable configured online use.
+An index URL may be predeclared while `network = false`; it remains disabled
+unless configuration or the explicit CLI override also enables network use.
+Each resolver process has the finite `timeout-seconds` deadline, overridable by
+`--timeout-seconds`.
+
+The `uv` adapter resolves only canonical CPython targets whose implementation,
+platform marker fields, compatible tags, and `resolver-platform` agree. A PyPy
+target or non-empty platform release/version marker is explicitly unverified by
+the adapter rather than resolved with host defaults. Contradictions among the
+declared Python version, implementation, platform markers, compatible tags, and
+`resolver-platform` are rejected before either direct assessment or resolution.
+Successful local resolution parses `uv`'s `pylock.toml` selection and associates
+only the exact selected wheel's inspected artifact ID. An online selection
+without directly inspected exact-distribution provenance remains unverified; it
+is never attributed to a same-name/version local artifact. Online resolution
+may contact artifact or redirect hosts selected by the configured index; the
+index URL is not a host-level egress allowlist.
+
+For an application with exact pins, the revalidated offline wheelhouse is a
+closed artifact inventory. A missing package, missing pinned version, or lack
+of a target-compatible supplied wheel is therefore complete
+`artifact-unavailable` evidence. A configured library artifact sample is not a
+complete platform inventory, even for an exact requirement or in metadata-only
+mode, so an unsuitable sampled artifact remains `unverified`. Exact-version
+`Requires-Python` exclusions remain definitive. When complete resolution
+selects another compatible artifact, the unsuitable sample does not override
+that result. Resolver text is not enough by itself to prove a conflict:
+`resolution-failed` requires a recognized exact `uv` version and independently
+contradictory active constraints. Missing or unreachable distributions from an
+online index remain `unverified` operational evidence.
+
+The result categories are intentionally not interchangeable:
+
+- `declared-incompatible`: exact metadata `Requires-Python` excludes the target;
+- `resolution-failed`: versioned resolver evidence confirms independently
+  contradictory active constraints;
+- `artifact-unavailable`: a closed application wheelhouse contains no supplied
+  package, pinned version, or wheel matching the declared target tags, while a
+  source build may or may not remain possible;
+- `unverified`: metadata, resolver identity, or resolver execution was
+  unavailable; and
+- `timed-out`: the deadline expired, producing incomplete evidence rather than
+  a compatibility failure.
+
+Dependency exit code 1 means complete incompatible dependency evidence was
+found. Exit code 3 means some dependency evidence is incomplete, including a
+timeout or unverified metadata, and takes precedence over compatibility
+findings. There is no dependency equivalent of `--allow-incomplete`.
+
 Exit codes are stable:
 
 | Code | Meaning |
