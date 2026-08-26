@@ -1,0 +1,1024 @@
+{
+  "$defs": {
+    "artifact_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "assessment": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "compatible"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "artifact_availability": {
+                "const": "available"
+              },
+              "requires_python_status": {
+                "enum": [
+                  "compatible",
+                  "unspecified"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "declared-incompatible"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "requires_python_status": {
+                "const": "incompatible"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "artifact-unavailable"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "artifact_availability": {
+                "enum": [
+                  "source-build-possible",
+                  "unavailable"
+                ]
+              },
+              "requires_python_status": {
+                "enum": [
+                  "compatible",
+                  "unspecified"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "artifact_availability": {
+                "const": "source-build-possible"
+              }
+            },
+            "required": [
+              "artifact_availability"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source_build_possible": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "artifact_availability": {
+                "enum": [
+                  "unavailable",
+                  "unverified"
+                ]
+              }
+            },
+            "required": [
+              "artifact_availability"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source_build_possible": {
+                "const": false
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "applicable_requirements": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_availability": {
+          "enum": [
+            "available",
+            "source-build-possible",
+            "unavailable",
+            "unverified"
+          ],
+          "type": "string"
+        },
+        "metadata_used": {
+          "items": {
+            "$ref": "#/$defs/artifact_id"
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "type": "array"
+        },
+        "package": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requires_python_status": {
+          "enum": [
+            "compatible",
+            "incompatible",
+            "unspecified",
+            "unverified"
+          ],
+          "type": "string"
+        },
+        "source_build_possible": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "artifact-unavailable",
+            "compatible",
+            "declared-incompatible",
+            "unverified"
+          ],
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "applicable_requirements",
+        "artifact_availability",
+        "metadata_used",
+        "package",
+        "reason",
+        "requires_python_status",
+        "source_build_possible",
+        "status",
+        "version"
+      ],
+      "type": "object"
+    },
+    "controls": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "index_url": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "network": {
+                "const": true
+              }
+            },
+            "required": [
+              "network"
+            ]
+          },
+          "then": {
+            "properties": {
+              "index_url": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "index_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "network": {
+          "type": "boolean"
+        },
+        "resolve": {
+          "type": "boolean"
+        },
+        "resolver": {
+          "const": "uv",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "type": "number"
+        }
+      },
+      "required": [
+        "index_url",
+        "network",
+        "resolve",
+        "resolver",
+        "timeout_seconds"
+      ],
+      "type": "object"
+    },
+    "declared_requirement": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "applies": {
+                "const": true
+              }
+            },
+            "required": [
+              "applies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "matching_extras": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "applies": {
+                "const": false
+              }
+            },
+            "required": [
+              "applies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "matching_extras": {
+                "maxItems": 0
+              },
+              "matching_metadata": {
+                "maxItems": 0
+              },
+              "resolved_versions": {
+                "maxItems": 0
+              },
+              "verified": {
+                "const": true
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "applies": {
+          "type": "boolean"
+        },
+        "matching_extras": {
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "type": "array"
+        },
+        "matching_metadata": {
+          "items": {
+            "$ref": "#/$defs/artifact_id"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requirement": {
+          "type": "string"
+        },
+        "resolved_versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applies",
+        "matching_extras",
+        "matching_metadata",
+        "reason",
+        "requirement",
+        "resolved_versions",
+        "verified"
+      ],
+      "type": "object"
+    },
+    "metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/artifact_id"
+        },
+        "canonical_name": {
+          "type": "string"
+        },
+        "dynamic": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "core-metadata",
+            "sdist",
+            "wheel"
+          ],
+          "type": "string"
+        },
+        "metadata_path": {
+          "type": "string"
+        },
+        "metadata_version": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "provides_extra": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requires_dist": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requires_python": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/artifact_id"
+        },
+        "version": {
+          "type": "string"
+        },
+        "wheel_tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "canonical_name",
+        "dynamic",
+        "kind",
+        "metadata_path",
+        "metadata_version",
+        "name",
+        "path",
+        "provides_extra",
+        "requires_dist",
+        "requires_python",
+        "sha256",
+        "version",
+        "wheel_tags"
+      ],
+      "type": "object"
+    },
+    "metadata_issue": {
+      "additionalProperties": false,
+      "properties": {
+        "incomplete": {
+          "const": true,
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "incomplete",
+        "message",
+        "path"
+      ],
+      "type": "object"
+    },
+    "resolved_package": {
+      "additionalProperties": false,
+      "properties": {
+        "metadata_used": {
+          "items": {
+            "$ref": "#/$defs/artifact_id"
+          },
+          "uniqueItems": true,
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "metadata_used",
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "resolution": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not-requested"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "complete": {
+                "const": true
+              },
+              "packages": {
+                "maxItems": 0
+              },
+              "resolver_version": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "complete": {
+                "const": true
+              },
+              "packages": {
+                "items": {
+                  "properties": {
+                    "metadata_used": {
+                      "maxItems": 1,
+                      "minItems": 1
+                    }
+                  }
+                }
+              },
+              "resolver_version": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "artifact-unavailable"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "complete": {
+                "const": true
+              },
+              "packages": {
+                "maxItems": 0
+              },
+              "resolver_version": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "resolution-failed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "complete": {
+                "const": true
+              },
+              "packages": {
+                "maxItems": 0
+              },
+              "resolver_version": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "timed-out"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "complete": {
+                "const": false
+              },
+              "packages": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unverified"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "complete": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "packages": {
+                "minItems": 1
+              },
+              "status": {
+                "const": "unverified"
+              }
+            },
+            "required": [
+              "packages",
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolver_version": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "packages": {
+          "items": {
+            "$ref": "#/$defs/resolved_package"
+          },
+          "uniqueItems": true,
+          "type": "array"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "resolver": {
+          "type": "string"
+        },
+        "resolver_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "artifact-unavailable",
+            "not-requested",
+            "resolution-failed",
+            "succeeded",
+            "timed-out",
+            "unverified"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "complete",
+        "packages",
+        "reason",
+        "resolver",
+        "resolver_version",
+        "status"
+      ],
+      "type": "object"
+    },
+    "target": {
+      "additionalProperties": false,
+      "properties": {
+        "compatible_tags": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "type": "array"
+        },
+        "implementation_name": {
+          "type": "string"
+        },
+        "implementation_version": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "os_name": {
+          "type": "string"
+        },
+        "platform_machine": {
+          "type": "string"
+        },
+        "platform_python_implementation": {
+          "type": "string"
+        },
+        "platform_release": {
+          "type": "string"
+        },
+        "platform_system": {
+          "type": "string"
+        },
+        "platform_version": {
+          "type": "string"
+        },
+        "python_full_version": {
+          "type": "string"
+        },
+        "python_version": {
+          "type": "string"
+        },
+        "resolver_platform": {
+          "type": "string"
+        },
+        "sys_platform": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "compatible_tags",
+        "implementation_name",
+        "implementation_version",
+        "name",
+        "os_name",
+        "platform_machine",
+        "platform_python_implementation",
+        "platform_release",
+        "platform_system",
+        "platform_version",
+        "python_full_version",
+        "python_version",
+        "resolver_platform",
+        "sys_platform"
+      ],
+      "type": "object"
+    },
+    "target_result": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "resolution": {
+                "properties": {
+                  "packages": {
+                    "maxItems": 0
+                  },
+                  "status": {
+                    "const": "succeeded"
+                  }
+                },
+                "required": [
+                  "packages",
+                  "status"
+                ]
+              }
+            },
+            "required": [
+              "resolution"
+            ]
+          },
+          "then": {
+            "properties": {
+              "assessments": {
+                "maxItems": 0
+              },
+              "declared_requirements": {
+                "items": {
+                  "properties": {
+                    "applies": {
+                      "const": false
+                    }
+                  },
+                  "required": [
+                    "applies"
+                  ]
+                }
+              },
+              "transitive_requirements": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "assessments": {
+          "items": {
+            "$ref": "#/$defs/assessment"
+          },
+          "uniqueItems": true,
+          "type": "array"
+        },
+        "declared_requirements": {
+          "items": {
+            "$ref": "#/$defs/declared_requirement"
+          },
+          "type": "array"
+        },
+        "resolution": {
+          "$ref": "#/$defs/resolution"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "transitive_requirements": {
+          "items": {
+            "$ref": "#/$defs/transitive_requirement"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "assessments",
+        "declared_requirements",
+        "resolution",
+        "target",
+        "transitive_requirements"
+      ],
+      "type": "object"
+    },
+    "transitive_requirement": {
+      "additionalProperties": false,
+      "properties": {
+        "locked_versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "matching_metadata": {
+          "items": {
+            "$ref": "#/$defs/artifact_id"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "required_by": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requirement": {
+          "type": "string"
+        },
+        "resolved_versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "locked_versions",
+        "matching_metadata",
+        "reason",
+        "required_by",
+        "requirement",
+        "resolved_versions",
+        "verified"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/diegorusso/pyahead/blob/main/docs/schema/dependency-report-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "targets": {
+            "items": {
+              "properties": {
+                "resolution": {
+                  "properties": {
+                    "status": {
+                      "not": {
+                        "const": "not-requested"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "controls": {
+            "properties": {
+              "resolve": {
+                "const": false
+              }
+            },
+            "required": [
+              "resolve"
+            ]
+          }
+        },
+        "required": [
+          "controls"
+        ]
+      },
+      "then": {
+        "properties": {
+          "targets": {
+            "items": {
+              "properties": {
+                "resolution": {
+                  "properties": {
+                    "status": {
+                      "const": "not-requested"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "controls": {
+      "$ref": "#/$defs/controls"
+    },
+    "extras": {
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "type": "array"
+    },
+    "metadata": {
+      "items": {
+        "$ref": "#/$defs/metadata"
+      },
+      "uniqueItems": true,
+      "type": "array"
+    },
+    "metadata_issues": {
+      "items": {
+        "$ref": "#/$defs/metadata_issue"
+      },
+      "type": "array"
+    },
+    "project_kind": {
+      "enum": [
+        "application",
+        "library"
+      ],
+      "type": "string"
+    },
+    "requirements": {
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "targets": {
+      "items": {
+        "$ref": "#/$defs/target_result"
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "controls",
+    "extras",
+    "metadata",
+    "metadata_issues",
+    "project_kind",
+    "requirements",
+    "schema_version",
+    "targets"
+  ],
+  "title": "PyAhead dependency report schema version 1",
+  "type": "object"
+}

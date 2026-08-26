@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
+import shutil
 import struct
 import subprocess
+import sys
 import tarfile
+import time
 import tomllib
 import zipfile
 from copy import deepcopy
@@ -15,7 +19,9 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from packaging.requirements import Requirement
 
+import pyahead._windows_output as windows_output_module
 import pyahead.dependencies as dependency_module
 from pyahead.config import load_project_configuration
 from pyahead.dependencies import (
@@ -40,12 +46,17 @@ from pyahead.dependencies import (
 from pyahead.model import ConfigurationError, ExitCode
 
 if TYPE_CHECKING:
+    import threading
     from collections.abc import Sequence
+    from types import FrameType
 
 _ARTIFACT_COUNT = 2
+_EXPANDED_TAG_COUNT = 300
 _RESOLVER_PROCESS_COUNT = 2
 _SHA256_HEX_LENGTH = 64
 _TIMEOUT_SECONDS = 2.5
+_PROCESS_TREE_DETECTION_SECONDS = 1.7
+_PROCESS_TREE_BOUND_SECONDS = 3.0
 _UNSATISFIABLE_DIAGNOSTIC = (
     "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
     "  ╰─▶ Because you require demo==1.0 and demo==2.0, your requirements "
@@ -71,16 +82,21 @@ _MISSING_CONFLICT_DISTRIBUTION_DIAGNOSTIC = (
 )
 
 
-def _metadata(
+def _metadata(  # noqa: PLR0913
     *,
     identity: tuple[str, str] = ("demo", "1.0"),
+    metadata_version: str = "2.4",
     requires_python: str | None = ">=3.12",
     requires_dist: Sequence[str] = (),
     provides_extra: Sequence[str] = (),
     dynamic: Sequence[str] = (),
 ) -> bytes:
     name, version = identity
-    lines = ["Metadata-Version: 2.4", f"Name: {name}", f"Version: {version}"]
+    lines = [
+        f"Metadata-Version: {metadata_version}",
+        f"Name: {name}",
+        f"Version: {version}",
+    ]
     if requires_python is not None:
         lines.append(f"Requires-Python: {requires_python}")
     lines.extend(f"Requires-Dist: {item}" for item in requires_dist)
@@ -108,10 +124,12 @@ def _pylock(*packages: tuple[str, str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _wheel(
+def _wheel(  # noqa: PLR0913
     path: Path,
     *,
     tag: str = "py3-none-any",
+    metadata_version: str = "2.4",
+    core_version: str | None = None,
     requires_python: str | None = ">=3.12",
     requires_dist: Sequence[str] = (),
     provides_extra: Sequence[str] = (),
@@ -123,7 +141,8 @@ def _wheel(
         archive.writestr(
             f"{dist_info}/METADATA",
             _metadata(
-                identity=(name, version),
+                identity=(name, core_version or version),
+                metadata_version=metadata_version,
                 requires_python=requires_python,
                 requires_dist=requires_dist,
                 provides_extra=provides_extra,
@@ -131,7 +150,12 @@ def _wheel(
         )
         archive.writestr(
             f"{dist_info}/WHEEL",
-            f"Wheel-Version: 1.0\nTag: {tag}\n",
+            (
+                "Wheel-Version: 1.0\n"
+                "Generator: pyahead-test\n"
+                "Root-Is-Purelib: true\n"
+                f"Tag: {tag}\n"
+            ),
         )
         archive.writestr(f"{dist_info}/RECORD", "")
 
@@ -140,11 +164,13 @@ def _sdist(
     path: Path,
     *,
     requires_python: str | None = ">=3.12",
+    metadata_version: str = "2.4",
     dynamic: Sequence[str] = (),
 ) -> None:
     name, version = path.name.removesuffix(".tar.gz").rsplit("-", maxsplit=1)
     payload = _metadata(
         identity=(name, version),
+        metadata_version=metadata_version,
         requires_python=requires_python,
         dynamic=dynamic,
     )
@@ -189,12 +215,12 @@ def _target(
         implementation_version=python,
         os_name="nt" if sys_platform == "win32" else "posix",
         sys_platform=sys_platform,
-        platform_machine="x86_64",
+        platform_machine="AMD64" if sys_platform == "win32" else "x86_64",
         platform_python_implementation="CPython",
         platform_system="Windows" if sys_platform == "win32" else "Linux",
         platform_release="",
         platform_version="",
-        compatible_tags=tags,
+        compatible_tags=tuple(sorted(tags)),
         resolver_platform=(
             "x86_64-pc-windows-msvc"
             if sys_platform == "win32"
@@ -335,7 +361,7 @@ def test_direct_requires_dist_urls_stop_before_resolver_execution(
         raise AssertionError(message)
 
     monkeypatch.setattr(dependency_module.shutil, "which", forbidden_process)
-    monkeypatch.setattr(dependency_module.subprocess, "run", forbidden_process)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", forbidden_process)
     report = collect_dependency_report(
         _configuration(metadata_paths=(wheel,), resolve=True, network=True),
         root=tmp_path,
@@ -432,7 +458,29 @@ def test_missing_wheel_is_distinct_from_source_build_possibility(
         ArtifactAvailability.SOURCE_BUILD_POSSIBLE
     )
     assert assessment.source_build_possible is True
-    assert len(assessment.metadata_used) == _ARTIFACT_COUNT
+    assert assessment.metadata_used == (
+        next(item.artifact_id for item in artifacts if item.kind is MetadataKind.SDIST),
+    )
+
+
+def test_available_wheel_preserves_supplied_source_fallback(tmp_path: Path) -> None:
+    """Wheel availability and the presence of a source fallback are independent."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    sdist = tmp_path / "demo-1.0.tar.gz"
+    _wheel(wheel)
+    _sdist(sdist)
+    artifacts, issues = inspect_dependency_metadata((wheel, sdist), root=tmp_path)
+
+    assessment = assess_dependency_metadata(
+        artifacts,
+        target=_target(),
+        extras=(),
+    )[0]
+
+    assert issues == ()
+    assert assessment.status is DependencyCompatibilityStatus.COMPATIBLE
+    assert assessment.artifact_availability is ArtifactAvailability.AVAILABLE
+    assert assessment.source_build_possible is True
 
 
 def test_malformed_metadata_is_visible_incomplete_evidence(tmp_path: Path) -> None:
@@ -575,6 +623,178 @@ def test_unrelated_extra_metadata_does_not_create_dependency_evidence(
     assert report.exit_code is ExitCode.SUCCESS
 
 
+def test_plain_application_pin_with_local_variants_is_not_a_false_finding(
+    tmp_path: Path,
+) -> None:
+    """A public-version pin cannot choose among matching local versions alone."""
+    public = tmp_path / "demo-1.0-py3-none-any.whl"
+    local = tmp_path / "demo-1.0+cpu-py3-none-any.whl"
+    _wheel(public, requires_python=">=9")
+    _wheel(local, requires_python=">=3.12")
+    configuration = _configuration(
+        metadata_paths=(public, local),
+        requirements=("demo==1.0",),
+    )
+
+    ambiguous = collect_dependency_report(configuration, root=tmp_path)
+    target = ambiguous.targets[0]
+
+    assert {item.version for item in target.assessments} == {"1.0", "1.0+cpu"}
+    assert all(
+        item.status is DependencyCompatibilityStatus.UNVERIFIED
+        for item in target.assessments
+    )
+    assert target.declared_requirements[0].verified is False
+    assert (
+        "multiple supplied package versions" in target.declared_requirements[0].reason
+    )
+    assert ambiguous.exit_code is ExitCode.INCOMPLETE
+
+    selected = collect_dependency_report(
+        replace(configuration, requirements=("demo==1.0+cpu",)),
+        root=tmp_path,
+    )
+    assert tuple(item.version for item in selected.targets[0].assessments) == (
+        "1.0+cpu",
+    )
+    assert selected.targets[0].declared_requirements[0].verified is True
+    assert selected.exit_code is ExitCode.SUCCESS
+
+
+def test_pep440_equivalent_version_spellings_are_one_direct_candidate(
+    tmp_path: Path,
+) -> None:
+    """Release spelling differences do not manufacture version ambiguity."""
+    portable = tmp_path / "demo-1.0-py3-none-any.whl"
+    specific = tmp_path / "demo-1.0.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+    _wheel(portable)
+    _wheel(specific, tag="cp312-cp312-manylinux_2_17_x86_64")
+    target = _target(tags=("py3-none-any", "cp312-cp312-manylinux_2_17_x86_64"))
+
+    report = collect_dependency_report(
+        _configuration(
+            target=target,
+            metadata_paths=(portable, specific),
+            requirements=("demo==1.0",),
+        ),
+        root=tmp_path,
+    )
+
+    assert len(report.targets[0].assessments) == 1
+    assert report.targets[0].declared_requirements[0].verified is True
+    assert report.exit_code is ExitCode.SUCCESS
+
+
+def test_simultaneous_application_pins_use_their_constraint_intersection(
+    tmp_path: Path,
+) -> None:
+    """A candidate must satisfy every active same-name application constraint."""
+    public = tmp_path / "demo-1.0-py3-none-any.whl"
+    local = tmp_path / "demo-1.0+cpu-py3-none-any.whl"
+    _wheel(public, requires_python=">=9")
+    _wheel(local, requires_python=">=3.12")
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(public, local),
+            requirements=("demo==1.0", "demo==1.0+cpu"),
+        ),
+        root=tmp_path,
+    )
+
+    assert tuple(item.version for item in report.targets[0].assessments) == ("1.0+cpu",)
+    assert all(item.verified for item in report.targets[0].declared_requirements)
+    assert report.exit_code is ExitCode.SUCCESS
+
+
+def test_transitive_application_lock_with_local_variants_is_unverified(
+    tmp_path: Path,
+) -> None:
+    """A plain lock pin cannot prove one transitive version when locals coexist."""
+    root_wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    public = tmp_path / "child-1.0-py3-none-any.whl"
+    local = tmp_path / "child-1.0+cpu-py3-none-any.whl"
+    _wheel(root_wheel, requires_dist=("child>=1",))
+    _wheel(public)
+    _wheel(local)
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(root_wheel, public, local),
+            requirements=("demo==1.0", "child==1.0"),
+        ),
+        root=tmp_path,
+    )
+
+    transitive = report.targets[0].transitive_requirements[0]
+    assert transitive.requirement == "child>=1"
+    assert set(transitive.matching_metadata) == {
+        artifact.artifact_id
+        for artifact in report.metadata
+        if artifact.canonical_name == "child"
+    }
+    assert transitive.verified is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_transitive_provenance_accepts_pep440_equivalent_version_spelling(
+    tmp_path: Path,
+) -> None:
+    """A resolver's 1.0 selection binds metadata whose canonical text is 1.0.0."""
+    root_wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    child_wheel = tmp_path / "child-1.0-py3-none-any.whl"
+    _wheel(root_wheel, requires_dist=("child>=1",))
+    _wheel(child_wheel, core_version="1.0.0")
+    artifacts, issues = inspect_dependency_metadata(
+        (root_wheel, child_wheel),
+        root=tmp_path,
+    )
+    assert issues == ()
+    by_name = {artifact.canonical_name: artifact for artifact in artifacts}
+
+    class EquivalentVersionResolver:
+        name = "equivalent-version-test"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            supplied: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, supplied, root
+            return ResolverResult(
+                status=ResolutionStatus.SUCCEEDED,
+                complete=True,
+                resolver=self.name,
+                resolver_version="1.0",
+                packages=tuple(
+                    ResolvedPackage(
+                        name=name,
+                        version="1.0",
+                        metadata_used=(artifact.artifact_id,),
+                    )
+                    for name, artifact in sorted(by_name.items())
+                ),
+                reason="resolution completed",
+            )
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(root_wheel, child_wheel),
+            requirements=("demo==1.0", "child==1.0"),
+            resolve=True,
+        ),
+        root=tmp_path,
+        resolver=EquivalentVersionResolver(),
+    )
+
+    assert report.targets[0].resolution.status is ResolutionStatus.SUCCEEDED
+    assert report.targets[0].transitive_requirements[0].verified is True
+    assert report.exit_code is ExitCode.SUCCESS
+
+
 def test_requirement_extras_are_correlated_with_declared_metadata(
     tmp_path: Path,
 ) -> None:
@@ -639,6 +859,68 @@ def test_complete_resolver_evidence_cannot_borrow_unknown_metadata(
 
     assert declared.verified is False
     assert declared.resolved_versions == ()
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+@pytest.mark.parametrize("orphan_dependencies", [(), ("missing==1.0",)])
+def test_complete_resolver_rejects_packages_outside_the_reachable_closure(
+    tmp_path: Path,
+    orphan_dependencies: tuple[str, ...],
+) -> None:
+    """Exact SHA provenance does not make an unrelated resolver package reachable."""
+    root_wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    orphan_wheel = tmp_path / "orphan-1.0-py3-none-any.whl"
+    _wheel(root_wheel)
+    _wheel(orphan_wheel, requires_dist=orphan_dependencies)
+    artifacts, issues = inspect_dependency_metadata(
+        (root_wheel, orphan_wheel),
+        root=tmp_path,
+    )
+    assert issues == ()
+    by_name = {artifact.canonical_name: artifact for artifact in artifacts}
+
+    class OrphanResolver:
+        name = "orphan-test"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            supplied: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, supplied, root
+            return ResolverResult(
+                status=ResolutionStatus.SUCCEEDED,
+                complete=True,
+                resolver=self.name,
+                resolver_version="1.0",
+                packages=tuple(
+                    ResolvedPackage(
+                        name=name,
+                        version=artifact.version,
+                        metadata_used=(artifact.artifact_id,),
+                    )
+                    for name, artifact in sorted(by_name.items())
+                ),
+                reason="resolution completed",
+            )
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(root_wheel, orphan_wheel),
+            resolve=True,
+        ),
+        root=tmp_path,
+        resolver=OrphanResolver(),
+    )
+
+    resolution = report.targets[0].resolution
+    assert resolution.status is ResolutionStatus.UNVERIFIED
+    assert resolution.complete is False
+    assert "outside the exact active dependency closure" in resolution.reason
+    assert tuple(item.package for item in report.targets[0].assessments) == ("demo",)
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
@@ -935,6 +1217,32 @@ def test_configuration_fails_closed_for_network_and_unknown_keys(
         load_dependency_configuration(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "index_url",
+    [
+        "http://[",
+        "http://example.com:invalid/simple",
+        "http://example.com:0/simple",
+        "http://example.com:/simple",
+        "http://example.com\uff0fvalue/simple",
+    ],
+)
+def test_configuration_rejects_malformed_index_urls(
+    tmp_path: Path,
+    index_url: str,
+) -> None:
+    """URL parser edge cases remain configuration errors, not internal errors."""
+    project = tmp_path / "pyproject.toml"
+    document = _configuration_toml(network=True).replace(
+        'resolver = "uv"\n',
+        f'resolver = "uv"\nindex-url = "{index_url}"\n',
+    )
+    project.write_text(document, encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="index-url"):
+        load_dependency_configuration(tmp_path)
+
+
 def test_resolver_timeout_is_incomplete_not_resolution_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -949,8 +1257,8 @@ def test_resolver_timeout_is_incomplete_not_resolution_failure(
             return subprocess.CompletedProcess(args[0], 0, "uv 0.11.21\n", "")
         raise subprocess.TimeoutExpired(cast("list[str]", args[0]), timeout=2.5)
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     result = UvResolverAdapter().resolve(
         _configuration(resolve=True, network=True),
         _target(),
@@ -962,6 +1270,59 @@ def test_resolver_timeout_is_incomplete_not_resolution_failure(
     assert result.complete is False
     assert result.resolver_version == "0.11.21"
     assert "remains unverified" in result.reason
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is unavailable")
+def test_real_offline_adapter_accepts_an_empty_active_solution(tmp_path: Path) -> None:
+    """Uv omits the packages table when every declared marker is inactive."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    configuration = _configuration(
+        metadata_paths=(wheel,),
+        requirements=('demo==1.0; python_version < "3"',),
+        resolve=True,
+    )
+
+    result = UvResolverAdapter().resolve(
+        configuration,
+        _target(),
+        artifacts,
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.SUCCEEDED
+    assert result.complete is True
+    assert result.packages == ()
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is unavailable")
+def test_real_offline_adapter_binds_pep440_equivalent_version_spellings(
+    tmp_path: Path,
+) -> None:
+    """Uv's 1.0 selection retains provenance for equivalent metadata 1.0.0."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, core_version="1.0.0")
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    assert artifacts[0].version == "1.0.0"
+    configuration = _configuration(
+        metadata_paths=(wheel,),
+        requirements=("demo==1.0",),
+        resolve=True,
+    )
+
+    result = UvResolverAdapter().resolve(
+        configuration,
+        _target(),
+        artifacts,
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.SUCCEEDED
+    assert result.packages[0].version == "1.0"
+    assert result.packages[0].metadata_used == (artifacts[0].artifact_id,)
 
 
 def test_timeout_remains_incomplete_in_the_aggregate_report(tmp_path: Path) -> None:
@@ -1003,6 +1364,481 @@ def test_timeout_remains_incomplete_in_the_aggregate_report(tmp_path: Path) -> N
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
+def test_any_incomplete_target_takes_precedence_over_complete_findings(
+    tmp_path: Path,
+) -> None:
+    """A finding on one target cannot hide incomplete evidence on another."""
+    wheel = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    first = _target(name="first")
+    second = _target(name="second")
+
+    class MixedResolver:
+        name = "mixed-test"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, artifacts, root
+            status = (
+                ResolutionStatus.ARTIFACT_UNAVAILABLE
+                if target.name == "first"
+                else ResolutionStatus.TIMED_OUT
+            )
+            return ResolverResult(
+                status=status,
+                complete=status is ResolutionStatus.ARTIFACT_UNAVAILABLE,
+                resolver=self.name,
+                resolver_version="1.0",
+                packages=(),
+                reason="target-specific evidence",
+            )
+
+    configuration = replace(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("missing==1.0",),
+            resolve=True,
+        ),
+        targets=(first, second),
+    )
+    report = collect_dependency_report(
+        configuration,
+        root=tmp_path,
+        resolver=MixedResolver(),
+    )
+
+    assert report.targets[0].resolution.status is (
+        ResolutionStatus.ARTIFACT_UNAVAILABLE
+    )
+    assert report.targets[1].resolution.status is ResolutionStatus.TIMED_OUT
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_resolver_success_can_have_an_empty_inactive_marker_graph(
+    tmp_path: Path,
+) -> None:
+    """A complete solve needs no package when every target marker is false."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+
+    class EmptyResolver:
+        name = "empty-test"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, artifacts, root
+            return ResolverResult(
+                status=ResolutionStatus.SUCCEEDED,
+                complete=True,
+                resolver=self.name,
+                resolver_version="1.0",
+                packages=(),
+                reason="empty target graph resolved",
+            )
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=('demo==1.0; python_version < "3"',),
+            resolve=True,
+        ),
+        root=tmp_path,
+        resolver=EmptyResolver(),
+    )
+
+    target = report.targets[0]
+    assert target.declared_requirements[0].applies is False
+    assert target.resolution.status is ResolutionStatus.SUCCEEDED
+    assert target.resolution.complete is True
+    assert target.resolution.packages == ()
+    assert report.exit_code is ExitCode.SUCCESS
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        ResolverResult(
+            status=ResolutionStatus.NOT_REQUESTED,
+            complete=True,
+            resolver="uv",
+            resolver_version=None,
+            packages=(),
+            reason="resolver was not requested",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.ARTIFACT_UNAVAILABLE,
+            complete=False,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(),
+            reason="incomplete absence claim",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.SUCCEEDED,
+            complete=False,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(),
+            reason="incomplete success claim",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.ARTIFACT_UNAVAILABLE,
+            complete=True,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(),
+            reason="uncorroborated absence claim",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.RESOLUTION_FAILED,
+            complete=True,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(),
+            reason="uncorroborated conflict claim",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.TIMED_OUT,
+            complete=True,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(),
+            reason="complete timeout claim",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.UNVERIFIED,
+            complete=True,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(),
+            reason="complete unverified claim",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.SUCCEEDED,
+            complete=True,
+            resolver="uv",
+            resolver_version=None,
+            packages=(),
+            reason="versionless success claim",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.ARTIFACT_UNAVAILABLE,
+            complete=True,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(ResolvedPackage("demo", "1.0", ("a" * 64,)),),
+            reason="negative result with packages",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.UNVERIFIED,
+            complete=False,
+            resolver="unexpected",
+            resolver_version="1.0",
+            packages=(),
+            reason="wrong adapter identity",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.UNVERIFIED,
+            complete=False,
+            resolver="uv",
+            resolver_version="banana",
+            packages=(),
+            reason="malformed version",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.UNVERIFIED,
+            complete=False,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(ResolvedPackage("demo", "1.0", ("bogus",)),),
+            reason="malformed package evidence",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.UNVERIFIED,
+            complete=False,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(
+                ResolvedPackage("Demo", "01.0", ()),
+                ResolvedPackage("demo", "1.0", ()),
+            ),
+            reason="duplicate package identity",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.UNVERIFIED,
+            complete=False,
+            resolver="uv",
+            resolver_version="1.0",
+            packages=(ResolvedPackage("demo", "1.0", ("a" * 64,)),),
+            reason="unbound package provenance",
+        ),
+        ResolverResult(
+            status=ResolutionStatus.UNVERIFIED,
+            complete=False,
+            resolver="uv",
+            resolver_version=None,
+            packages=(ResolvedPackage("demo", "1.0", ()),),
+            reason="versionless partial package evidence",
+        ),
+    ],
+)
+def test_contradictory_resolver_result_shapes_are_incomplete(
+    tmp_path: Path,
+    result: ResolverResult,
+) -> None:
+    """Replaceable adapters cannot manufacture complete evidence by contradiction."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+
+    class ContradictoryResolver:
+        name = "uv"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, artifacts, root
+            return result
+
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,), resolve=True),
+        root=tmp_path,
+        resolver=ContradictoryResolver(),
+    )
+
+    assert report.targets[0].resolution.status is ResolutionStatus.UNVERIFIED
+    assert report.targets[0].resolution.complete is False
+    assert "structured evidence" in report.targets[0].resolution.reason
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    ("filename", "tag", "requires_python"),
+    [
+        (
+            "demo-1.0-cp311-cp311-manylinux_2_17_x86_64.whl",
+            "cp311-cp311-manylinux_2_17_x86_64",
+            ">=3.11",
+        ),
+        ("demo-1.0-py3-none-any.whl", "py3-none-any", ">=9"),
+    ],
+)
+def test_resolver_success_requires_target_compatible_provenance(
+    tmp_path: Path,
+    filename: str,
+    tag: str,
+    requires_python: str,
+) -> None:
+    """A resolver cannot call wrong-target selected artifacts complete evidence."""
+    wheel = tmp_path / filename
+    _wheel(wheel, tag=tag, requires_python=requires_python)
+
+    class WrongTargetResolver:
+        name = "uv"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, root
+            artifact = artifacts[0]
+            return ResolverResult(
+                status=ResolutionStatus.SUCCEEDED,
+                complete=True,
+                resolver=self.name,
+                resolver_version="1.0",
+                packages=(
+                    ResolvedPackage(
+                        artifact.canonical_name,
+                        artifact.version,
+                        (artifact.artifact_id,),
+                    ),
+                ),
+                reason="resolution completed",
+            )
+
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,), resolve=True),
+        root=tmp_path,
+        resolver=WrongTargetResolver(),
+    )
+
+    resolution = report.targets[0].resolution
+    assert resolution.status is ResolutionStatus.UNVERIFIED
+    assert resolution.complete is False
+    assert "provenance-bound" in resolution.reason
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_resolver_success_requires_one_exact_artifact_per_package(
+    tmp_path: Path,
+) -> None:
+    """Multiple candidate wheels cannot masquerade as one selected artifact."""
+    universal = tmp_path / "demo-1.0-py3-none-any.whl"
+    platform = tmp_path / "demo-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+    _wheel(universal)
+    platform_tag = "cp312-cp312-manylinux_2_17_x86_64"
+    _wheel(platform, tag=platform_tag)
+
+    class MultipleSelectionResolver:
+        name = "uv"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, root
+            return ResolverResult(
+                status=ResolutionStatus.SUCCEEDED,
+                complete=True,
+                resolver=self.name,
+                resolver_version="1.0",
+                packages=(
+                    ResolvedPackage(
+                        "demo",
+                        "1.0",
+                        tuple(artifact.artifact_id for artifact in artifacts),
+                    ),
+                ),
+                reason="resolution completed",
+            )
+
+    report = collect_dependency_report(
+        _configuration(
+            target=_target(tags=("py3-none-any", platform_tag)),
+            metadata_paths=(universal, platform),
+            resolve=True,
+        ),
+        root=tmp_path,
+        resolver=MultipleSelectionResolver(),
+    )
+
+    assert report.targets[0].resolution.status is ResolutionStatus.UNVERIFIED
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_report_does_not_call_a_replaceable_resolver_when_disabled(
+    tmp_path: Path,
+) -> None:
+    """The collector, not an adapter, owns the no-resolution trust boundary."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+
+    class ForbiddenResolver:
+        name = "uv"
+
+        def resolve(self, *_args: object, **_kwargs: object) -> ResolverResult:
+            message = "disabled resolver must not be called"
+            raise AssertionError(message)
+
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,)),
+        root=tmp_path,
+        resolver=ForbiddenResolver(),
+    )
+
+    assert report.targets[0].resolution.status is ResolutionStatus.NOT_REQUESTED
+    assert report.targets[0].resolution.complete is True
+
+
+def test_replaceable_resolver_order_is_canonicalized(tmp_path: Path) -> None:
+    """Equivalent adapter ordering produces byte-identical public JSON."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    sdist = tmp_path / "demo-1.0.tar.gz"
+    other = tmp_path / "other-2.0-py3-none-any.whl"
+    _wheel(wheel)
+    _sdist(sdist)
+    _wheel(other)
+
+    class OrderedResolver:
+        name = "ordered-test"
+
+        def __init__(self, *, reverse: bool, alternate_spellings: bool = False) -> None:
+            self.reverse = reverse
+            self.alternate_spellings = alternate_spellings
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, root
+            groups: dict[tuple[str, str], list[str]] = {}
+            for artifact in artifacts:
+                groups.setdefault(
+                    (artifact.canonical_name, artifact.version), []
+                ).append(artifact.artifact_id)
+            packages = tuple(
+                ResolvedPackage(
+                    name=(name.title() if self.alternate_spellings else name),
+                    version=(f"0{version}" if self.alternate_spellings else version),
+                    metadata_used=tuple(
+                        reversed(identities) if self.reverse else identities
+                    ),
+                )
+                for (name, version), identities in sorted(groups.items())
+            )
+            return ResolverResult(
+                status=ResolutionStatus.SUCCEEDED,
+                complete=True,
+                resolver=self.name,
+                resolver_version="1.0",
+                packages=tuple(reversed(packages)) if self.reverse else packages,
+                reason="resolution completed",
+            )
+
+    configuration = _configuration(
+        metadata_paths=(wheel, sdist, other),
+        requirements=("demo==1.0", "other==2.0"),
+        resolve=True,
+    )
+    forward = collect_dependency_report(
+        configuration,
+        root=tmp_path,
+        resolver=OrderedResolver(reverse=False),
+    )
+    reverse = collect_dependency_report(
+        configuration,
+        root=tmp_path,
+        resolver=OrderedResolver(reverse=True),
+    )
+    alternate = collect_dependency_report(
+        configuration,
+        root=tmp_path,
+        resolver=OrderedResolver(reverse=True, alternate_spellings=True),
+    )
+
+    assert render_dependency_json(forward) == render_dependency_json(reverse)
+    assert render_dependency_json(forward) == render_dependency_json(alternate)
+
+
 @pytest.mark.parametrize(
     ("artifact_name", "artifact_tag", "requirements"),
     [
@@ -1033,6 +1869,12 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
         assert issues == ()
         metadata_paths = (wheel,)
         artifacts = inspected
+    else:
+        wheel = tmp_path / "other-1.0-py3-none-any.whl"
+        _wheel(wheel)
+        artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+        assert issues == ()
+        metadata_paths = (wheel,)
     calls: list[list[str]] = []
 
     def fake_run(
@@ -1041,8 +1883,8 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     configuration = _configuration(
         metadata_paths=metadata_paths,
         requirements=requirements,
@@ -1062,6 +1904,57 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
     assert str(tmp_path) not in result.reason
 
 
+def test_root_extras_do_not_activate_same_named_dependency_extras(
+    tmp_path: Path,
+) -> None:
+    """Root-project marker contexts cannot manufacture complete artifact absence."""
+    windows = tmp_path / "demo-1.0-cp311-cp311-win_amd64.whl"
+    macos = tmp_path / "demo-1.0-cp311-cp311-macosx_11_0_x86_64.whl"
+    _wheel(
+        windows,
+        tag="cp311-cp311-win_amd64",
+        requires_dist=('child==1; extra != "speed"',),
+    )
+    _wheel(macos, tag="cp311-cp311-macosx_11_0_x86_64")
+
+    class FalseAbsenceResolver:
+        name = "uv"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, artifacts, root
+            return ResolverResult(
+                status=ResolutionStatus.ARTIFACT_UNAVAILABLE,
+                complete=True,
+                resolver=self.name,
+                resolver_version="0.11.21",
+                packages=(),
+                reason="claimed complete artifact absence",
+            )
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(windows, macos),
+            requirements=("demo==1.0",),
+            resolve=True,
+        ),
+        root=tmp_path,
+        resolver=FalseAbsenceResolver(),
+    )
+
+    result = report.targets[0]
+    assert result.resolution.status is ResolutionStatus.UNVERIFIED
+    assert result.resolution.complete is False
+    assert result.assessments[0].status is DependencyCompatibilityStatus.UNVERIFIED
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
 def test_missing_offline_distribution_is_a_complete_report_finding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1073,10 +1966,16 @@ def test_missing_offline_distribution_is_a_complete_report_finding(
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    wheel = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(wheel)
     report = collect_dependency_report(
-        _configuration(requirements=("missing==1.0",), resolve=True),
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("missing==1.0",),
+            resolve=True,
+        ),
         root=tmp_path,
     )
 
@@ -1136,13 +2035,13 @@ def test_resolver_requires_constraints_and_versioned_solver_evidence(
             )
         return subprocess.CompletedProcess(command, 1, "", stderr)
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     result = UvResolverAdapter().resolve(
         _configuration(
             requirements=("demo==1.0", "demo==2.0"),
             resolve=True,
-            network=False,
+            network=True,
         ),
         _target(),
         (),
@@ -1151,8 +2050,7 @@ def test_resolver_requires_constraints_and_versioned_solver_evidence(
 
     assert result.status is status
     assert result.complete is complete
-    assert "--offline" in calls[1]
-    assert "--no-index" in calls[1]
+    assert "--default-index" in calls[1]
     assert "--only-binary" in calls[1]
     assert ":all:" in calls[1]
     assert calls[1][calls[1].index("--keyring-provider") + 1] == "disabled"
@@ -1180,16 +2078,24 @@ def test_offline_library_range_absence_remains_unverified(
             _MISSING_DISTRIBUTION_DIAGNOSTIC,
         )
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    wheel = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
     configuration = replace(
-        _configuration(requirements=("missing>=1",), resolve=True),
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("missing>=1",),
+            resolve=True,
+        ),
         project_kind=DependencyProjectKind.LIBRARY,
     )
     result = UvResolverAdapter().resolve(
         configuration,
         _target(),
-        (),
+        artifacts,
         root=tmp_path,
     )
 
@@ -1246,10 +2152,10 @@ def test_library_sdist_sample_keeps_source_build_possibility_incomplete(
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
-def test_exact_library_requires_python_exclusion_remains_a_finding(
+def test_public_version_library_pin_does_not_close_local_version_inventory(
     tmp_path: Path,
 ) -> None:
-    """Exact version metadata can definitively exclude a library target."""
+    """A public equality still admits unseen local versions for a library."""
     wheel = tmp_path / "demo-1.0-py3-none-any.whl"
     _wheel(wheel, requires_python=">=9")
     configuration = replace(
@@ -1261,7 +2167,27 @@ def test_exact_library_requires_python_exclusion_remains_a_finding(
 
     assessment = report.targets[0].assessments[0]
     assert assessment.requires_python_status is RequiresPythonStatus.INCOMPATIBLE
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
+    assert report.targets[0].declared_requirements[0].verified is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_explicit_local_library_pin_can_retain_declared_exclusion(
+    tmp_path: Path,
+) -> None:
+    """An equality with a local segment names one distribution version."""
+    wheel = tmp_path / "demo-1.0+cpu-py3-none-any.whl"
+    _wheel(wheel, requires_python=">=9")
+    configuration = replace(
+        _configuration(metadata_paths=(wheel,), requirements=("demo==1.0+cpu",)),
+        project_kind=DependencyProjectKind.LIBRARY,
+    )
+
+    report = collect_dependency_report(configuration, root=tmp_path)
+
+    assessment = report.targets[0].assessments[0]
     assert assessment.status is DependencyCompatibilityStatus.DECLARED_INCOMPATIBLE
+    assert report.targets[0].declared_requirements[0].verified is True
     assert report.exit_code is ExitCode.FINDINGS
 
 
@@ -1662,8 +2588,8 @@ def test_resolver_does_not_promote_broad_failure_text_to_unsatisfiable(
             return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     result = UvResolverAdapter().resolve(
         _configuration(resolve=True, network=True),
         _target(),
@@ -1685,7 +2611,6 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
     artifacts, _issues = inspect_dependency_metadata((wheel,), root=tmp_path)
     calls = 0
     environments: list[dict[str, str]] = []
-    decoders: list[tuple[object, object]] = []
 
     def fake_run(
         command: list[str], **kwargs: object
@@ -1693,7 +2618,6 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
         nonlocal calls
         calls += 1
         environments.append(cast("dict[str, str]", kwargs["env"]))
-        decoders.append((kwargs.get("encoding"), kwargs.get("errors")))
         if calls == 1:
             return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
         output = Path(command[command.index("--output-file") + 1])
@@ -1701,8 +2625,8 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
         output.write_text(_pylock(("demo", "1.0", selected.as_uri())), encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     result = UvResolverAdapter().resolve(
         _configuration(metadata_paths=(wheel,), resolve=True),
         _target(),
@@ -1719,7 +2643,6 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
     assert set(environments[1]).isdisjoint({"PIP_INDEX_URL", "UV_INDEX_URL"})
     assert "pyahead-resolver-" in environments[1]["HOME"]
     assert environments[1]["UV_NO_CONFIG"] == "1"
-    assert decoders == [("utf-8", "strict"), ("utf-8", "strict")]
 
 
 def test_resolver_provenance_names_only_the_selected_platform_artifact(
@@ -1751,8 +2674,8 @@ def test_resolver_provenance_names_only_the_selected_platform_artifact(
         )
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     result = UvResolverAdapter().resolve(
         _configuration(
             target=_target(tags=("cp312-cp312-manylinux_2_17_x86_64",)),
@@ -1798,8 +2721,8 @@ def test_online_selection_is_not_attributed_to_same_version_local_metadata(
         )
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     result = UvResolverAdapter().resolve(
         _configuration(metadata_paths=(wheel,), resolve=True, network=True),
         _target(),
@@ -1855,8 +2778,8 @@ def _target_table() -> dict[str, object]:
     [
         ("unknown", True, "unknown or missing"),
         ("python-full-version", "invalid", "invalid version"),
-        ("python-full-version", "3.12", "include a patch"),
-        ("implementation-version", "3.12", "include a patch"),
+        ("python-full-version", "3.12", "three release components"),
+        ("implementation-version", "3.12", "three release components"),
         ("compatible-tags", [], "must not be empty"),
         ("compatible-tags", ["invalid"], "invalid compatible tag"),
         (
@@ -1926,6 +2849,38 @@ def test_target_model_validates_pypy_abi_tags() -> None:
 
     assert set(parsed.compatible_tags) == set(target["compatible-tags"])
 
+    for abi in ("pp99", "pp7319"):
+        target["compatible-tags"] = [f"pp312-pypy312_{abi}-manylinux_2_17_x86_64"]
+        with pytest.raises(
+            ConfigurationError,
+            match="Python version or implementation",
+        ):
+            dependency_module._parse_target(target, 0)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        replace(_target(), implementation_name="CPython"),
+        replace(_target(), implementation_name="other"),
+    ],
+)
+def test_known_implementation_labels_cannot_silence_target_markers(
+    tmp_path: Path,
+    target: EnvironmentTarget,
+) -> None:
+    """Case variants and reverse-label conflicts fail before marker evaluation."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(
+        wheel,
+        requires_dist=('child==1; implementation_name == "cpython"',),
+    )
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+
+    with pytest.raises(ConfigurationError, match="implementation"):
+        assess_dependency_metadata(artifacts, target=target, extras=())
+
 
 @pytest.mark.parametrize(
     ("target", "reason"),
@@ -1938,12 +2893,8 @@ def test_target_model_validates_pypy_abi_tags() -> None:
             ),
             "implementation",
         ),
-        (replace(_target(), sys_platform="win32"), "sys-platform"),
+        (_target(sys_platform="win32"), "Windows platform-machine"),
         (replace(_target(), platform_release="6.8"), "platform-release"),
-        (
-            replace(_target(), compatible_tags=("cp311-cp311-linux_x86_64",)),
-            "compatible-tags",
-        ),
     ],
 )
 def test_resolver_rejects_targets_it_cannot_faithfully_represent(
@@ -1989,7 +2940,7 @@ def test_target_model_and_scalar_validators_reject_closed_world_errors(
         dependency_module._string_list("bad", "value")  # noqa: SLF001
     with pytest.raises(ConfigurationError, match="must be a boolean"):
         dependency_module._boolean(1, "value")  # noqa: SLF001
-    for value in (True, "one", 0, float("inf")):
+    for value in (True, "one", 0, float("inf"), 1e308):
         with pytest.raises(ConfigurationError, match="finite positive"):
             dependency_module._positive_number(value, "value")  # noqa: SLF001
     with pytest.raises(ConfigurationError, match="Expected"):
@@ -2062,6 +3013,7 @@ def test_configuration_file_and_root_failures_are_bounded(tmp_path: Path) -> Non
         ('resolver = "uv"', 'resolver = "pip"', "only 'uv'"),
         ("network = false", 'network = "no"', "must be a boolean"),
         ("timeout-seconds = 2.5", "timeout-seconds = 0", "finite positive"),
+        ("timeout-seconds = 2.5", "timeout-seconds = 1e308", "no greater than"),
     ],
 )
 def test_configuration_rejects_invalid_semantics(
@@ -2354,6 +3306,27 @@ def test_unknown_zip_compression_is_rejected_before_zipfile(
     assert "compression method" in issues[0].message
 
 
+def test_zip_lzma_is_rejected_before_its_unbounded_decoder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attacker-controlled LZMA dictionaries never reach the stdlib decoder."""
+    archive_path = tmp_path / "demo-1.0.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_LZMA) as archive:
+        archive.writestr("demo-1.0/PKG-INFO", _metadata())
+
+    def forbidden_zipfile(*_args: object, **_kwargs: object) -> None:
+        message = "LZMA must be rejected from the central directory"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(dependency_module.zipfile, "ZipFile", forbidden_zipfile)
+
+    artifacts, issues = inspect_dependency_metadata((archive_path,), root=tmp_path)
+
+    assert artifacts == ()
+    assert "compression method" in issues[0].message
+
+
 def test_malformed_zip_names_and_deflate_are_incomplete_evidence(
     tmp_path: Path,
 ) -> None:
@@ -2446,6 +3419,28 @@ def test_tar_limits_are_incremental_and_bound_expanded_data(
     artifacts, issues = inspect_dependency_metadata((archive_path,), root=tmp_path)
     assert artifacts == ()
     assert "expanded data" in issues[0].message
+
+
+def test_tar_expansion_budget_is_shared_across_all_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many individually small compressed inputs share one decompression cap."""
+    first = tmp_path / "first-1.0.tar.gz"
+    second = tmp_path / "second-1.0.tar.gz"
+    _sdist(first)
+    _sdist(second)
+    monkeypatch.setattr(
+        dependency_module,
+        "_MAX_TOTAL_ARCHIVE_EXPANDED_BYTES",
+        20_000,
+    )
+
+    artifacts, issues = inspect_dependency_metadata((first, second), root=tmp_path)
+
+    assert len(artifacts) == 1
+    assert len(issues) == 1
+    assert "aggregate archive expansion" in issues[0].message
 
 
 def test_tar_stream_does_not_retain_processed_members(
@@ -2576,7 +3571,10 @@ def test_pax_gnu_sparse_is_rejected_before_tarfile_processing(
                 ("demo-1.0.dist-info/METADATA", _metadata()),
                 (
                     "demo-1.0.dist-info/WHEEL",
-                    b"Wheel-Version: 1.0\nTag: cp312-cp312-win_amd64\n",
+                    (
+                        b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\n"
+                        b"Tag: cp312-cp312-win_amd64\n"
+                    ),
                 ),
                 ("demo-1.0.dist-info/RECORD", b""),
             ],
@@ -2599,6 +3597,74 @@ def test_wheel_minimum_structure_and_internal_tags_are_required(
     assert message in issues[0].message
 
 
+@pytest.mark.parametrize(
+    ("wheel_payload", "message"),
+    [
+        (
+            b"Wheel-Version: 99.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+            "unsupported Wheel-Version",
+        ),
+        (
+            b"Wheel-Version: 1.0\nTag: py3-none-any\n",
+            "exactly one Root-Is-Purelib",
+        ),
+        (
+            b"Wheel-Version: 1.0\nRoot-Is-Purelib: yes\nTag: py3-none-any\n",
+            "invalid Root-Is-Purelib",
+        ),
+        (
+            b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\n",
+            "omits Tag",
+        ),
+        (
+            b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\n"
+            + b"Tag: py3-none-any\n" * 257,
+            "too many Tag fields",
+        ),
+        (
+            b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-\x1b\n",
+            "invalid Tag",
+        ),
+        (
+            b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none\n",
+            "invalid Tag",
+        ),
+        (
+            b"Wheel-Version: 1.0\x07\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+            "invalid Wheel-Version",
+        ),
+        (
+            (
+                b"not-a-header\nWheel-Version: 1.0\nRoot-Is-Purelib: true\n"
+                b"Tag: py3-none-any\n"
+            ),
+            "malformed headers",
+        ),
+    ],
+)
+def test_wheel_installation_metadata_must_be_supported(
+    tmp_path: Path,
+    wheel_payload: bytes,
+    message: str,
+) -> None:
+    """A wheel an installer must reject cannot establish availability."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _write_raw_wheel(
+        wheel,
+        [
+            ("demo-1.0.dist-info/METADATA", _metadata()),
+            ("demo-1.0.dist-info/WHEEL", wheel_payload),
+            ("demo-1.0.dist-info/RECORD", b""),
+        ],
+    )
+
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+
+    assert artifacts == ()
+    assert len(issues) == 1
+    assert message in issues[0].message
+
+
 def test_metadata_input_paths_and_duplicate_selection_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2608,14 +3674,6 @@ def test_metadata_input_paths_and_duplicate_selection_fail_closed(
     with pytest.raises(ConfigurationError, match="does not exist"):
         inspect_dependency_metadata((missing,), root=tmp_path)
 
-    real_open = dependency_module.os.open
-
-    def windows_directory_open(path: Path, flags: int) -> int:
-        if path.is_dir():
-            raise PermissionError
-        return real_open(path, flags)
-
-    monkeypatch.setattr(dependency_module.os, "open", windows_directory_open)
     with pytest.raises(ConfigurationError, match="regular file"):
         inspect_dependency_metadata((tmp_path,), root=tmp_path)
 
@@ -2646,15 +3704,222 @@ def test_metadata_input_replacement_during_open_fails_closed(
     selected_resolved = selected.resolve()
     real_open = dependency_module.os.open
 
-    def replace_before_open(path: Path, flags: int) -> int:
-        if path == selected_resolved and replacement.exists():
+    def replace_before_open(
+        path: str | Path,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if (
+            path == selected_resolved.name
+            and dir_fd is not None
+            and replacement.exists()
+        ):
             replacement.replace(selected)
-        return real_open(path, flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(dependency_module.os, "open", replace_before_open)
+    monkeypatch.setattr(
+        dependency_module, "_supports_rooted_descriptor_reads", lambda: True
+    )
 
     with pytest.raises(ConfigurationError, match="changed while being read"):
         inspect_dependency_metadata((selected,), root=tmp_path)
+
+
+def test_metadata_input_mutation_during_read_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One report cannot combine bytes from two in-place file states."""
+    if not dependency_module._supports_rooted_descriptor_reads():  # noqa: SLF001
+        pytest.skip("secure directory-relative reads are unavailable")
+    selected = tmp_path / "demo.metadata"
+    selected.write_bytes(b"A" * 70_000)
+    original_read = dependency_module.os.read
+    mutated = False
+
+    def mutate_after_first_chunk(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        payload = original_read(descriptor, size)
+        if payload and not mutated:
+            mutated = True
+            selected.write_bytes(b"B" * 70_000)
+        return payload
+
+    monkeypatch.setattr(dependency_module.os, "read", mutate_after_first_chunk)
+
+    with pytest.raises(ConfigurationError, match="changed while being read"):
+        inspect_dependency_metadata((selected,), root=tmp_path)
+
+    assert mutated is True
+
+
+def test_metadata_input_ancestor_swap_cannot_escape_pinned_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every repository ancestor is opened relative to the pinned root."""
+    if not dependency_module._supports_rooted_descriptor_reads():  # noqa: SLF001
+        pytest.skip("secure directory-relative reads are unavailable")
+    project = tmp_path / "project"
+    selected_parent = project / "sub"
+    archived_parent = project / "sub-before-swap"
+    outside = tmp_path / "outside"
+    selected_parent.mkdir(parents=True)
+    outside.mkdir()
+    (selected_parent / "demo.metadata").write_bytes(_metadata())
+    (outside / "demo.metadata").write_bytes(
+        _metadata(identity=("outside-secret", "9.0"))
+    )
+    probe = project / "symlink-probe"
+    try:
+        probe.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("the platform does not permit directory symlinks")
+    probe.unlink()
+    real_open = dependency_module.os.open
+    swapped = False
+
+    def swap_parent_before_open(
+        path: str | Path,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == "sub" and dir_fd is not None and not swapped:
+            selected_parent.rename(archived_parent)
+            selected_parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(dependency_module.os, "open", swap_parent_before_open)
+    monkeypatch.setattr(
+        dependency_module, "_supports_rooted_descriptor_reads", lambda: True
+    )
+
+    with pytest.raises(ConfigurationError, match="unable to read metadata input"):
+        inspect_dependency_metadata(
+            (Path("sub/demo.metadata"),),
+            root=project,
+        )
+
+    assert swapped is True
+
+
+def test_dependency_configuration_ancestor_swap_cannot_escape_pinned_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dependency TOML uses the same descriptor-anchored repository reader."""
+    if not dependency_module._supports_rooted_descriptor_reads():  # noqa: SLF001
+        pytest.skip("secure directory-relative reads are unavailable")
+    project = tmp_path / "project"
+    selected_parent = project / "config"
+    archived_parent = project / "config-before-swap"
+    outside = tmp_path / "outside"
+    selected_parent.mkdir(parents=True)
+    outside.mkdir()
+    (selected_parent / "pyproject.toml").write_text(
+        _configuration_toml(), encoding="utf-8"
+    )
+    (outside / "pyproject.toml").write_text(
+        _configuration_toml(requirement="outside-secret==9.0"),
+        encoding="utf-8",
+    )
+    probe = project / "symlink-probe"
+    try:
+        probe.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("the platform does not permit directory symlinks")
+    probe.unlink()
+    real_open = dependency_module.os.open
+    swapped = False
+
+    def swap_parent_before_open(
+        path: str | Path,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == "config" and dir_fd is not None and not swapped:
+            selected_parent.rename(archived_parent)
+            selected_parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(dependency_module.os, "open", swap_parent_before_open)
+    monkeypatch.setattr(
+        dependency_module, "_supports_rooted_descriptor_reads", lambda: True
+    )
+
+    with pytest.raises(ConfigurationError, match="unable to read configuration"):
+        load_dependency_configuration(project, Path("config/pyproject.toml"))
+
+    assert swapped is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows directory handles")
+def test_windows_metadata_ancestor_reparse_swap_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows opens every input parent relative to a pinned root handle."""
+    project = tmp_path / "project"
+    selected_parent = project / "sub"
+    archived_parent = project / "sub-before-swap"
+    outside = tmp_path / "outside"
+    selected_parent.mkdir(parents=True)
+    outside.mkdir()
+    (selected_parent / "demo.metadata").write_bytes(_metadata())
+    (outside / "demo.metadata").write_bytes(
+        _metadata(identity=("outside-secret", "9.0"))
+    )
+    probe = project / "symlink-probe"
+    try:
+        probe.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("the Windows runner cannot create directory symlinks")
+    probe.unlink()
+    original_open_chain = windows_output_module._open_directory_chain  # noqa: SLF001
+    swapped = False
+
+    def swap_parent_before_open(
+        api: windows_output_module._WindowsAPI,
+        root: Path,
+        relative_parent: Path,
+        *,
+        for_write: bool,
+    ) -> windows_output_module._WindowsDirectoryChain:
+        nonlocal swapped
+        selected_parent.rename(archived_parent)
+        selected_parent.symlink_to(outside, target_is_directory=True)
+        swapped = True
+        return original_open_chain(
+            api,
+            root,
+            relative_parent,
+            for_write=for_write,
+        )
+
+    monkeypatch.setattr(
+        windows_output_module,
+        "_open_directory_chain",
+        swap_parent_before_open,
+    )
+
+    with pytest.raises(ConfigurationError, match="unable to read metadata input"):
+        inspect_dependency_metadata(
+            (Path("sub/demo.metadata"),),
+            root=project,
+        )
+
+    assert swapped is True
 
 
 def test_core_metadata_and_wheel_only_results_keep_availability_distinct(
@@ -2738,6 +4003,52 @@ def test_dynamic_sdist_metadata_cannot_claim_requires_python_compatibility(
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
+def test_legacy_source_metadata_fields_are_implicitly_dynamic(
+    tmp_path: Path,
+) -> None:
+    """Pre-2.2 non-wheel metadata cannot make final compatibility claims."""
+    sdist = tmp_path / "demo-1.0.tar.gz"
+    standalone = tmp_path / "demo.metadata"
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _sdist(sdist, metadata_version="2.1", requires_python="<3")
+    standalone.write_bytes(
+        _metadata(
+            metadata_version="2.1",
+            requires_python="<3",
+            requires_dist=("child==1",),
+            provides_extra=("speed",),
+        )
+    )
+    _wheel(wheel, metadata_version="2.1", requires_python="<3")
+
+    for path in (sdist, standalone):
+        report = collect_dependency_report(
+            _configuration(metadata_paths=(path,)),
+            root=tmp_path,
+        )
+        artifact = report.metadata[0]
+        assessment = report.targets[0].assessments[0]
+        assert artifact.dynamic == (
+            "provides-extra",
+            "requires-dist",
+            "requires-python",
+        )
+        assert assessment.requires_python_status is RequiresPythonStatus.UNVERIFIED
+        assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
+        assert report.exit_code is ExitCode.INCOMPLETE
+
+    wheel_report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,)),
+        root=tmp_path,
+    )
+    assert wheel_report.metadata[0].dynamic == ()
+    assert (
+        wheel_report.targets[0].assessments[0].status
+        is DependencyCompatibilityStatus.DECLARED_INCOMPATIBLE
+    )
+    assert wheel_report.exit_code is ExitCode.FINDINGS
+
+
 def test_dynamic_wheel_metadata_is_rejected_as_incomplete(tmp_path: Path) -> None:
     """Built wheel metadata cannot retain source-only Dynamic declarations."""
     wheel = tmp_path / "demo-1.0-py3-none-any.whl"
@@ -2768,10 +4079,10 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
     assert result.status is ResolutionStatus.UNVERIFIED
     assert "unavailable" in result.reason
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
     monkeypatch.setattr(
-        dependency_module.subprocess,
-        "run",
+        dependency_module,
+        "_run_bounded_process",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", ""),
     )
     result = UvResolverAdapter().resolve(
@@ -2783,7 +4094,7 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
     def os_error(*_args: object, **_kwargs: object) -> None:
         raise OSError
 
-    monkeypatch.setattr(dependency_module.subprocess, "run", os_error)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", os_error)
     result = UvResolverAdapter().resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
@@ -2795,7 +4106,7 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
         reason = "invalid start byte"
         raise UnicodeDecodeError(codec, b"\xff", 0, 1, reason)
 
-    monkeypatch.setattr(dependency_module.subprocess, "run", decoding_error)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", decoding_error)
     result = UvResolverAdapter().resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
@@ -2823,8 +4134,8 @@ def test_resolver_malformed_success_output_is_incomplete(
         selected.write_text(output + "\n", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     result = UvResolverAdapter().resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
@@ -2842,13 +4153,13 @@ def test_resolver_revalidates_artifact_bytes_before_use(
     artifacts, _issues = inspect_dependency_metadata((wheel,), root=tmp_path)
     wheel.write_bytes(b"changed after inspection")
 
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
 
     def forbidden_process(*_args: object, **_kwargs: object) -> None:
         message = "changed artifacts must fail before resolver execution"
         raise AssertionError(message)
 
-    monkeypatch.setattr(dependency_module.subprocess, "run", forbidden_process)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", forbidden_process)
     result = UvResolverAdapter().resolve(
         _configuration(metadata_paths=(wheel,), resolve=True),
         _target(),
@@ -2872,15 +4183,14 @@ def test_resolver_duplicate_filenames_and_online_local_artifacts_are_explicit(
     duplicate = replace(
         artifacts[0], path=PurePosixPath("nested/demo-1.0-py3-none-any.whl")
     )
-    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: "/bin/uv")
-    result = UvResolverAdapter().resolve(
-        _configuration(resolve=True, network=True),
-        _target(),
-        (*artifacts, duplicate),
-        root=tmp_path,
-    )
-    assert result.status is ResolutionStatus.UNVERIFIED
-    assert "not unique" in result.reason
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    with pytest.raises(ConfigurationError, match="duplicate artifact identities"):
+        UvResolverAdapter().resolve(
+            _configuration(resolve=True, network=True),
+            _target(),
+            (*artifacts, duplicate),
+            root=tmp_path,
+        )
 
     calls: list[list[str]] = []
 
@@ -2895,7 +4205,7 @@ def test_resolver_duplicate_filenames_and_online_local_artifacts_are_explicit(
         output.write_text(_pylock(("demo", "1.0", selected.as_uri())), encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(dependency_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     result = UvResolverAdapter().resolve(
         _configuration(resolve=True, network=True),
         _target(),
@@ -2938,6 +4248,7 @@ def test_resolver_version_and_command_validation_helpers(tmp_path: Path) -> None
     """Resolver identity and impossible online state fail closed."""
     assert dependency_module._resolver_version("two\nlines\n", "uv") is None  # noqa: SLF001
     assert dependency_module._resolver_version("pip 1.0\n", "uv") is None  # noqa: SLF001
+    assert dependency_module._resolver_version("uv banana\n", "uv") is None  # noqa: SLF001
     workspace = dependency_module._ResolverWorkspace(  # noqa: SLF001
         executable="uv",
         directory=tmp_path,
@@ -2950,3 +4261,2185 @@ def test_resolver_version_and_command_validation_helpers(tmp_path: Path) -> None
         dependency_module._resolver_command(  # noqa: SLF001
             workspace, broken, _target(), has_artifacts=False
         )
+
+
+def test_direct_extra_evidence_cannot_borrow_a_wrong_target_wheel(
+    tmp_path: Path,
+) -> None:
+    """A same-version foreign wheel cannot prove an extra for this target."""
+    portable = tmp_path / "demo-1.0-py3-none-any.whl"
+    foreign = tmp_path / "demo-1.0-cp312-cp312-win_amd64.whl"
+    _wheel(portable)
+    _wheel(foreign, tag="cp312-cp312-win_amd64", provides_extra=("speed",))
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(portable, foreign),
+            requirements=("demo[speed]==1.0",),
+        ),
+        root=tmp_path,
+    )
+
+    target = report.targets[0]
+    portable_id = next(
+        item.artifact_id for item in report.metadata if item.path.name == portable.name
+    )
+    assert target.declared_requirements[0].verified is False
+    assert target.assessments[0].status is DependencyCompatibilityStatus.COMPATIBLE
+    assert target.assessments[0].metadata_used == (portable_id,)
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_direct_extra_evidence_requires_all_viable_wheels_to_agree(
+    tmp_path: Path,
+) -> None:
+    """One of several equally viable wheels cannot prove distribution extras."""
+    portable = tmp_path / "demo-1.0-py3-none-any.whl"
+    specific = tmp_path / "demo-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+    _wheel(portable, provides_extra=("speed",))
+    _wheel(specific, tag="cp312-cp312-manylinux_2_17_x86_64")
+    target = _target(tags=("py3-none-any", "cp312-cp312-manylinux_2_17_x86_64"))
+
+    report = collect_dependency_report(
+        _configuration(
+            target=target,
+            metadata_paths=(portable, specific),
+            requirements=("demo[speed]==1.0",),
+        ),
+        root=tmp_path,
+    )
+
+    declared = report.targets[0].declared_requirements[0]
+    assert declared.matching_metadata == ()
+    assert declared.verified is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_viable_wheels_with_different_dependencies_are_unverified(
+    tmp_path: Path,
+) -> None:
+    """Direct evidence never blends dependency edges from rival wheel candidates."""
+    portable = tmp_path / "demo-1.0-py3-none-any.whl"
+    specific = tmp_path / "demo-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+    _wheel(portable, requires_dist=("portable-child==1",))
+    _wheel(
+        specific,
+        tag="cp312-cp312-manylinux_2_17_x86_64",
+        requires_dist=("specific-child==1",),
+    )
+    target = _target(tags=("py3-none-any", "cp312-cp312-manylinux_2_17_x86_64"))
+    artifacts, issues = inspect_dependency_metadata(
+        (portable, specific),
+        root=tmp_path,
+    )
+
+    assessment = assess_dependency_metadata(
+        artifacts,
+        target=target,
+        extras=(),
+    )[0]
+
+    assert issues == ()
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
+    assert assessment.applicable_requirements == ()
+    assert "disagree on applicable Requires-Dist" in assessment.reason
+
+
+def test_disagreeing_wheel_dependencies_do_not_create_transitive_findings(
+    tmp_path: Path,
+) -> None:
+    """A synthetic union of viable wheel metadata cannot become report evidence."""
+    portable = tmp_path / "demo-1.0-py3-none-any.whl"
+    specific = tmp_path / "demo-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+    _wheel(portable, requires_dist=("portable-child==1",))
+    _wheel(
+        specific,
+        tag="cp312-cp312-manylinux_2_17_x86_64",
+        requires_dist=("specific-child==1",),
+    )
+    target = _target(tags=("py3-none-any", "cp312-cp312-manylinux_2_17_x86_64"))
+
+    report = collect_dependency_report(
+        _configuration(
+            target=target,
+            metadata_paths=(portable, specific),
+            requirements=("demo==1.0",),
+        ),
+        root=tmp_path,
+    )
+
+    assert report.targets[0].assessments[0].status is (
+        DependencyCompatibilityStatus.UNVERIFIED
+    )
+    assert report.targets[0].transitive_requirements == ()
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_transitive_extra_propagation_uses_only_target_selected_metadata(
+    tmp_path: Path,
+) -> None:
+    """A foreign wheel cannot activate or verify a selected dependency extra."""
+    demo = tmp_path / "demo-1.0-py3-none-any.whl"
+    portable_other = tmp_path / "other-2.0-py3-none-any.whl"
+    foreign_other = tmp_path / "other-2.0-cp312-cp312-win_amd64.whl"
+    _wheel(demo, requires_dist=("other[speed]==2.0",))
+    _wheel(portable_other)
+    _wheel(
+        foreign_other,
+        tag="cp312-cp312-win_amd64",
+        provides_extra=("speed",),
+    )
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(demo, portable_other, foreign_other),
+            requirements=("demo==1.0", "other==2.0"),
+        ),
+        root=tmp_path,
+    )
+
+    transitive = report.targets[0].transitive_requirements[0]
+    assert transitive.requirement == "other[speed]==2.0"
+    assert transitive.matching_metadata == ()
+    assert transitive.verified is False
+    assert "Transitive other[speed]==2.0" in render_dependency_text(report)
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "1!3.12.4",
+        "3.12.4.1",
+        "3.12.4+vendor",
+        "3.12.4.post1",
+        "3.12.4.dev1",
+        "2.7.18",
+    ],
+)
+def test_target_rejects_impossible_python_marker_versions(value: str) -> None:
+    """PEP 440 forms that no Python runtime reports cannot invert constraints."""
+    target = deepcopy(_target_table())
+    target["python-full-version"] = value
+    target["implementation-version"] = value
+
+    with pytest.raises(ConfigurationError, match="concrete Python runtime version"):
+        dependency_module._parse_target(target, 0)  # noqa: SLF001
+
+
+def test_programmatic_target_cannot_bypass_runtime_version_validation(
+    tmp_path: Path,
+) -> None:
+    """The public assessment API applies the same target rules as TOML loading."""
+    target = replace(
+        _target(),
+        python_full_version="1!3.12.4",
+        implementation_version="1!3.12.4",
+    )
+
+    with pytest.raises(ConfigurationError, match="concrete Python runtime version"):
+        assess_dependency_metadata((), target=target, extras=())
+    with pytest.raises(ConfigurationError, match="concrete Python runtime version"):
+        UvResolverAdapter().resolve(
+            _configuration(target=target, resolve=True),
+            target,
+            (),
+            root=tmp_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        replace(
+            _target(),
+            python_full_version="3.12.04",
+            implementation_version="3.12.04",
+        ),
+        replace(_target(), implementation_version="3.12.04"),
+        replace(_target(), resolver_platform="not-a-platform"),
+        replace(_target(), compatible_tags=("cp311-cp311-linux_x86_64",)),
+    ],
+)
+def test_programmatic_target_requires_canonical_coherent_fields(
+    target: EnvironmentTarget,
+) -> None:
+    """Constructing the public dataclass cannot bypass closed target semantics."""
+    with pytest.raises(ConfigurationError):
+        assess_dependency_metadata((), target=target, extras=())
+
+
+@pytest.mark.parametrize(
+    ("python", "tag"),
+    [
+        ("3.12.4", "cp30-abi3-manylinux_2_17_x86_64"),
+        ("3.0.1", "cp30-abi3-manylinux_2_17_x86_64"),
+        ("3.1.1", "cp31-abi3-manylinux_2_17_x86_64"),
+    ],
+)
+def test_impossible_pre_stable_abi_tag_cannot_prove_wheel_compatibility(
+    tmp_path: Path,
+    python: str,
+    tag: str,
+) -> None:
+    """The CPython stable ABI starts at 3.2, not syntactically valid cp30/cp31."""
+    wheel = tmp_path / f"demo-1.0-{tag}.whl"
+    _wheel(wheel, tag=tag)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+
+    with pytest.raises(ConfigurationError, match="compatible-tags"):
+        assess_dependency_metadata(
+            artifacts,
+            target=_target(python=python, tags=(tag,)),
+            extras=(),
+        )
+
+
+def test_compressed_compatibility_tag_expansion_is_bounded(tmp_path: Path) -> None:
+    """Configured, internal, and filename tags are capped before expansion."""
+    explosive = f"{'.'.join(['py3'] * 65)}-{'.'.join(['none'] * 65)}-any"
+    target = deepcopy(_target_table())
+    target["compatible-tags"] = [explosive]
+    with pytest.raises(ConfigurationError, match="expands to too many"):
+        dependency_module._parse_target(target, 0)  # noqa: SLF001
+
+    internal = tmp_path / "internal" / "demo-1.0-py3-none-any.whl"
+    internal.parent.mkdir()
+    _wheel(internal, tag=explosive)
+    artifacts, issues = inspect_dependency_metadata((internal,), root=tmp_path)
+    assert artifacts == ()
+    assert len(issues) == 1
+    assert "expand to too many" in issues[0].message
+
+    filename_tag = (
+        f"{'.'.join(['py3'] * 17)}-{'.'.join(['none'] * 17)}-{'.'.join(['any'] * 15)}"
+    )
+    filename = tmp_path / f"demo-1.0-{filename_tag}.whl"
+    _wheel(filename)
+    artifacts, issues = inspect_dependency_metadata((filename,), root=tmp_path)
+    assert artifacts == ()
+    assert len(issues) == 1
+    assert "expands to too many" in issues[0].message
+
+
+def test_valid_compressed_tags_may_expand_beyond_the_raw_value_limit() -> None:
+    """The 256-value input cap is distinct from the 4,096 expanded-tag cap."""
+    target = deepcopy(_target_table())
+    target["resolver-platform"] = "x86_64-unknown-linux-gnu"
+    platforms = ".".join(f"manylinux_2_{index}_x86_64" for index in range(150))
+    target["compatible-tags"] = [f"py3.py312-none-{platforms}"]
+
+    parsed = dependency_module._parse_target(target, 0)  # noqa: SLF001
+
+    assert len(parsed.compatible_tags) == _EXPANDED_TAG_COUNT
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ([f"py3-none-platform{index}" for index in range(257)], "too many"),
+        (["py3-none-any", "py3-none-any"], "duplicate"),
+        (["py3-none"], "invalid compatible tag"),
+    ],
+)
+def test_configured_compatibility_tag_collection_is_strictly_bounded(
+    values: list[str],
+    message: str,
+) -> None:
+    """Raw count, uniqueness, and shape fail before target-tag expansion."""
+    target = deepcopy(_target_table())
+    target["compatible-tags"] = values
+
+    with pytest.raises(ConfigurationError, match=message):
+        dependency_module._parse_target(target, 0)  # noqa: SLF001
+
+    if "duplicate" in message:
+        manual = replace(_target(), compatible_tags=tuple(values))
+        with pytest.raises(ConfigurationError, match="duplicate"):
+            assess_dependency_metadata((), target=manual, extras=())
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["invalid.whl", "demo-1.0-py3--any.whl"],
+)
+def test_wheel_filename_tag_shape_is_bounded_before_packaging(
+    filename: str,
+) -> None:
+    """Malformed compressed filename tags do not reach packaging expansion."""
+    with pytest.raises(ValueError, match="invalid wheel filename"):
+        dependency_module._validate_wheel_filename_tag_expansion(  # noqa: SLF001
+            filename
+        )
+
+
+def test_selected_extra_does_not_also_evaluate_the_base_marker_context(
+    tmp_path: Path,
+) -> None:
+    """The base marker context is used only when no project extra is selected."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, requires_dist=('child==2; extra != "speed"',))
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+
+    selected = assess_dependency_metadata(
+        artifacts,
+        target=_target(),
+        extras=("speed",),
+    )[0]
+    base = assess_dependency_metadata(artifacts, target=_target(), extras=())[0]
+
+    assert issues == ()
+    assert selected.applicable_requirements == ()
+    assert base.applicable_requirements == ('child==2; extra != "speed"',)
+
+
+def test_undefined_metadata_marker_comparison_is_incomplete_evidence(
+    tmp_path: Path,
+) -> None:
+    """A parseable but undefined marker comparison never escapes as exit 4."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, requires_dist=('child==1; os_name ~= "posix"',))
+
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,)),
+        root=tmp_path,
+    )
+
+    assessment = report.targets[0].assessments[0]
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
+    assert "cannot be evaluated" in assessment.reason
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_candidate_distribution_requires_python_disagreement_is_unverified(
+    tmp_path: Path,
+) -> None:
+    """An excluding wheel cannot hide a viable conflicting source candidate."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    sdist = tmp_path / "demo-1.0.tar.gz"
+    _wheel(wheel, requires_python=">=9")
+    _sdist(sdist, requires_python=">=3.11")
+
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel, sdist)),
+        root=tmp_path,
+    )
+
+    assessment = report.targets[0].assessments[0]
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
+    assert assessment.requires_python_status is RequiresPythonStatus.UNVERIFIED
+    assert assessment.artifact_availability is ArtifactAvailability.AVAILABLE
+    assert len(assessment.metadata_used) == _ARTIFACT_COUNT
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_dynamic_sdist_requires_dist_is_incomplete_evidence(tmp_path: Path) -> None:
+    """Unknown source dependencies cannot produce a complete compatibility claim."""
+    sdist = tmp_path / "demo-1.0.tar.gz"
+    _sdist(sdist, dynamic=("Requires-Dist",))
+
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(sdist,)),
+        root=tmp_path,
+    )
+
+    assessment = report.targets[0].assessments[0]
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
+    assert (
+        assessment.artifact_availability is ArtifactAvailability.SOURCE_BUILD_POSSIBLE
+    )
+    assert "Requires-Dist dynamic" in assessment.reason
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_sdist_metadata_member_must_match_the_distribution_identity(
+    tmp_path: Path,
+) -> None:
+    """Nested, traversal, and unrelated PKG-INFO members are not exact evidence."""
+    payload = _metadata()
+    paths = (
+        "unrelated/nested/PKG-INFO",
+        "../demo-1.0/PKG-INFO",
+        "other-1.0/PKG-INFO",
+    )
+    for index, member_path in enumerate(paths):
+        sdist = tmp_path / f"case-{index}" / "demo-1.0.tar.gz"
+        sdist.parent.mkdir()
+        _tar_sdist(sdist, ((member_path, payload),))
+        artifacts, issues = inspect_dependency_metadata((sdist,), root=tmp_path)
+        assert artifacts == ()
+        assert len(issues) == 1
+        assert "PKG-INFO" in issues[0].message
+
+
+def test_control_characters_are_rejected_or_sanitized(tmp_path: Path) -> None:
+    """Configured labels and untrusted child diagnostics cannot control a terminal."""
+    target = deepcopy(_target_table())
+    target["name"] = "unsafe-\x1b[31mred"
+    with pytest.raises(ConfigurationError, match="control characters"):
+        dependency_module._parse_target(target, 0)  # noqa: SLF001
+
+    workspace = tmp_path / "resolver space"
+    diagnostic = f"\x1b[31mfailed\x1b[0m at {workspace.as_uri()}\x07"
+    safe = dependency_module._safe_process_text(  # noqa: SLF001
+        diagnostic, workspace
+    )
+    assert "\x1b" not in safe
+    assert "\x07" not in safe
+    assert str(workspace) not in safe
+    assert workspace.as_uri() not in safe
+    assert "<workspace>" in safe
+
+
+@pytest.mark.parametrize("control", ["\x1b[31m", "\x07"])
+def test_core_metadata_marker_controls_cannot_reach_text_output(
+    tmp_path: Path,
+    control: str,
+) -> None:
+    """Parseable marker strings remain untrusted terminal-facing metadata."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, requires_dist=(f'child==1; os_name != "{control}"',))
+
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,)),
+        root=tmp_path,
+    )
+
+    assert report.metadata == ()
+    assert len(report.metadata_issues) == 1
+    assert "invalid Requires-Dist" in report.metadata_issues[0].message
+    assert control not in render_dependency_text(report)
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_malformed_pylock_file_url_is_unverified_not_an_internal_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid URL-to-path conversion cannot escape the resolver boundary."""
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.12.0\n", "")
+        output = Path(command[command.index("--output-file") + 1])
+        output.write_text(
+            _pylock(("demo", "1.0", "file:///tmp/%00bad.whl")),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    result = UvResolverAdapter().resolve(
+        _configuration(resolve=True, network=True),
+        _target(),
+        (),
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert result.complete is False
+    assert "provenance" in result.reason
+
+
+def test_dependency_input_and_resolver_resources_are_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counts, aggregate bytes, child streams, and pylock size all fail closed."""
+    project = tmp_path / "pyproject.toml"
+    project.write_text(_configuration_toml(), encoding="utf-8")
+    monkeypatch.setattr(dependency_module, "_MAX_CONFIGURATION_BYTES", 1)
+    with pytest.raises(ConfigurationError, match="configuration exceeds"):
+        load_dependency_configuration(tmp_path)
+
+    monkeypatch.setattr(dependency_module, "_MAX_CONFIGURATION_BYTES", 2 * 1024 * 1024)
+    project.write_text("value = " + "[" * 500 + "0" + "]" * 500, encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="nesting is too deep"):
+        load_dependency_configuration(tmp_path)
+    project.write_text(_configuration_toml(), encoding="utf-8")
+
+    config_directory = tmp_path / "config-directory"
+    config_directory.mkdir()
+    with pytest.raises(ConfigurationError, match="not a regular file"):
+        load_dependency_configuration(tmp_path, config_directory)
+    with monkeypatch.context() as context:
+        context.setattr(dependency_module.os.path, "samestat", lambda *_args: False)
+        with pytest.raises(ConfigurationError, match="changed while being read"):
+            load_dependency_configuration(tmp_path)
+
+    monkeypatch.setattr(dependency_module, "_MAX_METADATA_INPUTS", 0)
+    with pytest.raises(ConfigurationError, match="too many"):
+        load_dependency_configuration(tmp_path)
+
+    monkeypatch.setattr(dependency_module, "_MAX_METADATA_INPUTS", 1)
+    project.write_text(
+        _configuration_toml().replace(
+            'extras = ["speed"]',
+            "extras = [" + ", ".join(f'"extra{index}"' for index in range(257)) + "]",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match=r"extras.*too many"):
+        load_dependency_configuration(tmp_path)
+
+    project.write_text(_configuration_toml(), encoding="utf-8")
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    monkeypatch.setattr(dependency_module, "_MAX_METADATA_TOTAL_BYTES", 1)
+    with pytest.raises(ConfigurationError, match="aggregate input byte"):
+        inspect_dependency_metadata((wheel,), root=tmp_path)
+
+    result_path = tmp_path / "pylock.toml"
+    result_path.write_text("too large", encoding="utf-8")
+    monkeypatch.setattr(dependency_module, "_MAX_RESOLVER_RESULT_BYTES", 1)
+    with pytest.raises(ValueError, match="size limit"):
+        dependency_module._read_resolver_result(result_path)  # noqa: SLF001
+
+    monkeypatch.setattr(dependency_module, "_MAX_RESOLVER_PACKAGES", 0)
+    with pytest.raises(ValueError, match="too many packages"):
+        dependency_module._resolved_packages(  # noqa: SLF001
+            _pylock(("demo", "1.0", "file:///demo.whl")),
+            (),
+            wheelhouse=tmp_path,
+        )
+
+    empty_pylock = (
+        'lock-version = "1.0"\ncreated-by = "uv"\nrequires-python = ">=3.12"\n'
+    )
+    assert dependency_module._resolved_packages(  # noqa: SLF001
+        empty_pylock,
+        (),
+        wheelhouse=tmp_path,
+    ) == ((), True)
+    with pytest.raises(ValueError, match="package list"):
+        dependency_module._resolved_packages(  # noqa: SLF001
+            empty_pylock + 'packages = "invalid"\n',
+            (),
+            wheelhouse=tmp_path,
+        )
+
+    monkeypatch.setattr(dependency_module, "_MAX_RESOLVER_STREAM_BYTES", 16)
+    with pytest.raises(RuntimeError):
+        dependency_module._run_bounded_process(  # noqa: SLF001
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'x' * 4096)",
+            ],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=5,
+        )
+
+
+def test_bounded_process_decodes_each_stream_as_strict_utf8(tmp_path: Path) -> None:
+    """Malformed child bytes are explicit incomplete evidence on every locale."""
+    with pytest.raises(UnicodeDecodeError):
+        dependency_module._run_bounded_process(  # noqa: SLF001
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stderr.buffer.write(bytes([255]))",
+            ],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=5,
+        )
+
+
+def test_bounded_process_timeout_kills_the_child_without_waiting_unbounded(
+    tmp_path: Path,
+) -> None:
+    """The explicit deadline also bounds post-timeout process cleanup."""
+    with pytest.raises(subprocess.TimeoutExpired):
+        dependency_module._run_bounded_process(  # noqa: SLF001
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=0.01,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Job Objects")
+def test_windows_resolver_stays_suspended_until_job_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolver code cannot spawn before its kill-on-close Job is assigned."""
+    sentinel = tmp_path / "resolver-started"
+    real_create_job = dependency_module._create_windows_kill_job  # noqa: SLF001
+    assignment_observed = False
+
+    def delayed_assignment(process: subprocess.Popen[bytes]) -> int | None:
+        nonlocal assignment_observed
+        time.sleep(0.25)
+        assert not sentinel.exists()
+        job = real_create_job(process)
+        assignment_observed = job is not None
+        return job
+
+    monkeypatch.setattr(
+        dependency_module,
+        "_create_windows_kill_job",
+        delayed_assignment,
+    )
+    command = f"from pathlib import Path; Path({str(sentinel)!r}).write_text('started')"
+
+    result = dependency_module._run_bounded_process(  # noqa: SLF001
+        [sys.executable, "-c", command],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert assignment_observed is True
+    assert sentinel.read_text(encoding="utf-8") == "started"
+
+
+def test_interruption_before_containment_cleans_the_suspended_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No signal window can orphan a child before containment is handed off."""
+
+    class FakeProcess:
+        pid = 42
+
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.killed = False
+            self.waited = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == dependency_module._PROCESS_CLEANUP_SECONDS  # noqa: SLF001
+            self.waited = True
+            return -1
+
+    process = FakeProcess()
+    creationflags: list[int] = []
+    armed = False
+
+    def fake_popen(
+        _command: Sequence[str], **kwargs: object
+    ) -> subprocess.Popen[bytes]:
+        nonlocal armed
+        creationflags.append(cast("int", kwargs["creationflags"]))
+        armed = True
+        return cast("subprocess.Popen[bytes]", process)
+
+    def interrupt_after_popen(
+        frame: FrameType, event: str, _argument: object
+    ) -> object:
+        if (
+            armed
+            and event == "line"
+            and frame.f_code is dependency_module._start_contained_process.__code__  # noqa: SLF001
+        ):
+            raise KeyboardInterrupt
+        return interrupt_after_popen
+
+    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module.subprocess, "Popen", fake_popen)
+
+    containment = dependency_module._ProcessContainment()  # noqa: SLF001
+    previous_trace = sys.gettrace()
+    sys.settrace(interrupt_after_popen)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            dependency_module._start_contained_process(  # noqa: SLF001
+                ["resolver"],
+                cwd=tmp_path,
+                env={},
+                containment=containment,
+            )
+    finally:
+        sys.settrace(previous_trace)
+
+    assert creationflags[0] & dependency_module._CREATE_SUSPENDED  # noqa: SLF001
+    assert process.killed is True
+    assert process.waited is True
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+def test_interruption_during_containment_handoff_closes_the_assigned_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caller owns cleanup even when the start helper cannot return."""
+
+    class FakeProcess:
+        pid = 43
+
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.waited = False
+
+        def kill(self) -> None:
+            message = "assigned Job should own termination"
+            raise AssertionError(message)
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == dependency_module._PROCESS_CLEANUP_SECONDS  # noqa: SLF001
+            self.waited = True
+            return -1
+
+    process = FakeProcess()
+    assigned_job = 99
+    closed_jobs: list[int] = []
+
+    def fake_popen(
+        _command: Sequence[str], **_kwargs: object
+    ) -> subprocess.Popen[bytes]:
+        return cast("subprocess.Popen[bytes]", process)
+
+    def interrupt_return(frame: FrameType, event: str, _argument: object) -> object:
+        if (
+            event == "return"
+            and frame.f_code is dependency_module._start_contained_process.__code__  # noqa: SLF001
+        ):
+            raise KeyboardInterrupt
+        return interrupt_return
+
+    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        dependency_module,
+        "_create_windows_kill_job",
+        lambda _process: assigned_job,
+    )
+    monkeypatch.setattr(
+        dependency_module,
+        "_resume_windows_primary_thread",
+        lambda _process_id: True,
+    )
+
+    def close_job(handle: int) -> None:
+        closed_jobs.append(handle)
+
+    monkeypatch.setattr(
+        dependency_module,
+        "_close_windows_job",
+        close_job,
+    )
+
+    previous_trace = sys.gettrace()
+    sys.settrace(interrupt_return)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            dependency_module._run_bounded_process(  # noqa: SLF001
+                ["resolver"],
+                cwd=tmp_path,
+                env={},
+                timeout=1,
+            )
+    finally:
+        sys.settrace(previous_trace)
+
+    assert closed_jobs == [assigned_job]
+    assert process.waited is True
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+@pytest.mark.parametrize("failure", ["post-start-interrupt", "thread-start"])
+def test_bounded_process_setup_failures_terminate_containment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """The caller owns containment immediately and across reader startup."""
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == dependency_module._PROCESS_CLEANUP_SECONDS  # noqa: SLF001
+            return -1
+
+    class FakeContainment:
+        def __init__(self) -> None:
+            self.terminated = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    process = FakeProcess()
+    containment = FakeContainment()
+    armed = False
+
+    def fake_start(
+        _command: Sequence[str],
+        *,
+        cwd: Path,
+        env: object,
+        containment: dependency_module._ProcessContainment,
+    ) -> subprocess.Popen[bytes]:
+        nonlocal armed
+        del cwd, env
+        armed = True
+        containment.process = cast("subprocess.Popen[bytes]", process)
+        return cast("subprocess.Popen[bytes]", process)
+
+    def interrupt_after_start(
+        frame: FrameType, event: str, _argument: object
+    ) -> object:
+        if (
+            armed
+            and event == "line"
+            and frame.f_code is dependency_module._run_bounded_process.__code__  # noqa: SLF001
+        ):
+            raise KeyboardInterrupt
+        return interrupt_after_start
+
+    monkeypatch.setattr(dependency_module, "_start_contained_process", fake_start)
+    monkeypatch.setattr(
+        dependency_module,
+        "_ProcessContainment",
+        lambda: containment,
+    )
+    previous_trace = sys.gettrace()
+    expected_error: type[BaseException]
+    if failure == "post-start-interrupt":
+        expected_error = KeyboardInterrupt
+        sys.settrace(interrupt_after_start)
+    else:
+        expected_error = RuntimeError
+
+        def fail_thread_start(_thread: threading.Thread) -> None:
+            message = "simulated thread startup failure"
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(
+            dependency_module.threading.Thread, "start", fail_thread_start
+        )
+    try:
+        with pytest.raises(expected_error):
+            dependency_module._run_bounded_process(  # noqa: SLF001
+                ["resolver"],
+                cwd=tmp_path,
+                env={},
+                timeout=1,
+            )
+    finally:
+        sys.settrace(previous_trace)
+
+    assert containment.terminated is True
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+def test_windows_job_and_suspended_thread_apis_are_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Job assignment and primary-thread resume use checked Windows handles."""
+    calls: list[str] = []
+    process_id = 123
+    thread_id = 456
+    job_handle = 70
+    process_handle = 80
+    snapshot_handle = 90
+    thread_handle = 91
+
+    class FakeFunction:
+        argtypes: object = None
+        restype: object = None
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __call__(self, *arguments: object) -> object:
+            calls.append(self.name)
+            result: object = 1
+            if self.name == "CreateJobObjectW":
+                result = job_handle
+            elif self.name == "CreateToolhelp32Snapshot":
+                result = snapshot_handle
+            elif self.name == "Thread32First":
+                pointer_type = dependency_module.ctypes.POINTER(
+                    dependency_module._ThreadEntry32  # noqa: SLF001
+                )
+                entry = dependency_module.ctypes.cast(
+                    arguments[1], pointer_type
+                ).contents
+                entry.th32OwnerProcessID = process_id
+                entry.th32ThreadID = thread_id
+            elif self.name == "Thread32Next":
+                result = 0
+            elif self.name == "OpenThread":
+                result = thread_handle
+            return result
+
+    class FakeKernel:
+        pass
+
+    kernel = FakeKernel()
+    for name in (
+        "AssignProcessToJobObject",
+        "CloseHandle",
+        "CreateJobObjectW",
+        "CreateToolhelp32Snapshot",
+        "OpenThread",
+        "ResumeThread",
+        "SetInformationJobObject",
+        "TerminateJobObject",
+        "Thread32First",
+        "Thread32Next",
+    ):
+        setattr(kernel, name, FakeFunction(name))
+
+    class FakeProcess:
+        pid = process_id
+        _handle = process_handle
+
+    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "_windows_kernel32", lambda: kernel)
+    process = cast("subprocess.Popen[bytes]", FakeProcess())
+
+    created_job = dependency_module._create_windows_kill_job(process)  # noqa: SLF001
+    identifiers = dependency_module._windows_process_thread_ids(  # noqa: SLF001
+        process_id
+    )
+    resumed = dependency_module._resume_windows_primary_thread(  # noqa: SLF001
+        process_id
+    )
+    dependency_module._close_windows_job(job_handle)  # noqa: SLF001
+    dependency_module._terminate_windows_job(job_handle)  # noqa: SLF001
+
+    assert created_job == job_handle
+    assert identifiers == (thread_id,)
+    assert resumed is True
+    assert "AssignProcessToJobObject" in calls
+    assert "ResumeThread" in calls
+    assert "TerminateJobObject" in calls
+    expected_close_calls = 3
+    assert calls.count("CloseHandle") >= expected_close_calls
+
+
+@pytest.mark.parametrize("mode", ["parent-exits", "timeout"])
+def test_bounded_process_terminates_descendants_that_inherit_output_pipes(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    """Normal exit and timeout both close the complete resolver process tree."""
+    sentinel = tmp_path / f"survived-{mode}"
+    child_code = (
+        "import time; from pathlib import Path; "
+        f"time.sleep(1.5); Path({str(sentinel)!r}).write_text('alive')"
+    )
+    parent_code = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        + ("time.sleep(30)" if mode == "timeout" else "")
+    )
+    started = time.monotonic()
+
+    if mode == "timeout":
+        with pytest.raises(subprocess.TimeoutExpired):
+            dependency_module._run_bounded_process(  # noqa: SLF001
+                [sys.executable, "-c", parent_code],
+                cwd=tmp_path,
+                env=dict(os.environ),
+                timeout=0.75,
+            )
+    else:
+        result = dependency_module._run_bounded_process(  # noqa: SLF001
+            [sys.executable, "-c", parent_code],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=5,
+        )
+        assert result.returncode == 0
+
+    assert time.monotonic() - started < _PROCESS_TREE_BOUND_SECONDS
+    time.sleep(_PROCESS_TREE_DETECTION_SECONDS)
+    assert not sentinel.exists()
+
+
+def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only independently reproduced constraints complete a solver failure."""
+    assert dependency_module._conflicting_requirement_names(  # noqa: SLF001
+        ("demo<1", "demo>=2")
+    ) == ("demo",)
+    assert (
+        dependency_module._conflicting_requirement_names(  # noqa: SLF001
+            ("demo==1", "demo==1+cpu")
+        )
+        == ()
+    )
+    assert (
+        dependency_module._conflicting_requirement_names(  # noqa: SLF001
+            ("demo==1.0", "demo===1.0+cpu")
+        )
+        == ()
+    )
+    assert dependency_module._conflicting_requirement_names(  # noqa: SLF001
+        ("demo==1+cpu", "demo==1+gpu")
+    ) == ("demo",)
+
+    range_diagnostic = (
+        "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+        "  ╰─▶ Because you require demo<1 and demo>=2, your requirements are "
+        "unsatisfiable.\n"
+    )
+    transitive_diagnostic = (
+        "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+        "  ╰─▶ Because demo==1.0 depends on other<2 and you require other==2.0, "
+        "your requirements are unsatisfiable.\n"
+    )
+
+    def resolve_with(diagnostic: str) -> None:
+        calls = 0
+
+        def fake_run(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return subprocess.CompletedProcess(command, 0, "uv 0.12.0\n", "")
+            return subprocess.CompletedProcess(command, 1, "", diagnostic)
+
+        monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    resolve_with(range_diagnostic)
+    library = replace(
+        _configuration(
+            requirements=("demo<1", "demo>=2"),
+            resolve=True,
+            network=True,
+        ),
+        project_kind=DependencyProjectKind.LIBRARY,
+    )
+    range_result = UvResolverAdapter().resolve(library, _target(), (), root=tmp_path)
+    assert range_result.status is ResolutionStatus.RESOLUTION_FAILED
+    assert range_result.complete is True
+
+    demo = tmp_path / "demo-1.0-py3-none-any.whl"
+    other = tmp_path / "other-2.0-py3-none-any.whl"
+    _wheel(demo, requires_dist=("other<2",))
+    _wheel(other)
+    artifacts, issues = inspect_dependency_metadata((demo, other), root=tmp_path)
+    assert issues == ()
+    resolve_with(transitive_diagnostic)
+    application = _configuration(
+        metadata_paths=(demo, other),
+        requirements=("demo==1.0", "other==2.0"),
+        resolve=True,
+    )
+    transitive_result = UvResolverAdapter().resolve(
+        application, _target(), artifacts, root=tmp_path
+    )
+    assert transitive_result.status is ResolutionStatus.UNVERIFIED
+    assert transitive_result.complete is False
+
+
+def test_local_version_witness_downgrades_false_adapter_conflict(
+    tmp_path: Path,
+) -> None:
+    """A public exact pin and its local build have a common PEP 440 witness."""
+    wheel = tmp_path / "demo-1+cpu-py3-none-any.whl"
+    _wheel(wheel)
+
+    class FalseConflictResolver:
+        name = "uv"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, artifacts, root
+            return ResolverResult(
+                status=ResolutionStatus.RESOLUTION_FAILED,
+                complete=True,
+                resolver=self.name,
+                resolver_version="0.12.0",
+                packages=(),
+                reason="claimed direct constraint conflict",
+            )
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("demo==1", "demo==1+cpu"),
+            resolve=True,
+        ),
+        root=tmp_path,
+        resolver=FalseConflictResolver(),
+    )
+
+    resolution = report.targets[0].resolution
+    assert resolution.status is ResolutionStatus.UNVERIFIED
+    assert resolution.complete is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_dependency_text_names_the_raw_requires_python_declaration(
+    tmp_path: Path,
+) -> None:
+    """Human output retains the exact declaration promised by the user guide."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, requires_python=">=3.12")
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,)), root=tmp_path
+    )
+
+    assert "Requires-Python >=3.12" in render_dependency_text(report)
+
+
+def test_programmatic_configuration_cannot_bypass_loader_invariants(
+    tmp_path: Path,
+) -> None:
+    """Every exported report boundary enforces the same closed configuration."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    valid = _configuration(metadata_paths=(wheel,))
+    invalid = (
+        replace(valid, requirements=("demo>=1",)),
+        replace(valid, requirements=("demo==1.0", "demo==1.0")),
+        replace(valid, metadata_paths=(wheel, wheel)),
+        replace(valid, targets=()),
+        replace(valid, timeout_seconds=float("inf")),
+        replace(valid, timeout_seconds=86_400.1),
+        replace(valid, resolver="custom"),
+        replace(valid, index_url="https://packages.example/simple"),
+    )
+
+    for configuration in invalid:
+        with pytest.raises(ConfigurationError):
+            collect_dependency_report(configuration, root=tmp_path)
+
+    normalized = collect_dependency_report(
+        replace(valid, requirements=("Demo == 1.0",)),
+        root=tmp_path,
+    )
+    assert normalized.requirements == ("Demo==1.0",)
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        ["cp312-cp312-manylinux_2_17_x86_64", "py3-none-any"],
+        frozenset({"cp312-cp312-manylinux_2_17_x86_64", "py3-none-any"}),
+        ("py3-none-any", "cp312-cp312-manylinux_2_17_x86_64"),
+    ],
+)
+def test_programmatic_target_tags_require_canonical_tuple_order(
+    tmp_path: Path,
+    tags: object,
+) -> None:
+    """Mutable, hash-ordered, and reversed tag collections fail deterministically."""
+    target = replace(
+        _target(tags=("cp312-cp312-manylinux_2_17_x86_64", "py3-none-any")),
+        compatible_tags=cast("tuple[str, ...]", tags),
+    )
+
+    with pytest.raises(ConfigurationError, match="compatible-tags"):
+        collect_dependency_report(
+            _configuration(target=target),
+            root=tmp_path,
+        )
+
+
+def test_direct_dependency_operations_enforce_resource_caps_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public dataclass callers cannot bypass bounded collection or extras."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+
+    with monkeypatch.context() as context:
+        context.setattr(dependency_module, "_MAX_METADATA_INPUTS", 0)
+        with pytest.raises(ConfigurationError, match="too many"):
+            assess_dependency_metadata(artifacts, target=_target(), extras=())
+
+    with monkeypatch.context() as context:
+        context.setattr(dependency_module, "_MAX_EXTRAS", 0)
+        with pytest.raises(ConfigurationError, match="too many"):
+            assess_dependency_metadata(
+                (),
+                target=_target(),
+                extras=("unsafe\nvalue",),
+            )
+
+    with monkeypatch.context() as context:
+        context.setattr(dependency_module, "_MAX_REQUIREMENTS", 0)
+        invalid = replace(
+            _configuration(metadata_paths=(wheel,)),
+            requirements=("not a requirement",),
+        )
+        with pytest.raises(ConfigurationError, match="too many"):
+            collect_dependency_report(invalid, root=tmp_path)
+
+
+def test_marker_evaluation_products_and_aggregate_declarations_are_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Individually valid dimensions cannot multiply into unbounded marker work."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, requires_dist=('child==1; extra == "first"',))
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+
+    with monkeypatch.context() as context:
+        context.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 1)
+        configuration = replace(
+            _configuration(
+                metadata_paths=(wheel,),
+                requirements=('demo==1.0; extra == "first"',),
+            ),
+            extras=("first", "second"),
+        )
+        with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
+            collect_dependency_report(configuration, root=tmp_path)
+
+    with monkeypatch.context() as context:
+        context.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 2)
+        configuration = replace(
+            _configuration(metadata_paths=(wheel,)),
+            extras=("first", "second"),
+        )
+        with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
+            collect_dependency_report(configuration, root=tmp_path)
+
+    with monkeypatch.context() as context:
+        context.setattr(dependency_module, "_MAX_METADATA_REQUIREMENTS", 0)
+        with pytest.raises(ConfigurationError, match="aggregate Requires-Dist"):
+            assess_dependency_metadata(artifacts, target=_target(), extras=())
+        with pytest.raises(ConfigurationError, match="aggregate Requires-Dist"):
+            inspect_dependency_metadata((wheel,), root=tmp_path)
+
+
+def test_rejected_containers_still_consume_the_aggregate_requirement_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Late identity failures cannot reset the cost of parsed Requires-Dist fields."""
+    paths = tuple(tmp_path / f"demo{index}-1.0.tar.gz" for index in range(2))
+    for index, path in enumerate(paths):
+        identity = path.name.removesuffix(".tar.gz")
+        _tar_sdist(
+            path,
+            [
+                (
+                    f"{identity}/PKG-INFO",
+                    _metadata(
+                        identity=(f"wrong{index}", "1.0"),
+                        requires_dist=("child==1",),
+                    ),
+                )
+            ],
+        )
+    monkeypatch.setattr(dependency_module, "_MAX_METADATA_REQUIREMENTS", 1)
+
+    with pytest.raises(ConfigurationError, match="aggregate Requires-Dist"):
+        inspect_dependency_metadata(paths, root=tmp_path)
+
+
+def test_transitive_extra_fixed_point_shares_the_runtime_marker_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Self-propagating extras cannot multiply repeated marker evaluation."""
+    wheel = tmp_path / "a-1.0-py3-none-any.whl"
+    _wheel(
+        wheel,
+        provides_extra=("e0", "e1", "e2"),
+        requires_dist=(
+            'a[e1]==1.0; extra == "e0"',
+            'a[e2]==1.0; extra == "e1"',
+            'child==1.0; extra == "e2"',
+        ),
+    )
+    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 4)
+
+    with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
+        collect_dependency_report(
+            _configuration(
+                metadata_paths=(wheel,),
+                requirements=("a[e0]==1.0",),
+            ),
+            root=tmp_path,
+        )
+
+
+def test_dependency_correlation_products_share_the_runtime_work_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Artifact-by-constraint scans cannot bypass the evaluation work cap."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 3)
+
+    with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
+        collect_dependency_report(
+            _configuration(
+                metadata_paths=(wheel,),
+                requirements=("demo==1.0", "demo==2.0"),
+            ),
+            root=tmp_path,
+        )
+
+
+def test_requirement_requested_extras_are_bounded_at_every_input_boundary(
+    tmp_path: Path,
+) -> None:
+    """A single dependency edge cannot amplify work through unbounded extras."""
+    extras = ",".join(f"e{index}" for index in range(257))
+    requirement = f"demo[{extras}]==1.0"
+    with pytest.raises(ConfigurationError, match="requests too many extras"):
+        collect_dependency_report(
+            replace(_configuration(), requirements=(requirement,)),
+            root=tmp_path,
+        )
+
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, requires_dist=(requirement,))
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert artifacts == ()
+    assert len(issues) == 1
+    assert "requests too many extras" in issues[0].message
+
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    forged = replace(
+        artifacts[0],
+        requires_dist=(str(Requirement(requirement)),),
+    )
+    with pytest.raises(ConfigurationError, match="requests too many extras"):
+        assess_dependency_metadata((forged,), target=_target(), extras=())
+
+
+def test_direct_resolver_calls_share_the_runtime_work_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public adapter cannot bypass bounded conflict correlation."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "uv 0.12.6\n", "")
+
+    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 5)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+
+    with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
+        UvResolverAdapter().resolve(
+            _configuration(
+                metadata_paths=(wheel,),
+                requirements=("demo==1.0", "demo==2.0"),
+                resolve=True,
+            ),
+            _target(),
+            artifacts,
+            root=tmp_path,
+        )
+
+    assert len(calls) == 1
+
+
+def test_aggregate_requested_extras_share_the_runtime_work_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many individually valid requested extras cannot amplify offline checks."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "uv 0.12.6\n", "")
+
+    def forbidden_assessment(*_args: object, **_kwargs: object) -> None:
+        message = "requested-extra work must fail before artifact assessment"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 7)
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    monkeypatch.setattr(
+        dependency_module,
+        "assess_dependency_metadata",
+        forbidden_assessment,
+    )
+
+    with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
+        UvResolverAdapter().resolve(
+            _configuration(
+                metadata_paths=(wheel,),
+                requirements=("demo[e0,e1,e2,e3]==1.0",),
+                resolve=True,
+            ),
+            _target(),
+            artifacts,
+            root=tmp_path,
+        )
+
+    assert len(calls) == 1
+
+
+def test_wheel_tag_selection_shares_the_runtime_work_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated artifact-by-target tag scans cannot bypass the work cap."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    tags = tuple(f"py3-none-manylinux_2_{minor}_x86_64" for minor in range(5, 18))
+    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", len(tags))
+
+    with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
+        assess_dependency_metadata(
+            artifacts,
+            target=_target(tags=tags),
+            extras=(),
+        )
+
+
+def test_exported_metadata_boundaries_reject_invalid_roots_and_records(
+    tmp_path: Path,
+) -> None:
+    """Malformed programmatic inputs remain closed configuration failures."""
+    root_file = tmp_path / "not-a-directory"
+    root_file.write_text("data", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="existing directory"):
+        inspect_dependency_metadata((), root=root_file)
+    with pytest.raises(ConfigurationError, match="only paths"):
+        inspect_dependency_metadata(
+            cast("Sequence[Path]", ("not-a-path",)),
+            root=tmp_path,
+        )
+
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    invalid_records = (
+        replace(artifacts[0], version="bad!"),
+        replace(artifacts[0], artifact_id="bogus", sha256="bogus"),
+        replace(artifacts[0], requires_dist=("not a requirement",)),
+    )
+    for artifact in invalid_records:
+        with pytest.raises(ConfigurationError):
+            assess_dependency_metadata((artifact,), target=_target(), extras=())
+
+
+def test_programmatic_artifact_container_identity_cannot_be_forged(
+    tmp_path: Path,
+) -> None:
+    """Public assessment accepts only records the direct inspector could produce."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    sdist = tmp_path / "demo-1.0.tar.gz"
+    metadata = tmp_path / "demo.metadata"
+    _wheel(wheel)
+    _sdist(sdist)
+    metadata.write_bytes(_metadata())
+    artifacts, issues = inspect_dependency_metadata(
+        (wheel, sdist, metadata),
+        root=tmp_path,
+    )
+    assert issues == ()
+    by_kind = {artifact.kind: artifact for artifact in artifacts}
+    wheel_artifact = by_kind[MetadataKind.WHEEL]
+    sdist_artifact = by_kind[MetadataKind.SDIST]
+    metadata_artifact = by_kind[MetadataKind.CORE_METADATA]
+
+    forged = (
+        replace(wheel_artifact, path=PurePosixPath("not-a-wheel.txt")),
+        replace(wheel_artifact, metadata_path="unrelated/METADATA"),
+        replace(
+            wheel_artifact,
+            metadata_path="demo-1.0.dist-info//METADATA",
+        ),
+        replace(
+            wheel_artifact,
+            metadata_path="demo-1.0.dist-info/./METADATA",
+        ),
+        replace(wheel_artifact, wheel_tags=("cp311-cp311-win_amd64",)),
+        replace(wheel_artifact, dynamic=("requires-dist",)),
+        replace(wheel_artifact, metadata_version="2.99"),
+        replace(sdist_artifact, path=PurePosixPath("other-1.0.tar.gz")),
+        replace(sdist_artifact, metadata_path="unrelated/PKG-INFO"),
+        replace(sdist_artifact, metadata_path="demo-1.0//PKG-INFO"),
+        replace(sdist_artifact, metadata_path=r"demo-1.0\PKG-INFO"),
+        replace(metadata_artifact, metadata_path="unrelated.metadata"),
+        replace(
+            metadata_artifact,
+            path=PurePosixPath("demo-1.0.tar.gz"),
+            metadata_path="demo-1.0.tar.gz",
+        ),
+    )
+    for artifact in forged:
+        with pytest.raises(ConfigurationError):
+            assess_dependency_metadata((artifact,), target=_target(), extras=())
+
+
+def test_core_metadata_provides_extra_count_is_bounded_before_propagation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A large transitive-extra surface cannot amplify marker evaluation."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, provides_extra=("first", "second"))
+    monkeypatch.setattr(dependency_module, "_MAX_EXTRAS", 1)
+
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+
+    assert artifacts == ()
+    assert len(issues) == 1
+    assert "too many Provides-Extra" in issues[0].message
+
+
+def test_resolver_executable_inside_the_scanned_root_is_never_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repository content cannot replace the trusted external resolver."""
+    executable = tmp_path / "uv"
+    executable.write_text("not executable", encoding="utf-8")
+    monkeypatch.setattr(
+        dependency_module.shutil, "which", lambda _name: str(executable)
+    )
+
+    def forbidden_process(*_args: object, **_kwargs: object) -> None:
+        message = "repository-local resolver must not execute"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", forbidden_process)
+    result = UvResolverAdapter().resolve(
+        _configuration(resolve=True, network=True),
+        _target(),
+        (),
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert "inside the scanned root" in result.reason
+
+
+def test_resolver_wheelhouse_rejects_portable_filename_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Case-insensitive filesystems cannot overwrite flattened artifacts."""
+    upper = tmp_path / "upper" / "Demo-1.0-py3-none-any.whl"
+    lower = tmp_path / "lower" / "demo-1.0-py3-none-any.whl"
+    upper.parent.mkdir()
+    lower.parent.mkdir()
+    _wheel(upper)
+    _wheel(lower)
+    artifacts, issues = inspect_dependency_metadata((upper, lower), root=tmp_path)
+    assert issues == ()
+    monkeypatch.setattr(
+        dependency_module.shutil,
+        "which",
+        lambda _name: sys.executable,
+    )
+
+    result = UvResolverAdapter().resolve(
+        _configuration(
+            metadata_paths=(upper, lower),
+            resolve=True,
+        ),
+        _target(),
+        artifacts,
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert "portably unique" in result.reason
+
+
+def test_resolved_metadata_path_controls_are_rejected(
+    tmp_path: Path,
+) -> None:
+    """A safe symlink label cannot smuggle its target path into text output."""
+    target = tmp_path / "evil\nname.metadata"
+    target.write_bytes(_metadata())
+    link = tmp_path / "safe.metadata"
+    try:
+        link.symlink_to(target.name)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable")
+
+    with pytest.raises(ConfigurationError, match="control characters"):
+        inspect_dependency_metadata((link,), root=tmp_path)
+
+
+def test_uv_host_python_fallback_warning_is_not_retained() -> None:
+    """Host interpreter inventory does not make an offline reason nondeterministic."""
+    warning = (
+        "warning: The requested Python version 3.12.4 is not available; "
+        "3.12.10 will be used to build dependencies instead.\n"
+    )
+    diagnostic = _UNSATISFIABLE_DIAGNOSTIC
+
+    assert dependency_module._stable_uv_diagnostic(  # noqa: SLF001
+        warning + diagnostic
+    ) == dependency_module._stable_uv_diagnostic(diagnostic)  # noqa: SLF001
+
+
+def test_windows_resolver_environment_and_kernel_loader_are_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows-only resolver state is isolated and loader absence fails closed."""
+    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+
+    environment = dependency_module._resolver_environment(tmp_path)  # noqa: SLF001
+
+    assert environment["USERPROFILE"] == str(tmp_path / "home")
+    assert environment["SYSTEMROOT"] == r"C:\Windows"
+    assert (tmp_path / "home").is_dir()
+    assert (tmp_path / "tmp").is_dir()
+    assert (tmp_path / "cache").is_dir()
+
+    monkeypatch.setattr(dependency_module.ctypes, "WinDLL", None, raising=False)
+    with pytest.raises(OSError, match=r"^$"):
+        dependency_module._windows_kernel32()  # noqa: SLF001
+
+    sentinel = object()
+    calls: list[tuple[str, bool]] = []
+
+    def fake_loader(name: str, *, use_last_error: bool) -> object:
+        calls.append((name, use_last_error))
+        return sentinel
+
+    monkeypatch.setattr(dependency_module.ctypes, "WinDLL", fake_loader)
+    assert dependency_module._windows_kernel32() is sentinel  # noqa: SLF001
+    assert calls == [("kernel32", True)]
+
+
+def test_windows_job_creation_rejects_invalid_or_unassigned_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every failed Job setup closes its handle and refuses containment."""
+    calls: list[str] = []
+    results: dict[str, object] = {
+        "CreateJobObjectW": 0,
+        "SetInformationJobObject": 1,
+        "AssignProcessToJobObject": 1,
+        "CloseHandle": 1,
+        "TerminateJobObject": 1,
+    }
+
+    class FakeFunction:
+        argtypes: object = None
+        restype: object = None
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __call__(self, *_arguments: object) -> object:
+            calls.append(self.name)
+            return results[self.name]
+
+    class FakeKernel:
+        pass
+
+    kernel = FakeKernel()
+    for name in results:
+        setattr(kernel, name, FakeFunction(name))
+
+    class FakeProcess:
+        def __init__(self, handle: object) -> None:
+            self.__dict__["_handle"] = handle
+
+    process = cast("subprocess.Popen[bytes]", FakeProcess(80))
+    monkeypatch.setattr(dependency_module, "_windows_kernel32", lambda: kernel)
+    monkeypatch.setattr(dependency_module.os, "name", "posix")
+    assert dependency_module._create_windows_kill_job(process) is None  # noqa: SLF001
+
+    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    assert dependency_module._create_windows_kill_job(process) is None  # noqa: SLF001
+    assert "CloseHandle" not in calls
+
+    results["CreateJobObjectW"] = 70
+    results["SetInformationJobObject"] = 0
+    assert dependency_module._create_windows_kill_job(process) is None  # noqa: SLF001
+    assert calls[-1] == "CloseHandle"
+
+    results["SetInformationJobObject"] = 1
+    results["AssignProcessToJobObject"] = 0
+    assert dependency_module._create_windows_kill_job(process) is None  # noqa: SLF001
+    assert calls[-1] == "CloseHandle"
+
+    results["AssignProcessToJobObject"] = 1
+    invalid_process = cast("subprocess.Popen[bytes]", FakeProcess("not-a-handle"))
+    assert dependency_module._create_windows_kill_job(invalid_process) is None  # noqa: SLF001
+    assert calls[-1] == "CloseHandle"
+
+    results["CloseHandle"] = 0
+    with pytest.raises(OSError, match="CloseHandle failed"):
+        dependency_module._close_windows_job(70)  # noqa: SLF001
+    results["CloseHandle"] = 1
+    dependency_module._close_windows_job(70)  # noqa: SLF001
+
+    results["TerminateJobObject"] = 0
+    with pytest.raises(OSError, match="TerminateJobObject failed"):
+        dependency_module._terminate_windows_job(70)  # noqa: SLF001
+    results["TerminateJobObject"] = 1
+    dependency_module._terminate_windows_job(70)  # noqa: SLF001
+
+
+def test_windows_thread_discovery_and_resume_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Snapshot, ownership, open, and resume failures cannot release a child."""
+    process_id = 123
+    calls: list[str] = []
+    snapshot_result = 0
+    next_calls = 0
+    open_result = 0
+    resume_result = 1
+
+    class FakeFunction:
+        argtypes: object = None
+        restype: object = None
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __call__(self, *arguments: object) -> object:
+            nonlocal next_calls
+            calls.append(self.name)
+            result: object = 1
+            if self.name == "CreateToolhelp32Snapshot":
+                result = snapshot_result
+            elif self.name in {"Thread32First", "Thread32Next"}:
+                pointer_type = dependency_module.ctypes.POINTER(
+                    dependency_module._ThreadEntry32  # noqa: SLF001
+                )
+                entry = dependency_module.ctypes.cast(
+                    arguments[1], pointer_type
+                ).contents
+                if self.name == "Thread32First":
+                    entry.th32OwnerProcessID = process_id + 1
+                    entry.th32ThreadID = 10
+                else:
+                    next_calls += 1
+                    if next_calls == 1:
+                        entry.th32OwnerProcessID = process_id
+                        entry.th32ThreadID = 20
+                    else:
+                        result = 0
+            elif self.name == "OpenThread":
+                result = open_result
+            elif self.name == "ResumeThread":
+                result = resume_result
+            return result
+
+    class FakeKernel:
+        pass
+
+    kernel = FakeKernel()
+    for name in (
+        "CloseHandle",
+        "CreateToolhelp32Snapshot",
+        "OpenThread",
+        "ResumeThread",
+        "Thread32First",
+        "Thread32Next",
+    ):
+        setattr(kernel, name, FakeFunction(name))
+    monkeypatch.setattr(dependency_module, "_windows_kernel32", lambda: kernel)
+
+    assert dependency_module._windows_process_thread_ids(process_id) == ()  # noqa: SLF001
+    assert "Thread32First" not in calls
+
+    snapshot_result = 90
+    assert dependency_module._windows_process_thread_ids(  # noqa: SLF001
+        process_id
+    ) == (20,)
+    assert calls[-1] == "CloseHandle"
+
+    monkeypatch.setattr(
+        dependency_module,
+        "_windows_process_thread_ids",
+        lambda _process_id: (),
+    )
+    assert dependency_module._resume_windows_primary_thread(process_id) is False  # noqa: SLF001
+
+    monkeypatch.setattr(
+        dependency_module,
+        "_windows_process_thread_ids",
+        lambda _process_id: (20,),
+    )
+    assert dependency_module._resume_windows_primary_thread(process_id) is False  # noqa: SLF001
+
+    open_result = 91
+    resume_result = dependency_module._INVALID_DWORD  # noqa: SLF001
+    assert dependency_module._resume_windows_primary_thread(process_id) is False  # noqa: SLF001
+    assert calls[-1] == "CloseHandle"
+
+
+class _FakeCleanupProcess:
+    pid = 42
+
+    def __init__(self) -> None:
+        self.stdout = io.BytesIO()
+        self.stderr = io.BytesIO()
+        self.kills = 0
+        self.waits = 0
+
+    def kill(self) -> None:
+        self.kills += 1
+
+    def wait(self, *, timeout: float) -> int:
+        assert timeout == dependency_module._PROCESS_CLEANUP_SECONDS  # noqa: SLF001
+        self.waits += 1
+        return -1
+
+
+def test_process_containment_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every owned process state terminates once without orphaning a Job tree."""
+    empty = dependency_module._ProcessContainment()  # noqa: SLF001
+    empty.terminate()
+    empty.terminate()
+    assert empty.terminated is True
+
+    def close_failure(_handle: int) -> None:
+        raise OSError
+
+    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "_close_windows_job", close_failure)
+    terminated_jobs: list[int] = []
+    monkeypatch.setattr(
+        dependency_module,
+        "_terminate_windows_job",
+        terminated_jobs.append,
+    )
+    process = _FakeCleanupProcess()
+    job_owned = dependency_module._ProcessContainment()  # noqa: SLF001
+    job_owned.attach_process(cast("subprocess.Popen[bytes]", process))
+    job_owned.attach_windows_job(70)
+    job_owned.terminate()
+    assert job_owned.windows_job is None
+    assert terminated_jobs == [70]
+    assert process.kills == 0
+    job_owned.terminate()
+    assert terminated_jobs == [70]
+    assert process.kills == 0
+
+    def terminate_failure(_handle: int) -> None:
+        raise OSError
+
+    monkeypatch.setattr(
+        dependency_module,
+        "_terminate_windows_job",
+        terminate_failure,
+    )
+    process = _FakeCleanupProcess()
+    job_fallback = dependency_module._ProcessContainment()  # noqa: SLF001
+    job_fallback.attach_process(cast("subprocess.Popen[bytes]", process))
+    job_fallback.attach_windows_job(73)
+    job_fallback.terminate()
+    assert process.kills == 1
+
+    process = _FakeCleanupProcess()
+
+    def failed_killpg(_process_id: int, _signal: int) -> None:
+        raise OSError
+
+    monkeypatch.setattr(dependency_module.os, "name", "posix")
+    monkeypatch.setattr(dependency_module.os, "killpg", failed_killpg)
+    process_owned = dependency_module._ProcessContainment()  # noqa: SLF001
+    process_owned.attach_process(cast("subprocess.Popen[bytes]", process))
+    process_owned.terminate()
+    assert process.kills == 1
+
+
+def test_preownership_cleanup_terminates_and_closes_process_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-handoff cleanup terminates the Job tree and closes process streams."""
+    closed_jobs: list[int] = []
+    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(
+        dependency_module,
+        "_close_windows_job",
+        closed_jobs.append,
+    )
+    unowned = _FakeCleanupProcess()
+    dependency_module._cleanup_uncontained_process(  # noqa: SLF001
+        cast("subprocess.Popen[bytes]", unowned), 71
+    )
+    assert closed_jobs == [71]
+    assert unowned.kills == 0
+    assert unowned.waits == 1
+    assert unowned.stdout.closed is True
+    assert unowned.stderr.closed is True
+
+    def close_failure(_handle: int) -> None:
+        raise OSError
+
+    monkeypatch.setattr(dependency_module, "_close_windows_job", close_failure)
+    terminated_jobs: list[int] = []
+    terminated_jobs.clear()
+    monkeypatch.setattr(
+        dependency_module,
+        "_terminate_windows_job",
+        terminated_jobs.append,
+    )
+    fallback = _FakeCleanupProcess()
+    dependency_module._cleanup_uncontained_process(  # noqa: SLF001
+        cast("subprocess.Popen[bytes]", fallback), 72
+    )
+    assert terminated_jobs == [72]
+    assert fallback.kills == 0
+    assert fallback.waits == 1
+    assert fallback.stdout.closed is True
+    assert fallback.stderr.closed is True
+
+
+def test_failed_process_start_cleans_before_and_after_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The startup cleanup helper handles both sides of the ownership handoff."""
+
+    class FakeProcess:
+        pid = 43
+
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.waits = 0
+
+        def kill(self) -> None:
+            message = "the Windows Job owns termination"
+            raise AssertionError(message)
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == dependency_module._PROCESS_CLEANUP_SECONDS  # noqa: SLF001
+            self.waits += 1
+            return -1
+
+    process = FakeProcess()
+    cleanups: list[tuple[object, int | None]] = []
+    containment = dependency_module._ProcessContainment()  # noqa: SLF001
+    monkeypatch.setattr(
+        dependency_module,
+        "_cleanup_uncontained_process",
+        lambda candidate, job: cleanups.append((candidate, job)),
+    )
+    dependency_module._cleanup_failed_process_start(  # noqa: SLF001
+        cast("subprocess.Popen[bytes]", process), 70, containment
+    )
+    assert cleanups == [(process, 70)]
+
+    closed_jobs: list[int] = []
+    monkeypatch.setattr(dependency_module, "_close_windows_job", closed_jobs.append)
+    containment.attach_process(cast("subprocess.Popen[bytes]", process))
+    dependency_module._cleanup_failed_process_start(  # noqa: SLF001
+        cast("subprocess.Popen[bytes]", process), 71, containment
+    )
+    assert closed_jobs == [71]
+    assert process.waits == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+@pytest.mark.parametrize("job_result", [None, "error", 70])
+def test_windows_contained_start_rejects_uncontained_or_unresumable_children(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job_result: int | str | None,
+) -> None:
+    """A suspended child is cleaned when Job setup or thread resume fails."""
+    assigned_job = 70
+
+    class FakeProcess:
+        pid = 44
+
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.killed = False
+            self.waited = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == dependency_module._PROCESS_CLEANUP_SECONDS  # noqa: SLF001
+            self.waited = True
+            return -1
+
+    process = FakeProcess()
+
+    def create_job(_process: subprocess.Popen[bytes]) -> int | None:
+        if job_result == "error":
+            raise OSError
+        return cast("int | None", job_result)
+
+    closed_jobs: list[int] = []
+    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(
+        dependency_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: cast("subprocess.Popen[bytes]", process),
+    )
+    monkeypatch.setattr(dependency_module, "_create_windows_kill_job", create_job)
+    monkeypatch.setattr(
+        dependency_module,
+        "_resume_windows_primary_thread",
+        lambda _process_id: False,
+    )
+    monkeypatch.setattr(dependency_module, "_close_windows_job", closed_jobs.append)
+
+    with pytest.raises(ValueError, match="unable to contain"):
+        dependency_module._start_contained_process(  # noqa: SLF001
+            ["resolver"],
+            cwd=tmp_path,
+            env={},
+            containment=dependency_module._ProcessContainment(),  # noqa: SLF001
+        )
+
+    if job_result == assigned_job:
+        assert closed_jobs == [assigned_job]
+    else:
+        assert process.killed is True
+    assert process.waited is True
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+def test_pipe_reader_and_reader_shutdown_failure_paths_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pipe read errors and surviving readers remain explicit bounded failures."""
+    read_failure = "simulated read failure"
+    expected_reader_joins = 2
+
+    class BrokenStream:
+        def read(self, _size: int) -> bytes:
+            raise OSError(read_failure)
+
+    containment = dependency_module._ProcessContainment()  # noqa: SLF001
+    errors: list[OSError] = []
+    dependency_module._read_process_pipe(  # noqa: SLF001
+        cast("io.BufferedIOBase", BrokenStream()),
+        bytearray(),
+        dependency_module.threading.Event(),
+        containment,
+        errors,
+    )
+    assert str(errors[0]) == read_failure
+
+    class FakeReader:
+        ident = 1
+
+        def __init__(self) -> None:
+            self.joins = 0
+
+        def join(self, *, timeout: float) -> None:
+            assert timeout == dependency_module._PROCESS_CLEANUP_SECONDS  # noqa: SLF001
+            self.joins += 1
+
+        def is_alive(self) -> bool:
+            return self.joins < expected_reader_joins
+
+    class FakeProcess:
+        stdout = io.BytesIO()
+        stderr = io.BytesIO()
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == dependency_module._PROCESS_CLEANUP_SECONDS  # noqa: SLF001
+            return -1
+
+    reader = FakeReader()
+    monkeypatch.setattr(containment, "terminate", lambda: None)
+    survived = dependency_module._finish_process_readers(  # noqa: SLF001
+        cast("subprocess.Popen[bytes]", FakeProcess()),
+        containment,
+        cast("Sequence[threading.Thread]", (reader,)),
+    )
+    assert survived is False
+    assert reader.joins == expected_reader_joins
+    assert FakeProcess.stdout.closed is True
+    assert FakeProcess.stderr.closed is True
+
+
+def test_bounded_process_requires_both_output_pipes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A subprocess missing either requested pipe is rejected and cleaned."""
+
+    class FakeProcess:
+        stdout = None
+        stderr = io.BytesIO()
+
+    process = cast("subprocess.Popen[bytes]", FakeProcess())
+
+    def fake_start(
+        _command: Sequence[str],
+        *,
+        cwd: Path,
+        env: object,
+        containment: dependency_module._ProcessContainment,
+    ) -> subprocess.Popen[bytes]:
+        del cwd, env
+        containment.attach_process(process)
+        return process
+
+    cleaned: list[object] = []
+    monkeypatch.setattr(dependency_module, "_start_contained_process", fake_start)
+    monkeypatch.setattr(
+        dependency_module,
+        "_finish_process_readers",
+        lambda owned, *_args: not cleaned.append(owned),
+    )
+
+    with pytest.raises(ValueError, match="unable to capture"):
+        dependency_module._run_bounded_process(  # noqa: SLF001
+            ["resolver"], cwd=tmp_path, env={}, timeout=1
+        )
+    assert cleaned == [process]

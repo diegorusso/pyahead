@@ -255,6 +255,9 @@ findings or make `pyahead check` network-visible:
 pyahead dependencies --format json --output pyahead-dependencies.json
 ```
 
+JSON output follows the closed, versioned
+[`dependency-report-v1.json`](schema/dependency-report-v1.json) schema.
+
 Configuration must explicitly distinguish an application from a library.
 Applications use exact `==` pins because the configured lock set and deployment
 target are authoritative. Libraries may use ranges and repeat targets to
@@ -299,12 +302,28 @@ version, metadata version, repository-relative artifact path, archive metadata
 member, SHA-256 digest, `Requires-Python`, evaluated `Requires-Dist` entries, and
 metadata artifact IDs used for the conclusion.
 
+Windows targets use the marker values reported by Windows CPython (for example,
+`platform-machine = "AMD64"` with
+`resolver-platform = "x86_64-pc-windows-msvc"`). Direct metadata and marker
+assessment uses those declared values. The current `uv` target interface cannot
+represent that Windows `platform_machine` value faithfully, so optional
+resolution for such a target is explicitly `unverified` instead of substituting
+the Unix-style `x86_64` value.
+
 An active configured requirement is joined to evidence by normalized package
 name, requested extras, and version constraint. Missing names, wrong application
 pins, out-of-range library versions, and unprovided extras are incomplete
 evidence unless a complete resolver result accounts for the requirement using
 the exact selected metadata. A resolver-selected base distribution does not
 prove an extra that its `Provides-Extra` fields do not declare.
+PEP 440 `==1.0` also admits local versions such as `1.0+cpu`. If more than one
+supplied version satisfies an application pin, direct evidence is unverified
+until exact resolver provenance selects one; an explicit `==1.0+cpu` pin is not
+ambiguous with the public version.
+Only metadata selected for the declared target can provide an extra or a
+transitive edge; a same-version wheel for another platform cannot complete the
+evidence. Root `extras` select those marker contexts exclusively. The base
+marker context is evaluated only when no root extra is selected.
 Unrelated supplied metadata remains listed but is not assessed as if it were a
 declared dependency.
 
@@ -321,33 +340,63 @@ does not implicitly request the same-named extra from every dependency. Package
 extras activate only through an explicit `name[extra]` requirement. With a
 complete resolution, PyAhead follows the reachable selected dependency
 closure using only each resolver package's exact `metadata_used` artifact IDs;
-unselected same-version artifacts cannot contribute dependency edges.
-Missing transitive packages and conflicting simultaneously active constraints
-make the report incomplete.
+unselected same-version artifacts cannot contribute dependency edges. A
+resolver package outside that root-reachable closure invalidates an otherwise
+successful result. An empty package selection is valid when every configured
+requirement marker is inactive. Missing transitive packages and conflicting
+simultaneously active constraints make the report incomplete.
 
 Direct inspection accepts wheels, `.tar.gz`/`.zip` source distributions with a
-single `PKG-INFO`, and standalone Core Metadata files. It reads archive members
-as data, never extracts them, imports package code, or invokes a PEP 517 build
-backend. A matching wheel is `available`. When no declared target tag matches,
-the result is `artifact-unavailable`; a supplied sdist records
+single top-level, identity-matching `<name>-<version>/PKG-INFO` agreeing with
+both the filename and Core Metadata identity, and standalone Core Metadata
+files. It reads archive members as data, never extracts them, imports package
+code, or invokes a PEP 517 build backend. A matching wheel is `available`. When
+no declared target tag matches, the result is `artifact-unavailable`; a
+supplied sdist records
 `source-build-possible` without attempting or claiming that the source builds.
 `Requires-Python` exclusion is reported separately as `declared-incompatible`.
 An sdist or standalone metadata field declared `Dynamic` is not treated as a
 final compatibility declaration. A wheel that retains source-only `Dynamic`
 fields is malformed evidence and is reported incomplete.
+Core Metadata older than 2.2 cannot declare which source fields are dynamic.
+For an sdist or provenance-unknown standalone metadata file, PyAhead therefore
+treats its `Requires-Python`, `Requires-Dist`, and `Provides-Extra` fields as
+implicitly dynamic. The same legacy fields in an already-built wheel remain
+final wheel metadata.
 
 Compressed input size, ZIP central-directory member counts and declared
 expanded sizes, physical tar headers and control records, incrementally
 decompressed tar bytes, logical tar member counts, retained tar member objects,
 and the selected metadata payload are bounded before they can become unbounded
-object graphs or decompression work. Multi-disk and ZIP64 containers are
-reported as incomplete unsupported evidence.
+object graphs or decompression work. Archive reads share a 1 GiB expanded-byte
+budget across the inspection, counting repeated tar passes. ZIP LZMA, multi-disk,
+and ZIP64 containers are reported as incomplete unsupported evidence. One run
+accepts at most 256
+metadata inputs and 512 MiB of artifact bytes in aggregate; each artifact is
+also capped at 128 MiB and each selected Core Metadata payload at 2 MiB.
+Configured and wheel-declared compatibility tags accept at most 256 compressed
+values and 4,096 expanded tags; compressed Cartesian products are counted
+before `packaging` expands them.
+Root marker evaluation accepts at most 256 configured extras, and each Core
+Metadata artifact may declare at most 256 `Provides-Extra` fields. Each
+configured or metadata requirement may request at most 256 extras. Inspected
+artifacts may contain at most 100,000 `Requires-Dist` fields in aggregate, and a
+run is capped at 1,000,000 dependency-evaluation work units. The shared counter
+includes target/extra markers, artifact/constraint and tag correlation, and
+repeated fixed-point evaluations while transitive extras propagate.
+The dependency TOML document is capped at 2 MiB before parsing.
+Configuration and metadata inputs are opened relative to pinned repository
+directory descriptors or Windows handles; mutable ancestors, symlinks, and
+reparse points cannot redirect a read outside the selected root. In-place input
+changes during a read are rejected rather than combining bytes from different
+file states.
 
 Wheel availability additionally requires a matching top-level `.dist-info`
-directory, `WHEEL` and `RECORD` members, and exact agreement between the
-filename and internal `Tag` fields. A direct URL in `Requires-Dist` is rejected
-as incomplete evidence before resolver discovery; configured dependency
-metadata cannot introduce an undeclared `file:`, HTTP, or HTTPS source.
+directory, `WHEEL` and `RECORD` members, a supported major `Wheel-Version`, a
+boolean `Root-Is-Purelib`, and exact agreement between the filename and internal
+`Tag` fields. A direct URL in `Requires-Dist` is rejected as incomplete evidence
+before resolver discovery; configured dependency metadata cannot introduce an
+undeclared `file:`, HTTP, or HTTPS source.
 
 Resolver use must be requested with `resolve = true` or `--resolve`. Offline is
 the default. The adapter copies only the configured artifacts into a temporary
@@ -358,8 +407,19 @@ explicit credential-free `index-url`; `--network` cannot fall back to an
 ambient index. `--no-network` can override and disable configured online use.
 An index URL may be predeclared while `network = false`; it remains disabled
 unless configuration or the explicit CLI override also enables network use.
-Each resolver process has the finite `timeout-seconds` deadline, overridable by
-`--timeout-seconds`.
+Each resolver process has a finite `timeout-seconds` deadline of at most 86,400
+seconds, overridable by `--timeout-seconds` within the same bound. Resolver
+descendants are contained in a dedicated POSIX process group or Windows Job
+Object and terminated during cleanup. On Windows,
+the resolver remains suspended until Job assignment succeeds. Stdout and stderr
+are retained separately and capped at
+4 MiB each. PyAhead reads at most 8 MiB from the result file, rejects a larger
+file, and accepts at most 10,000 unique package records. The read limit is not
+an operating-system disk quota while `uv` writes its temporary result. A
+timeout, undecodable output, output overflow, malformed result, or output pipe
+that does not close produces incomplete evidence rather than a compatibility
+claim. Retained diagnostics are stripped of control characters and isolated
+workspace paths.
 
 The `uv` adapter resolves only canonical CPython targets whose implementation,
 platform marker fields, compatible tags, and `resolver-platform` agree. A PyPy
@@ -367,6 +427,9 @@ target or non-empty platform release/version marker is explicitly unverified by
 the adapter rather than resolved with host defaults. Contradictions among the
 declared Python version, implementation, platform markers, compatible tags, and
 `resolver-platform` are rejected before either direct assessment or resolution.
+Interpreter versions use exactly three release components, Python targets must
+have major version 3, and epoch, local, post, and development segments are
+rejected; prerelease interpreter versions remain representable.
 Successful local resolution parses `uv`'s `pylock.toml` selection and associates
 only the exact selected wheel's inspected artifact ID. An online selection
 without directly inspected exact-distribution provenance remains unverified; it
@@ -374,18 +437,24 @@ is never attributed to a same-name/version local artifact. Online resolution
 may contact artifact or redirect hosts selected by the configured index; the
 index URL is not a host-level egress allowlist.
 
-For an application with exact pins, the revalidated offline wheelhouse is a
-closed artifact inventory. A missing package, missing pinned version, or lack
-of a target-compatible supplied wheel is therefore complete
-`artifact-unavailable` evidence. A configured library artifact sample is not a
-complete platform inventory, even for an exact requirement or in metadata-only
-mode, so an unsuitable sampled artifact remains `unverified`. Exact-version
-`Requires-Python` exclusions remain definitive. When complete resolution
-selects another compatible artifact, the unsuitable sample does not override
-that result. Resolver text is not enough by itself to prove a conflict:
-`resolution-failed` requires a recognized exact `uv` version and independently
-contradictory active constraints. Missing or unreachable distributions from an
-online index remain `unverified` operational evidence.
+When offline resolution is requested for an application with exact pins, the
+revalidated wheelhouse is a closed artifact inventory. A missing package,
+missing pinned version, or lack of a target-compatible supplied wheel is then
+complete `artifact-unavailable` evidence. Without resolution, configured
+metadata inputs may be partial, so a missing requirement remains unverified. A
+configured library artifact sample is not a complete platform inventory, even
+for an exact requirement or in metadata-only mode, so an unsuitable sampled
+artifact remains `unverified`. A library public equality such as `==1.0` also
+admits unseen local versions and cannot make a sampled exclusion definitive;
+an equality with an explicit local segment names one version. When complete
+resolution selects another compatible artifact, the unsuitable sample does not
+override that result. Resolver text is not enough by itself to prove a conflict:
+`resolution-failed` requires reviewed unsatisfiable-output grammar from a
+recognized exact `uv` version, excludes availability and Python-version
+diagnostics, and is accepted only when active exact or simple bounded
+constraints independently contradict one another. Uncorroborated transitive
+solver text, and missing or unreachable distributions from an online index,
+remain `unverified` operational evidence.
 
 The result categories are intentionally not interchangeable:
 

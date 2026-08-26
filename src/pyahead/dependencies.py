@@ -2,33 +2,49 @@
 
 from __future__ import annotations
 
+import ctypes
 import gzip
 import hashlib
 import json
-import lzma
 import math
 import os
 import re
 import shutil
+import signal
 import stat
 import struct
 import subprocess
 import tarfile
 import tempfile
+import threading
 import tomllib
+import unicodedata
 import zipfile
 import zlib
+from contextlib import ExitStack, suppress
+from contextvars import ContextVar
+from ctypes import wintypes
 from dataclasses import dataclass, replace
 from email import policy
 from email.parser import BytesParser
 from enum import StrEnum
+from functools import cached_property, wraps
 from io import BytesIO, RawIOBase
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, NoReturn, Protocol, TypeAlias
+from typing import (
+    TYPE_CHECKING,
+    BinaryIO,
+    NoReturn,
+    ParamSpec,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    cast,
+)
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
-from packaging.markers import UndefinedEnvironmentName
+from packaging.markers import UndefinedComparison, UndefinedEnvironmentName
 from packaging.metadata import InvalidMetadata, Metadata
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -42,14 +58,17 @@ from packaging.utils import (
 )
 from packaging.version import InvalidVersion, Version
 
+from pyahead._windows_output import read_windows_rooted_file
 from pyahead.model import ConfigurationError, ExitCode
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from email.message import Message
 
 JsonScalar: TypeAlias = bool | float | int | str | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 _DEPENDENCY_KEYS = frozenset(
     {
@@ -83,32 +102,66 @@ _TARGET_REQUIRED_KEYS = frozenset(
 _TARGET_OPTIONAL_KEYS = frozenset({"platform-release", "platform-version"})
 _MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
 _MAX_METADATA_BYTES = 2 * 1024 * 1024
+_MAX_CONFIGURATION_BYTES = 2 * 1024 * 1024
 _MAX_ARCHIVE_MEMBERS = 10_000
 _MAX_ARCHIVE_EXPANDED_BYTES = 512 * 1024 * 1024
+_MAX_TOTAL_ARCHIVE_EXPANDED_BYTES = 1024 * 1024 * 1024
 _MAX_TAR_CONTROL_BYTES = 2 * 1024 * 1024
 _MAX_ZIP_CENTRAL_DIRECTORY_BYTES = 8 * 1024 * 1024
 _MAX_TEXT_LENGTH = 4096
 _MAX_REQUIREMENTS = 10_000
 _MAX_TARGETS = 64
+_MAX_EXTRAS = 256
+_MAX_METADATA_INPUTS = 256
+_MAX_METADATA_TOTAL_BYTES = 512 * 1024 * 1024
+_MAX_METADATA_REQUIREMENTS = 100_000
+_MAX_MARKER_EVALUATIONS = 1_000_000
+_MAX_RESOLVER_STREAM_BYTES = 4 * 1024 * 1024
+_MAX_RESOLVER_RESULT_BYTES = 8 * 1024 * 1024
+_MAX_RESOLVER_PACKAGES = 10_000
+_MAX_TIMEOUT_SECONDS = 86_400
+_MAX_TAG_VALUES = 256
+_MAX_EXPANDED_TAGS = 4096
+_PROCESS_CLEANUP_SECONDS = 1.0
+_CREATE_SUSPENDED = 0x00000004
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_KILL_ON_CLOSE = 0x2000
+_TH32CS_SNAPTHREAD = 0x00000004
+_THREAD_SUSPEND_RESUME = 0x0002
+_INVALID_DWORD = (1 << 32) - 1
 _VERSION_COMPONENTS = 3
+_TAG_COMPONENTS = 3
+_PYTHON_MAJOR = 3
+_MIN_STABLE_ABI_MINOR = 2
 _WHEEL_PATH_PARTS = 2
 _DYNAMIC_FIELD = re.compile(r"[A-Za-z][A-Za-z0-9-]*\Z")
 _EXTRA_FIELD = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
 _SAFE_RESOLVER_PLATFORM = re.compile(r"[A-Za-z0-9_.-]+\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_RESOLVER_VERSION = re.compile(
+    r"(?P<release>[0-9]+(?:\.[0-9]+)+)"
+    r"(?: \([A-Za-z0-9][A-Za-z0-9 ._+\-]*\))?\Z"
+)
 _LINUX_RESOLVER_PLATFORM = re.compile(
     r"(?P<machine>x86_64|aarch64|riscv64)-(?:unknown-linux-(?:gnu|musl)|"
     r"manylinux(?:2014|_[0-9]+_[0-9]+)|linux-android)\Z"
 )
 _WINDOWS_RESOLVER_PLATFORMS = {
-    "aarch64-pc-windows-msvc": ("aarch64", "win_arm64"),
+    "aarch64-pc-windows-msvc": ("ARM64", "win_arm64"),
     "i686-pc-windows-msvc": ("x86", "win32"),
-    "x86_64-pc-windows-msvc": ("x86_64", "win_amd64"),
+    "x86_64-pc-windows-msvc": ("AMD64", "win_amd64"),
 }
 _MACOS_RESOLVER_PLATFORMS = {
     "aarch64-apple-darwin": ("arm64", "arm64"),
     "x86_64-apple-darwin": ("x86_64", "x86_64"),
 }
 _SUPPORTED_UV_UNSATISFIABLE_SERIES = frozenset({(0, 11), (0, 12)})
+_LEGACY_IMPLICIT_DYNAMIC_FIELDS = (
+    "provides-extra",
+    "requires-dist",
+    "requires-python",
+)
+_STATIC_SDIST_METADATA_VERSION = Version("2.2")
 _UV_NO_SOLUTION_HEADER = (
     "\N{MULTIPLICATION SIGN} No solution found when resolving dependencies:"
 )
@@ -121,8 +174,11 @@ _UV_NON_SOLVER_TERMS = (
     "transport",
 )
 _UV_ARTIFACT_AVAILABILITY_TERMS = (
+    "current python version",
+    "does not satisfy python",
     "has no wheels with a matching",
     "is not available in the package registry",
+    "requires python",
     "there is no version of",
     "was not found in the package registry",
     "was not found in the provided package locations",
@@ -140,7 +196,6 @@ _SUPPORTED_ZIP_COMPRESSION = frozenset(
         zipfile.ZIP_STORED,
         zipfile.ZIP_DEFLATED,
         zipfile.ZIP_BZIP2,
-        zipfile.ZIP_LZMA,
     }
 )
 _TAR_BLOCK_SIZE = 512
@@ -233,13 +288,14 @@ class EnvironmentTarget:
         release = Version(self.python_full_version).release
         return f"{release[0]}.{release[1]}"
 
-    @property
+    @cached_property
     def tags(self) -> frozenset[Tag]:
         """Return the fully expanded configured wheel-tag set."""
-        tags: set[Tag] = set()
-        for value in self.compatible_tags:
-            tags.update(parse_tag(value))
-        return frozenset(tags)
+        return _configured_tags(
+            self.compatible_tags,
+            "dependency target tags",
+            compressed_input=False,
+        )
 
     def marker_environment(self, *, extra: str) -> dict[str, str]:
         """Build PEP 508 values solely from this declared target."""
@@ -330,6 +386,14 @@ class _CanonicalResolverTarget:
 
 
 @dataclass(frozen=True)
+class _ResolverInterpretationContext:
+    version: str
+    workspace: _ResolverWorkspace
+    artifacts: Sequence[MetadataArtifact]
+    requirements: Sequence[str]
+
+
+@dataclass(frozen=True)
 class _ArtifactSelection:
     matching_wheels: tuple[MetadataArtifact, ...]
     wheels: tuple[MetadataArtifact, ...]
@@ -344,7 +408,7 @@ class _TransitiveCoverage:
     resolution: ResolverResult
     resolved_versions: tuple[str, ...]
     lock_requirements: tuple[Requirement, ...]
-    common_lock_versions: frozenset[str]
+    common_lock_versions: frozenset[Version]
     matching_metadata: tuple[str, ...]
 
 
@@ -489,6 +553,7 @@ class DependencyReport:
         incomplete = bool(self.metadata_issues)
         incompatible = False
         for result in self.targets:
+            incomplete = incomplete or not result.resolution.complete
             incomplete = incomplete or any(
                 item.applies and not item.verified
                 for item in result.declared_requirements
@@ -523,6 +588,18 @@ class _MetadataError(ValueError):
     """Raised when an artifact cannot provide trustworthy static metadata."""
 
 
+class _ResolverOutputLimitError(RuntimeError):
+    """Raised when resolver stdout or stderr exceeds its retained byte limit."""
+
+
+class _ResolverPipeError(OSError):
+    """Raised when inherited resolver output pipes remain open after exit."""
+
+
+class _MarkerEvaluationLimitError(ConfigurationError):
+    """Raised when dependency evaluation exhausts its shared work budget."""
+
+
 def _configuration_error(label: str, message: str) -> ConfigurationError:
     detail = f"{label}: {message}"
     return ConfigurationError(detail)
@@ -536,6 +613,146 @@ def _error(label: str, message: str) -> NoReturn:
     raise _configuration_error(label, message)
 
 
+@dataclass
+class _MarkerEvaluationBudget:
+    remaining: int
+
+    def consume(self, amount: int) -> None:
+        if amount > self.remaining:
+            message = (
+                "dependency marker evaluation: exceeds the aggregate "
+                "marker-evaluation budget"
+            )
+            raise _MarkerEvaluationLimitError(message)
+        self.remaining -= amount
+
+
+_ACTIVE_MARKER_BUDGET: ContextVar[_MarkerEvaluationBudget | None] = ContextVar(
+    "pyahead_dependency_marker_budget",
+    default=None,
+)
+
+
+@dataclass
+class _ArchiveExpansionBudget:
+    remaining: int
+
+    def consume(self, amount: int) -> None:
+        if amount > self.remaining:
+            self.remaining = 0
+            _fail_metadata("aggregate archive expansion exceeds the size limit")
+        self.remaining -= amount
+
+
+_ACTIVE_ARCHIVE_BUDGET: ContextVar[_ArchiveExpansionBudget | None] = ContextVar(
+    "pyahead_dependency_archive_budget",
+    default=None,
+)
+
+
+@dataclass
+class _MetadataRequirementBudget:
+    remaining: int
+
+    def consume(self, amount: int) -> None:
+        if amount > self.remaining:
+            self.remaining = 0
+            _error(
+                "tool.pyahead.dependencies.metadata",
+                "exceeds the aggregate Requires-Dist limit",
+            )
+        self.remaining -= amount
+
+
+_ACTIVE_METADATA_REQUIREMENT_BUDGET: ContextVar[_MetadataRequirementBudget | None] = (
+    ContextVar(
+        "pyahead_dependency_metadata_requirement_budget",
+        default=None,
+    )
+)
+
+
+def _with_marker_evaluation_budget(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Share one runtime marker budget across a complete public operation."""
+
+    @wraps(function)
+    def bounded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if _ACTIVE_MARKER_BUDGET.get() is not None:
+            return function(*args, **kwargs)
+        token = _ACTIVE_MARKER_BUDGET.set(
+            _MarkerEvaluationBudget(_MAX_MARKER_EVALUATIONS)
+        )
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _ACTIVE_MARKER_BUDGET.reset(token)
+
+    return bounded
+
+
+def _with_archive_expansion_budget(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Share one decompression budget across every artifact in an inspection."""
+
+    @wraps(function)
+    def bounded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if _ACTIVE_ARCHIVE_BUDGET.get() is not None:
+            return function(*args, **kwargs)
+        token = _ACTIVE_ARCHIVE_BUDGET.set(
+            _ArchiveExpansionBudget(_MAX_TOTAL_ARCHIVE_EXPANDED_BYTES)
+        )
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _ACTIVE_ARCHIVE_BUDGET.reset(token)
+
+    return bounded
+
+
+def _with_metadata_requirement_budget(
+    function: Callable[_P, _R],
+) -> Callable[_P, _R]:
+    """Count parsed Requires-Dist fields even when later validation rejects."""
+
+    @wraps(function)
+    def bounded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if _ACTIVE_METADATA_REQUIREMENT_BUDGET.get() is not None:
+            return function(*args, **kwargs)
+        token = _ACTIVE_METADATA_REQUIREMENT_BUDGET.set(
+            _MetadataRequirementBudget(_MAX_METADATA_REQUIREMENTS)
+        )
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _ACTIVE_METADATA_REQUIREMENT_BUDGET.reset(token)
+
+    return bounded
+
+
+def _consume_dependency_work(amount: int) -> None:
+    """Charge non-marker Cartesian comparisons to the same operation budget."""
+    if (budget := _ACTIVE_MARKER_BUDGET.get()) is not None:
+        budget.consume(amount)
+
+
+def _canonical_requested_extras(
+    requirements: Sequence[Requirement],
+) -> frozenset[str]:
+    """Normalize requested extras after charging their complete iteration cost."""
+    _consume_dependency_work(
+        sum(len(requirement.extras) for requirement in requirements)
+    )
+    return frozenset(
+        canonicalize_name(extra)
+        for requirement in requirements
+        for extra in requirement.extras
+    )
+
+
+def _consume_archive_expansion(amount: int) -> None:
+    if (budget := _ACTIVE_ARCHIVE_BUDGET.get()) is not None:
+        budget.consume(amount)
+
+
 def _table(value: object, label: str) -> dict[str, object]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         _error(label, "must be a TOML table")
@@ -547,22 +764,90 @@ def _string(value: object, label: str, *, allow_empty: bool = False) -> str:
         not isinstance(value, str)
         or (not value and not allow_empty)
         or len(value) > _MAX_TEXT_LENGTH
-        or "\x00" in value
-        or "\r" in value
-        or "\n" in value
+        or any(not character.isprintable() for character in value)
     ):
         qualifier = "a string" if allow_empty else "a non-empty string"
         _error(label, f"must be {qualifier} without control characters")
     return value
 
 
-def _string_list(value: object, label: str) -> tuple[str, ...]:
+def _runtime_version(value: object, label: str, *, python: bool) -> Version:
+    """Parse a concrete interpreter version without impossible PEP 440 forms."""
+    raw = _string(value, label)
+    try:
+        parsed = Version(raw)
+    except InvalidVersion as error:
+        _error(label, f"contains an invalid version: {error}")
+    if (
+        len(parsed.release) != _VERSION_COMPONENTS
+        or parsed.epoch != 0
+        or parsed.local is not None
+        or parsed.post is not None
+        or parsed.dev is not None
+        or (python and parsed.release[0] != _PYTHON_MAJOR)
+    ):
+        qualifier = "Python " if python else ""
+        _error(
+            label,
+            f"must be a concrete {qualifier}runtime version with three release "
+            "components and no epoch, local, post, or dev segment",
+        )
+    return parsed
+
+
+def _string_list(
+    value: object,
+    label: str,
+    *,
+    max_items: int | None = None,
+) -> tuple[str, ...]:
     if not isinstance(value, list):
         _error(label, "must be an array")
+    if max_items is not None and len(value) > max_items:
+        _error(label, "contains too many items")
     result = tuple(_string(item, f"{label} item") for item in value)
     if len(result) != len(set(result)):
         _error(label, "must not contain duplicates")
     return result
+
+
+def _tag_expansion_count(value: str) -> int:
+    """Count a compressed wheel tag's Cartesian product before expanding it."""
+    components = value.split("-")
+    if len(components) != _TAG_COMPONENTS or any(
+        not component for component in components
+    ):
+        raise ValueError
+    result = 1
+    for component in components:
+        result *= component.count(".") + 1
+    return result
+
+
+def _configured_tags(
+    values: Sequence[str], label: str, *, compressed_input: bool
+) -> frozenset[Tag]:
+    """Validate and expand a bounded set of configured compatibility tags."""
+    if not values:
+        _error(label, "must not be empty")
+    value_limit = _MAX_TAG_VALUES if compressed_input else _MAX_EXPANDED_TAGS
+    if len(values) > value_limit:
+        _error(label, "contains too many compatibility tags")
+    if len(values) != len(set(values)):
+        _error(label, "must not contain duplicate compatibility tags")
+    expanded: set[Tag] = set()
+    expansion_count = 0
+    for value in values:
+        raw = _string(value, f"{label} item")
+        try:
+            expanded_count = _tag_expansion_count(raw)
+        except ValueError:
+            _error(label, "contains an invalid compatible tag")
+        expansion_count += expanded_count
+        if expansion_count > _MAX_EXPANDED_TAGS:
+            _error(label, "expands to too many compatibility tags")
+        expanded.update(parse_tag(raw))
+    return frozenset(expanded)
 
 
 def _boolean(value: object, label: str) -> bool:
@@ -575,8 +860,11 @@ def _positive_number(value: object, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (float, int)):
         _error(label, "must be a finite positive number")
     result = float(value)
-    if not math.isfinite(result) or result <= 0:
-        _error(label, "must be a finite positive number")
+    if not math.isfinite(result) or result <= 0 or result > _MAX_TIMEOUT_SECONDS:
+        _error(
+            label,
+            f"must be a finite positive number no greater than {_MAX_TIMEOUT_SECONDS}",
+        )
     return result
 
 
@@ -588,32 +876,29 @@ def _parse_target(value: object, index: int) -> EnvironmentTarget:
         _TARGET_REQUIRED_KEYS | _TARGET_OPTIONAL_KEYS
     ):
         _error(label, "has unknown or missing keys")
-    python_full_version = _string(
-        target["python-full-version"], f"{label}.python-full-version"
+    python_parsed = _runtime_version(
+        target["python-full-version"],
+        f"{label}.python-full-version",
+        python=True,
     )
-    implementation_version = _string(
-        target["implementation-version"], f"{label}.implementation-version"
+    implementation_parsed = _runtime_version(
+        target["implementation-version"],
+        f"{label}.implementation-version",
+        python=False,
     )
-    try:
-        python_parsed = Version(python_full_version)
-        implementation_parsed = Version(implementation_version)
-    except InvalidVersion as error:
-        _error(label, f"contains an invalid version: {error}")
-    if len(python_parsed.release) < _VERSION_COMPONENTS:
-        _error(label, "python-full-version must include a patch release")
-    if len(implementation_parsed.release) < _VERSION_COMPONENTS:
-        _error(label, "implementation-version must include a patch release")
     compatible_tags = _string_list(
-        target["compatible-tags"], f"{label}.compatible-tags"
+        target["compatible-tags"],
+        f"{label}.compatible-tags",
+        max_items=_MAX_TAG_VALUES,
     )
-    if not compatible_tags:
-        _error(label, "compatible-tags must not be empty")
-    try:
-        expanded_tags = {
-            str(tag) for value in compatible_tags for tag in parse_tag(value)
-        }
-    except ValueError as error:
-        _error(label, f"contains an invalid compatible tag: {error}")
+    expanded_tags = {
+        str(tag)
+        for tag in _configured_tags(
+            compatible_tags,
+            f"{label}.compatible-tags",
+            compressed_input=True,
+        )
+    }
     resolver_platform = _string(
         target["resolver-platform"], f"{label}.resolver-platform"
     )
@@ -664,6 +949,11 @@ def _parse_requirements(
             requirement = Requirement(value)
         except InvalidRequirement as error:
             _error("tool.pyahead.dependencies.requirements", str(error))
+        if len(requirement.extras) > _MAX_EXTRAS:
+            _error(
+                "tool.pyahead.dependencies.requirements",
+                "a requirement requests too many extras",
+            )
         if requirement.url is not None:
             _error(
                 "tool.pyahead.dependencies.requirements",
@@ -684,18 +974,51 @@ def _parse_requirements(
     return tuple(parsed)
 
 
+def _marker_evaluation_units(requirements: Sequence[str], extras: Sequence[str]) -> int:
+    """Return the maximum marker evaluations needed for one target and pass."""
+    contexts = max(1, len(extras))
+    marked = sum(Requirement(value).marker is not None for value in requirements)
+    return len(requirements) + marked * (contexts - 1)
+
+
+def _ensure_marker_evaluation_budget(
+    requirement_groups: Sequence[tuple[Sequence[str], int]],
+    *,
+    extras: Sequence[str],
+    target_count: int,
+    label: str,
+) -> None:
+    """Reject valid-looking inputs whose Cartesian marker work is excessive."""
+    evaluations = target_count * sum(
+        passes * _marker_evaluation_units(requirements, extras)
+        for requirements, passes in requirement_groups
+    )
+    if evaluations > _MAX_MARKER_EVALUATIONS:
+        _error(label, "exceeds the aggregate marker-evaluation budget")
+
+
 def _index_url(value: object) -> str | None:
     if value is None:
         return None
     url = _string(value, "tool.pyahead.dependencies.index-url")
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        _error(
+            "tool.pyahead.dependencies.index-url",
+            "must be a valid HTTP(S) URL",
+        )
     if (
         parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
+        or not hostname
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
+        or port == 0
+        or parsed.netloc.endswith(":")
         or "\\" in url
         or any(character.isspace() for character in url)
     ):
@@ -704,6 +1027,204 @@ def _index_url(value: object) -> str | None:
             "must be an HTTP(S) URL without embedded credentials, query, or fragment",
         )
     return url
+
+
+def _rooted_directory_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
+        flags |= getattr(os, name, 0)
+    return flags
+
+
+def _rooted_file_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        flags |= getattr(os, name, 0)
+    return flags
+
+
+def _supports_rooted_descriptor_reads() -> bool:
+    return bool(
+        os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+    )
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return os.path.samestat(left, right)
+
+
+def _same_stable_file(left: os.stat_result, right: os.stat_result) -> bool:
+    """Compare identity and mutation-sensitive regular-file attributes."""
+    return _same_file(left, right) and all(
+        getattr(left, field) == getattr(right, field)
+        for field in ("st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+    )
+
+
+@dataclass(frozen=True)
+class _RootedReadChain:
+    root: Path
+    descriptors: tuple[int, ...]
+    statuses: tuple[os.stat_result, ...]
+    names: tuple[str, ...]
+
+    def validate(
+        self,
+        leaf_name: str,
+        leaf_status: os.stat_result,
+        leaf_descriptor: int,
+    ) -> None:
+        """Reject any path binding changed while its descriptors were pinned."""
+        current_root = self.root.lstat()
+        if not stat.S_ISDIR(current_root.st_mode) or not _same_file(
+            current_root, self.statuses[0]
+        ):
+            message = "input root changed while being read"
+            raise OSError(message)
+        for index, name in enumerate(self.names, start=1):
+            current = os.stat(
+                name,
+                dir_fd=self.descriptors[index - 1],
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(current.st_mode) or not _same_file(
+                current, self.statuses[index]
+            ):
+                message = "input parent changed while being read"
+                raise OSError(message)
+        current_leaf = os.stat(
+            leaf_name,
+            dir_fd=self.descriptors[-1],
+            follow_symlinks=False,
+        )
+        opened_leaf = os.fstat(leaf_descriptor)
+        if not stat.S_ISREG(current_leaf.st_mode) or not (
+            _same_stable_file(current_leaf, leaf_status)
+            and _same_stable_file(opened_leaf, leaf_status)
+        ):
+            message = "input file changed while being read"
+            raise OSError(message)
+
+
+def _read_posix_rooted_file(root: Path, relative: Path, limit: int) -> bytes:
+    if not _supports_rooted_descriptor_reads():
+        message = "secure root-bounded input APIs are unavailable"
+        raise OSError(message)
+    with ExitStack() as cleanup:
+        descriptors: list[int] = []
+        statuses: list[os.stat_result] = []
+        names: list[str] = []
+        expected_root = root.lstat()
+        root_descriptor = os.open(root, _rooted_directory_flags())
+        cleanup.callback(os.close, root_descriptor)
+        descriptors.append(root_descriptor)
+        opened_root = os.fstat(root_descriptor)
+        if not stat.S_ISDIR(opened_root.st_mode) or not _same_file(
+            expected_root, opened_root
+        ):
+            message = "input root changed while being opened"
+            raise OSError(message)
+        statuses.append(opened_root)
+        for name in relative.parent.parts:
+            descriptor = os.open(
+                name,
+                _rooted_directory_flags(),
+                dir_fd=descriptors[-1],
+            )
+            cleanup.callback(os.close, descriptor)
+            opened = os.fstat(descriptor)
+            if not stat.S_ISDIR(opened.st_mode):
+                message = "input parents must be real directories"
+                raise OSError(message)
+            descriptors.append(descriptor)
+            statuses.append(opened)
+            names.append(name)
+        expected_leaf = os.stat(
+            relative.name,
+            dir_fd=descriptors[-1],
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(expected_leaf.st_mode):
+            message = "input must be a real regular file"
+            raise OSError(message)
+        descriptor = os.open(
+            relative.name,
+            _rooted_file_flags(),
+            dir_fd=descriptors[-1],
+        )
+        cleanup.callback(os.close, descriptor)
+        opened_leaf = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_leaf.st_mode) or not _same_file(
+            expected_leaf, opened_leaf
+        ):
+            message = "input file changed while being opened"
+            raise OSError(message)
+        remaining = limit + 1
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(descriptor, min(_TAR_READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        chain = _RootedReadChain(
+            root=root,
+            descriptors=tuple(descriptors),
+            statuses=tuple(statuses),
+            names=tuple(names),
+        )
+        chain.validate(relative.name, opened_leaf, descriptor)
+        return b"".join(chunks)
+
+
+def _read_rooted_file(root: Path, relative: Path, limit: int) -> bytes:
+    if relative.is_absolute() or relative == Path() or not relative.name:
+        message = "input must name a file beneath the trusted root"
+        raise OSError(message)
+    if ".." in relative.parts:
+        message = "input must remain beneath the trusted root"
+        raise OSError(message)
+    if _supports_rooted_descriptor_reads():
+        return _read_posix_rooted_file(root, relative, limit)
+    if os.name == "nt":
+        return read_windows_rooted_file(root, relative, limit)
+    message = "secure root-bounded input APIs are unavailable"
+    raise OSError(message)
+
+
+def _read_dependency_document(
+    root: Path, relative: Path, label: str
+) -> dict[str, object]:
+    """Read one stable regular TOML file through a root-anchored descriptor."""
+    try:
+        raw_document = _read_rooted_file(root, relative, _MAX_CONFIGURATION_BYTES)
+    except (OSError, RuntimeError, ValueError) as error:
+        detail = str(error)
+        if "regular file" in detail:
+            message = "configuration is not a regular file"
+        elif "changed while" in detail:
+            message = "configuration changed while being read"
+        else:
+            message = "unable to read configuration"
+        raise _configuration_error(label, message) from error
+    if len(raw_document) > _MAX_CONFIGURATION_BYTES:
+        _error(label, "configuration exceeds the size limit")
+    try:
+        return tomllib.loads(raw_document.decode("utf-8", errors="strict"))
+    except RecursionError as error:
+        raise _configuration_error(
+            label, "configuration nesting is too deep"
+        ) from error
+    except UnicodeError as error:
+        raise _configuration_error(
+            label, "configuration is not valid UTF-8 TOML"
+        ) from error
+    except tomllib.TOMLDecodeError as error:
+        raise _configuration_error(label, "configuration is not valid TOML") from error
 
 
 def _read_dependency_table(
@@ -722,24 +1243,19 @@ def _read_dependency_table(
     try:
         resolved = selected.resolve(strict=True)
         resolved.relative_to(resolved_root)
-        if not stat.S_ISREG(resolved.stat().st_mode):
-            _error(selected.name, "configuration is not a regular file")
-        with resolved.open("rb") as stream:
-            document = tomllib.load(stream)
     except FileNotFoundError as error:
         raise _configuration_error(
             selected.name, "configuration file does not exist"
         ) from error
-    except tomllib.TOMLDecodeError as error:
-        raise _configuration_error(
-            selected.name, "configuration is not valid TOML"
-        ) from error
     except (OSError, RuntimeError, ValueError) as error:
-        if isinstance(error, ConfigurationError):
-            raise
         raise _configuration_error(
             selected.name, "unable to read configuration beneath the root"
         ) from error
+    document = _read_dependency_document(
+        resolved_root,
+        resolved.relative_to(resolved_root),
+        selected.name,
+    )
 
     tool = _table(document.get("tool", {}), f"{selected.name}:tool")
     pyahead = _table(tool.get("pyahead", {}), f"{selected.name}:tool.pyahead")
@@ -774,20 +1290,38 @@ def _dependency_inputs(table: dict[str, object]) -> _DependencyInputs:
         _string_list(
             table.get("requirements", []),
             "tool.pyahead.dependencies.requirements",
+            max_items=_MAX_REQUIREMENTS,
         ),
         project_kind,
     )
-    extras = tuple(
-        sorted(
-            _string_list(table.get("extras", []), "tool.pyahead.dependencies.extras")
-        )
+    raw_extras = _string_list(
+        table.get("extras", []),
+        "tool.pyahead.dependencies.extras",
+        max_items=_MAX_EXTRAS,
     )
+    if len(raw_extras) > _MAX_EXTRAS:
+        _error("tool.pyahead.dependencies.extras", "contains too many items")
+    if any(_EXTRA_FIELD.fullmatch(extra) is None for extra in raw_extras):
+        _error(
+            "tool.pyahead.dependencies.extras",
+            "contains an invalid normalized extra name",
+        )
+    extras = tuple(sorted(canonicalize_name(extra) for extra in raw_extras))
+    if len(extras) != len(set(extras)):
+        _error(
+            "tool.pyahead.dependencies.extras",
+            "must not contain duplicate normalized names",
+        )
     metadata = tuple(
         Path(item)
         for item in _string_list(
-            table.get("metadata", []), "tool.pyahead.dependencies.metadata"
+            table.get("metadata", []),
+            "tool.pyahead.dependencies.metadata",
+            max_items=_MAX_METADATA_INPUTS,
         )
     )
+    if len(metadata) > _MAX_METADATA_INPUTS:
+        _error("tool.pyahead.dependencies.metadata", "contains too many items")
     targets_raw = table.get("targets")
     if not isinstance(targets_raw, list) or not targets_raw:
         _error("tool.pyahead.dependencies.targets", "must be a non-empty array")
@@ -888,7 +1422,7 @@ def load_dependency_configuration(
         resolve_override=resolve_override,
         timeout_override=timeout_override,
     )
-    return DependencyConfiguration(
+    configuration = DependencyConfiguration(
         project_kind=inputs.project_kind,
         requirements=inputs.requirements,
         extras=inputs.extras,
@@ -900,31 +1434,35 @@ def load_dependency_configuration(
         resolver=controls.resolver,
         index_url=controls.index_url,
     )
+    return _validate_dependency_configuration(configuration)
+
+
+def _resolved_dependency_root(root: object) -> Path:
+    if not isinstance(root, Path):
+        _error("dependency root", "must be a path to an existing directory")
+    try:
+        resolved = root.resolve(strict=True)
+        status = resolved.stat()
+    except (OSError, RuntimeError) as error:
+        label = "dependency root"
+        message = "must be a path to an existing directory"
+        raise _configuration_error(label, message) from error
+    if not stat.S_ISDIR(status.st_mode):
+        _error("dependency root", "must be a path to an existing directory")
+    return resolved
 
 
 def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
     selected = path if path.is_absolute() else root / path
     try:
         resolved = selected.resolve(strict=True)
-        relative = PurePosixPath(resolved.relative_to(root).as_posix())
-        expected_status = resolved.lstat()
-        if not stat.S_ISREG(expected_status.st_mode):
+        rooted_relative = resolved.relative_to(root)
+        relative_text = rooted_relative.as_posix()
+        _string(relative_text, "resolved metadata input path")
+        relative = PurePosixPath(relative_text)
+        if rooted_relative == Path() or not rooted_relative.name:
             _error(path.name, "metadata input is not a regular file")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        descriptor = os.open(resolved, flags)
-        try:
-            status = os.fstat(descriptor)
-            if not stat.S_ISREG(status.st_mode):
-                _error(path.name, "metadata input is not a regular file")
-            if not os.path.samestat(expected_status, status):
-                _error(path.name, "metadata input changed while being read")
-            with os.fdopen(descriptor, "rb", closefd=True) as stream:
-                descriptor = -1
-                raw = stream.read(_MAX_ARTIFACT_BYTES + 1)
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+        raw = _read_rooted_file(root, rooted_relative, _MAX_ARTIFACT_BYTES)
     except FileNotFoundError as error:
         raise _configuration_error(
             path.name, "metadata input does not exist"
@@ -936,9 +1474,12 @@ def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
             path.name, "metadata input must remain beneath the project root"
         ) from error
     except (OSError, RuntimeError) as error:
-        raise _configuration_error(
-            path.name, "unable to read metadata input"
-        ) from error
+        message = (
+            "metadata input changed while being read"
+            if "changed while" in str(error)
+            else "unable to read metadata input"
+        )
+        raise _configuration_error(path.name, message) from error
     if len(raw) > _MAX_ARTIFACT_BYTES:
         raise _configuration_error(
             path.name,
@@ -964,8 +1505,11 @@ class _ExpandedArchiveReader(RawIOBase):
             if size < 0 or size > remaining_with_sentinel
             else size
         )
+        if (budget := _ACTIVE_ARCHIVE_BUDGET.get()) is not None:
+            bounded_size = min(bounded_size, budget.remaining + 1)
         payload = self._stream.read(bounded_size)
         self._read += len(payload)
+        _consume_archive_expansion(len(payload))
         if self._read > _MAX_ARCHIVE_EXPANDED_BYTES:
             _fail_metadata("archive expanded data exceeds the size limit")
         return payload
@@ -1187,6 +1731,7 @@ def _zip_metadata(raw: bytes, suffix: str) -> tuple[str, bytes]:
                 _fail_metadata("core metadata exceeds the size limit")
             with archive.open(selected) as stream:
                 payload = stream.read(_MAX_METADATA_BYTES + 1)
+            _consume_archive_expansion(len(payload))
             if len(payload) > _MAX_METADATA_BYTES:
                 _fail_metadata("core metadata exceeds the size limit")
             return selected.filename, payload
@@ -1198,7 +1743,6 @@ def _zip_metadata(raw: bytes, suffix: str) -> tuple[str, bytes]:
         RuntimeError,
         UnicodeError,
         ValueError,
-        lzma.LZMAError,
         zipfile.BadZipFile,
         zlib.error,
     ):
@@ -1293,7 +1837,7 @@ def _header(message: Message, name: str, *, required: bool) -> str | None:
     if (
         not value
         or len(value) > _MAX_TEXT_LENGTH
-        or any(character in value for character in ("\x00", "\r", "\n"))
+        or any(not character.isprintable() for character in value)
     ):
         detail = f"core metadata has invalid {name}"
         _fail_metadata(detail)
@@ -1320,8 +1864,11 @@ def _dynamic_fields(message: Message) -> tuple[str, ...]:
 
 
 def _provides_extra_fields(message: Message) -> tuple[str, ...]:
+    raw_values = tuple(message.get_all("Provides-Extra", []))
+    if len(raw_values) > _MAX_EXTRAS:
+        _fail_metadata("core metadata contains too many Provides-Extra fields")
     provides_extra: list[str] = []
-    for raw_extra in message.get_all("Provides-Extra", []):
+    for raw_extra in raw_values:
         value = str(raw_extra)
         if len(value) > _MAX_TEXT_LENGTH or _EXTRA_FIELD.fullmatch(value) is None:
             _fail_metadata("core metadata has invalid Provides-Extra")
@@ -1329,6 +1876,35 @@ def _provides_extra_fields(message: Message) -> tuple[str, ...]:
     if len(provides_extra) != len(set(provides_extra)):
         _fail_metadata("core metadata repeats a Provides-Extra value")
     return tuple(sorted(provides_extra))
+
+
+def _requires_dist_fields(message: Message) -> tuple[str, ...]:
+    raw_values = tuple(str(value) for value in message.get_all("Requires-Dist", []))
+    if len(raw_values) > _MAX_REQUIREMENTS:
+        _fail_metadata("core metadata contains too many Requires-Dist fields")
+    if (budget := _ACTIVE_METADATA_REQUIREMENT_BUDGET.get()) is not None:
+        budget.consume(len(raw_values))
+    parsed: list[str] = []
+    for value in raw_values:
+        if (
+            not value
+            or len(value) > _MAX_TEXT_LENGTH
+            or any(not character.isprintable() for character in value)
+        ):
+            _fail_metadata("core metadata has invalid Requires-Dist")
+        try:
+            requirement = Requirement(value)
+        except InvalidRequirement:
+            _fail_metadata("core metadata has invalid Requires-Dist")
+        if len(requirement.extras) > _MAX_EXTRAS:
+            _fail_metadata("core metadata Requires-Dist requests too many extras")
+        if requirement.url is not None:
+            _fail_metadata(
+                "core metadata has a direct URL Requires-Dist outside the "
+                "configured artifact and index policy"
+            )
+        parsed.append(str(requirement))
+    return tuple(parsed)
 
 
 def _validate_core_metadata_schema(raw: bytes) -> None:
@@ -1371,21 +1947,7 @@ def _parse_core_metadata(raw: bytes) -> _ParsedCoreMetadata:
             SpecifierSet(requires_python)
         except InvalidSpecifier:
             _fail_metadata("core metadata has invalid Requires-Python")
-    raw_requires_dist = tuple(
-        str(value) for value in message.get_all("Requires-Dist", [])
-    )
-    parsed_requirements: list[str] = []
-    for value in raw_requires_dist:
-        try:
-            requirement = Requirement(value)
-        except InvalidRequirement:
-            _fail_metadata("core metadata has invalid Requires-Dist")
-        if requirement.url is not None:
-            _fail_metadata(
-                "core metadata has a direct URL Requires-Dist outside the "
-                "configured artifact and index policy"
-            )
-        parsed_requirements.append(str(requirement))
+    requires_dist = _requires_dist_fields(message)
     provides_extra = _provides_extra_fields(message)
     dynamic = _dynamic_fields(message)
     _validate_core_metadata_schema(raw)
@@ -1394,7 +1956,7 @@ def _parse_core_metadata(raw: bytes) -> _ParsedCoreMetadata:
         version=parsed_version,
         metadata_version=metadata_version,
         requires_python=requires_python,
-        requires_dist=tuple(parsed_requirements),
+        requires_dist=requires_dist,
         provides_extra=provides_extra,
         dynamic=dynamic,
     )
@@ -1408,6 +1970,8 @@ def _wheel_dist_info_directory(
         len(metadata_member.parts) != _WHEEL_PATH_PARTS
         or metadata_member.name != "METADATA"
         or not metadata_member.parent.name.endswith(".dist-info")
+        or metadata_member.as_posix() != metadata_path
+        or "\\" in metadata_path
     ):
         _fail_metadata("wheel METADATA is not in a top-level dist-info directory")
     dist_info = metadata_member.parent.name
@@ -1454,6 +2018,7 @@ def _wheel_file_payload(raw: bytes, dist_info: str) -> bytes:
                 _fail_metadata("WHEEL metadata exceeds the size limit")
             with archive.open(wheel_member) as stream:
                 payload = stream.read(_MAX_METADATA_BYTES + 1)
+            _consume_archive_expansion(len(payload))
             if len(payload) > _MAX_METADATA_BYTES:
                 _fail_metadata("WHEEL metadata exceeds the size limit")
             return payload
@@ -1465,33 +2030,65 @@ def _wheel_file_payload(raw: bytes, dist_info: str) -> bytes:
         RuntimeError,
         UnicodeError,
         ValueError,
-        lzma.LZMAError,
         zipfile.BadZipFile,
         zlib.error,
     ):
         _fail_metadata("invalid ZIP archive")
 
 
+def _wheel_header(message: Message, name: str) -> str:
+    values = message.get_all(name, [])
+    if len(values) != 1:
+        _fail_metadata(f"WHEEL metadata must contain exactly one {name}")
+    value = str(values[0])
+    if (
+        not value
+        or len(value) > _MAX_TEXT_LENGTH
+        or any(not character.isprintable() for character in value)
+    ):
+        _fail_metadata(f"WHEEL metadata has invalid {name}")
+    return value
+
+
+def _validate_wheel_installation_headers(message: Message) -> None:
+    """Require installer-critical WHEEL fields that PyAhead understands."""
+    wheel_version = _wheel_header(message, "Wheel-Version")
+    parsed_version = re.fullmatch(
+        r"(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)", wheel_version
+    )
+    if parsed_version is None or int(parsed_version.group("major")) != 1:
+        _fail_metadata("WHEEL metadata has an unsupported Wheel-Version")
+    if _wheel_header(message, "Root-Is-Purelib") not in {"false", "true"}:
+        _fail_metadata("WHEEL metadata has invalid Root-Is-Purelib")
+
+
 def _wheel_file_tags(wheel_payload: bytes) -> tuple[str, ...]:
     message = BytesParser(policy=policy.compat32).parsebytes(wheel_payload)
     if message.defects:
         _fail_metadata("WHEEL metadata contains malformed headers")
-    _header(message, "Wheel-Version", required=True)
+    _validate_wheel_installation_headers(message)
     raw_tags = tuple(str(value) for value in message.get_all("Tag", []))
     if not raw_tags:
         _fail_metadata("WHEEL metadata omits Tag")
+    if len(raw_tags) > _MAX_TAG_VALUES:
+        _fail_metadata("WHEEL metadata contains too many Tag fields")
     internal_tags: set[str] = set()
+    expansion_count = 0
     for value in raw_tags:
         if (
             not value
             or len(value) > _MAX_TEXT_LENGTH
-            or any(character in value for character in ("\x00", "\r", "\n"))
+            or any(not character.isprintable() for character in value)
         ):
             _fail_metadata("WHEEL metadata has invalid Tag")
         try:
-            internal_tags.update(map(str, parse_tag(value)))
+            expanded_count = _tag_expansion_count(value)
         except ValueError:
             _fail_metadata("WHEEL metadata has invalid Tag")
+        expansion_count += expanded_count
+        if expansion_count > _MAX_EXPANDED_TAGS:
+            _fail_metadata("WHEEL metadata Tag fields expand to too many tags")
+        internal_tags.update(map(str, parse_tag(value)))
     return tuple(sorted(internal_tags))
 
 
@@ -1505,6 +2102,53 @@ def _wheel_structure_tags(
     return _wheel_file_tags(_wheel_file_payload(raw, dist_info))
 
 
+def _validate_sdist_identity(
+    path: PurePosixPath,
+    metadata_path: str,
+    metadata: _ParsedCoreMetadata,
+) -> None:
+    try:
+        filename_name, filename_version = parse_sdist_filename(path.name)
+    except InvalidSdistFilename:
+        _fail_metadata("invalid source distribution filename")
+    if (
+        filename_name != canonicalize_name(metadata.name)
+        or filename_version != metadata.version
+    ):
+        _fail_metadata("sdist filename and core metadata identity disagree")
+    member = PurePosixPath(metadata_path)
+    if len(member.parts) != _WHEEL_PATH_PARTS or member.name != "PKG-INFO":
+        _fail_metadata("sdist PKG-INFO is not in its top-level identity directory")
+    identity = member.parent.name
+    distribution, separator, raw_version = identity.rpartition("-")
+    try:
+        member_version = Version(raw_version)
+    except InvalidVersion:
+        _fail_metadata("sdist has an invalid PKG-INFO directory identity")
+    if (
+        not separator
+        or metadata_path != f"{identity}/PKG-INFO"
+        or canonicalize_name(distribution) != filename_name
+        or member_version != filename_version
+    ):
+        _fail_metadata(
+            "sdist PKG-INFO directory, filename, and core metadata identity disagree"
+        )
+
+
+def _validate_wheel_filename_tag_expansion(filename: str) -> None:
+    """Bound compressed filename tags before packaging expands their product."""
+    components = filename.removesuffix(".whl").rsplit("-", maxsplit=3)
+    if len(components) != _TAG_COMPONENTS + 1:
+        _fail_metadata("invalid wheel filename")
+    try:
+        expanded_count = _tag_expansion_count("-".join(components[1:]))
+    except ValueError:
+        _fail_metadata("invalid wheel filename")
+    if expanded_count > _MAX_EXPANDED_TAGS:
+        _fail_metadata("wheel filename expands to too many compatibility tags")
+
+
 def _validate_artifact_identity(
     path: PurePosixPath,
     kind: MetadataKind,
@@ -1514,6 +2158,7 @@ def _validate_artifact_identity(
     metadata_path: str,
 ) -> tuple[str, ...]:
     if kind is MetadataKind.WHEEL:
+        _validate_wheel_filename_tag_expansion(path.name)
         try:
             filename_name, filename_version, _build, tags = parse_wheel_filename(
                 path.name
@@ -1535,15 +2180,7 @@ def _validate_artifact_identity(
             _fail_metadata("wheel internal and filename tags disagree")
         return filename_tags
     if kind is MetadataKind.SDIST:
-        try:
-            filename_name, filename_version = parse_sdist_filename(path.name)
-        except InvalidSdistFilename:
-            _fail_metadata("invalid source distribution filename")
-        if (
-            filename_name != canonicalize_name(metadata.name)
-            or filename_version != metadata.version
-        ):
-            _fail_metadata("sdist filename and core metadata identity disagree")
+        _validate_sdist_identity(path, metadata_path, metadata)
     return ()
 
 
@@ -1558,6 +2195,12 @@ def _parse_metadata(
     metadata = _parse_core_metadata(raw)
     if kind is MetadataKind.WHEEL and metadata.dynamic:
         _fail_metadata("wheel core metadata must not declare Dynamic fields")
+    dynamic = metadata.dynamic
+    if (
+        kind is not MetadataKind.WHEEL
+        and Version(metadata.metadata_version) < _STATIC_SDIST_METADATA_VERSION
+    ):
+        dynamic = _LEGACY_IMPLICIT_DYNAMIC_FIELDS
     wheel_tags = _validate_artifact_identity(
         path,
         kind,
@@ -1577,23 +2220,37 @@ def _parse_metadata(
         requires_python=metadata.requires_python,
         requires_dist=metadata.requires_dist,
         provides_extra=metadata.provides_extra,
-        dynamic=metadata.dynamic,
+        dynamic=dynamic,
         wheel_tags=wheel_tags,
         metadata_path=metadata_path,
         sha256=digest,
     )
 
 
+@_with_archive_expansion_budget
+@_with_metadata_requirement_budget
 def inspect_dependency_metadata(
     metadata_paths: Sequence[Path], *, root: Path
 ) -> tuple[tuple[MetadataArtifact, ...], tuple[MetadataIssue, ...]]:
     """Read static core metadata without importing code or running a backend."""
-    resolved_root = root.resolve(strict=True)
+    if len(metadata_paths) > _MAX_METADATA_INPUTS:
+        _error("dependency metadata inputs", "contains too many items")
+    if not all(isinstance(path, Path) for path in metadata_paths):
+        _error("dependency metadata inputs", "must contain only paths")
+    resolved_root = _resolved_dependency_root(root)
     artifacts: list[MetadataArtifact] = []
     issues: list[MetadataIssue] = []
     selected_paths: set[PurePosixPath] = set()
+    selected_artifact_ids: set[str] = set()
+    total_artifact_bytes = 0
     for configured_path in metadata_paths:
         relative, artifact_bytes = _read_artifact(configured_path, resolved_root)
+        total_artifact_bytes += len(artifact_bytes)
+        if total_artifact_bytes > _MAX_METADATA_TOTAL_BYTES:
+            _error(
+                "tool.pyahead.dependencies.metadata",
+                "exceeds the aggregate input byte limit",
+            )
         if relative in selected_paths:
             _error("tool.pyahead.dependencies.metadata", "contains duplicate paths")
         selected_paths.add(relative)
@@ -1607,6 +2264,12 @@ def inspect_dependency_metadata(
                 artifact_raw=artifact_bytes,
             )
             artifact_digest = hashlib.sha256(artifact_bytes).hexdigest()
+            if artifact_digest in selected_artifact_ids:
+                _error(
+                    "tool.pyahead.dependencies.metadata",
+                    "contains duplicate artifact content",
+                )
+            selected_artifact_ids.add(artifact_digest)
             artifacts.append(
                 MetadataArtifact(
                     artifact_id=artifact_digest,
@@ -1636,6 +2299,8 @@ def inspect_dependency_metadata(
 def _evaluate_requirement(
     value: str, target: EnvironmentTarget, extras: tuple[str, ...]
 ) -> EvaluatedRequirement:
+    _consume_dependency_work(1)
+    budget = _ACTIVE_MARKER_BUDGET.get()
     requirement = Requirement(value)
     if requirement.marker is None:
         return EvaluatedRequirement(
@@ -1647,7 +2312,9 @@ def _evaluate_requirement(
             verified=False,
             reason="active requirement has not been correlated with evidence",
         )
-    contexts = ("", *extras)
+    contexts = extras or ("",)
+    if budget is not None and len(contexts) > 1:
+        budget.consume(len(contexts) - 1)
     try:
         matching = [
             extra or "base"
@@ -1657,7 +2324,7 @@ def _evaluate_requirement(
                 context="metadata",
             )
         ]
-    except UndefinedEnvironmentName as error:
+    except (UndefinedComparison, UndefinedEnvironmentName) as error:
         message = f"environment marker cannot be evaluated for target {target.name!r}"
         raise ConfigurationError(message) from error
     return EvaluatedRequirement(
@@ -1679,10 +2346,12 @@ def _select_artifacts(
     group: tuple[MetadataArtifact, ...], target: EnvironmentTarget
 ) -> _ArtifactSelection:
     wheels = tuple(item for item in group if item.kind is MetadataKind.WHEEL)
+    _consume_dependency_work(
+        len(target.tags) + sum(len(item.wheel_tags) for item in wheels)
+    )
+    target_tags = frozenset(map(str, target.tags))
     matching_wheels = tuple(
-        item
-        for item in wheels
-        if any(target.tags.intersection(parse_tag(tag)) for tag in item.wheel_tags)
+        item for item in wheels if any(tag in target_tags for tag in item.wheel_tags)
     )
     sdists = tuple(item for item in group if item.kind is MetadataKind.SDIST)
     raw_metadata = tuple(
@@ -1707,13 +2376,10 @@ def _requires_python_status(
         if "requires-python" not in item.dynamic
     }
     dynamic = any("requires-python" in item.dynamic for item in artifacts)
+    if dynamic:
+        return RequiresPythonStatus.UNVERIFIED, True
     if not declarations:
-        status = (
-            RequiresPythonStatus.UNVERIFIED
-            if dynamic
-            else RequiresPythonStatus.UNSPECIFIED
-        )
-        return status, dynamic
+        return RequiresPythonStatus.UNSPECIFIED, False
     if len(declarations) != 1:
         return RequiresPythonStatus.UNVERIFIED, dynamic
     declaration = next(iter(declarations))
@@ -1783,6 +2449,23 @@ def _assessment_outcome(
     )
 
 
+def _artifact_applicable_requirements(
+    artifact: MetadataArtifact,
+    target: EnvironmentTarget,
+    extras: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Evaluate one candidate's dependency edges without blending candidates."""
+    return tuple(
+        sorted(
+            {
+                item.requirement
+                for value in artifact.requires_dist
+                if (item := _evaluate_requirement(value, target, extras)).applies
+            }
+        )
+    )
+
+
 def _assessment(
     group: tuple[MetadataArtifact, ...],
     target: EnvironmentTarget,
@@ -1790,25 +2473,48 @@ def _assessment(
 ) -> DependencyAssessment:
     first = group[0]
     selection = _select_artifacts(group, target)
-    metadata_used = tuple(sorted({item.artifact_id for item in group}))
-    requirements = tuple(
-        sorted(
-            {
-                item.requirement
-                for artifact in selection.semantic_metadata
-                if "requires-dist" not in artifact.dynamic
-                for item in (
-                    _evaluate_requirement(value, target, extras)
-                    for value in artifact.requires_dist
-                )
-                if item.applies
-            }
-        )
-    )
+    semantic_metadata = selection.semantic_metadata
     requires_status, dynamic_requires_python = _requires_python_status(
-        selection.semantic_metadata,
-        target,
+        semantic_metadata, target
     )
+    fallback_metadata = (
+        (*selection.sdists, *selection.raw_metadata)
+        if selection.matching_wheels
+        else selection.raw_metadata
+        if selection.sdists
+        else ()
+    )
+    if requires_status is RequiresPythonStatus.INCOMPATIBLE and fallback_metadata:
+        combined_metadata = (*semantic_metadata, *fallback_metadata)
+        combined_status, combined_dynamic = _requires_python_status(
+            combined_metadata, target
+        )
+        semantic_metadata = combined_metadata
+        requires_status = combined_status
+        dynamic_requires_python = combined_dynamic
+    metadata_used = tuple(sorted({item.artifact_id for item in semantic_metadata}))
+    marker_issue: str | None = None
+    dynamic_requires_dist = any(
+        "requires-dist" in artifact.dynamic for artifact in semantic_metadata
+    )
+    requires_dist_disagreement = False
+    try:
+        candidate_requirements = tuple(
+            _artifact_applicable_requirements(artifact, target, extras)
+            for artifact in semantic_metadata
+            if "requires-dist" not in artifact.dynamic
+        )
+        requires_dist_disagreement = len(set(candidate_requirements)) > 1
+        requirements = (
+            () if requires_dist_disagreement else next(iter(candidate_requirements), ())
+        )
+    except _MarkerEvaluationLimitError:
+        raise
+    except ConfigurationError:
+        requirements = ()
+        marker_issue = (
+            "candidate Requires-Dist marker cannot be evaluated for the declared target"
+        )
     availability = _artifact_availability(selection)
     status, reason = _assessment_outcome(
         requires_status,
@@ -1816,6 +2522,18 @@ def _assessment(
         dynamic_requires_python=dynamic_requires_python,
         source_build_possible=bool(selection.sdists),
     )
+    if marker_issue is not None:
+        status = DependencyCompatibilityStatus.UNVERIFIED
+        reason = marker_issue
+    elif dynamic_requires_dist:
+        status = DependencyCompatibilityStatus.UNVERIFIED
+        reason = (
+            "candidate metadata declares Requires-Dist dynamic; dependency "
+            "compatibility remains unverified"
+        )
+    elif requires_dist_disagreement:
+        status = DependencyCompatibilityStatus.UNVERIFIED
+        reason = "candidate artifacts disagree on applicable Requires-Dist"
     return DependencyAssessment(
         package=first.name,
         version=first.version,
@@ -1829,6 +2547,354 @@ def _assessment(
     )
 
 
+def _bounded_artifact_strings(
+    value: object,
+    *,
+    label: str,
+    limit: int,
+    unique: bool,
+) -> tuple[str, ...]:
+    if not isinstance(value, tuple):
+        _error(label, "must be a tuple")
+    if len(value) > limit:
+        _error(label, "contains too many items")
+    result = tuple(_string(item, f"{label} item") for item in value)
+    if unique and len(result) != len(set(result)):
+        _error(label, "contains duplicates")
+    return result
+
+
+def _validate_artifact_relative_path(value: object, *, label: str) -> PurePosixPath:
+    if not isinstance(value, PurePosixPath):
+        _error(label, "must be a relative POSIX path")
+    text = _string(value.as_posix(), label)
+    if value.is_absolute() or text == "." or ".." in value.parts or "\\" in text:
+        _error(label, "must remain a relative traversal-free path")
+    return value
+
+
+def _validate_metadata_artifact_identity(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> None:
+    artifact_id = _string(artifact.artifact_id, f"{label}.artifact-id")
+    sha256 = _string(artifact.sha256, f"{label}.sha256")
+    if _SHA256.fullmatch(artifact_id) is None or artifact_id != sha256:
+        _error(label, "must have one matching lowercase SHA-256 identity")
+    _validate_artifact_relative_path(artifact.path, label=f"{label}.path")
+    if not isinstance(artifact.kind, MetadataKind):
+        _error(f"{label}.kind", "is invalid")
+    name = _string(artifact.name, f"{label}.name")
+    try:
+        expected_name = canonicalize_name(name, validate=True)
+    except ValueError:
+        _error(f"{label}.name", "is not a valid distribution name")
+    if artifact.canonical_name != expected_name:
+        _error(f"{label}.canonical-name", "does not match the distribution name")
+    version = _string(artifact.version, f"{label}.version")
+    try:
+        parsed_version = Version(version)
+    except InvalidVersion:
+        _error(f"{label}.version", "is invalid")
+    if str(parsed_version) != version:
+        _error(f"{label}.version", "must use its canonical form")
+    metadata_version = _string(
+        artifact.metadata_version,
+        f"{label}.metadata-version",
+    )
+    if re.fullmatch(r"[12]\.[0-9]+", metadata_version) is None:
+        _error(f"{label}.metadata-version", "is invalid")
+    raw_metadata_path = _string(
+        artifact.metadata_path,
+        f"{label}.metadata-path",
+    )
+    metadata_path = PurePosixPath(raw_metadata_path)
+    if metadata_path.as_posix() != raw_metadata_path or "\\" in raw_metadata_path:
+        _error(f"{label}.metadata-path", "must use one normalized POSIX spelling")
+    _validate_artifact_relative_path(metadata_path, label=f"{label}.metadata-path")
+
+
+def _validated_artifact_requirements(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    requirements = _bounded_artifact_strings(
+        artifact.requires_dist,
+        label=f"{label}.requires-dist",
+        limit=_MAX_REQUIREMENTS,
+        unique=False,
+    )
+    for value in requirements:
+        try:
+            requirement = Requirement(value)
+        except InvalidRequirement:
+            _error(f"{label}.requires-dist", "contains an invalid requirement")
+        if len(requirement.extras) > _MAX_EXTRAS:
+            _error(f"{label}.requires-dist", "requests too many extras")
+        if requirement.url is not None or str(requirement) != value:
+            _error(f"{label}.requires-dist", "contains an unsafe or noncanonical value")
+    return requirements
+
+
+def _validated_artifact_extras(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    extras = _bounded_artifact_strings(
+        artifact.provides_extra,
+        label=f"{label}.provides-extra",
+        limit=_MAX_EXTRAS,
+        unique=True,
+    )
+    if tuple(sorted(extras)) != extras or any(
+        _EXTRA_FIELD.fullmatch(value) is None or canonicalize_name(value) != value
+        for value in extras
+    ):
+        _error(f"{label}.provides-extra", "must contain sorted normalized names")
+    return extras
+
+
+def _validated_artifact_dynamic(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    dynamic = _bounded_artifact_strings(
+        artifact.dynamic,
+        label=f"{label}.dynamic",
+        limit=_MAX_REQUIREMENTS,
+        unique=True,
+    )
+    if tuple(sorted(dynamic)) != dynamic or any(
+        _DYNAMIC_FIELD.fullmatch(value) is None or value.casefold() != value
+        for value in dynamic
+    ):
+        _error(f"{label}.dynamic", "must contain sorted normalized fields")
+    return dynamic
+
+
+def _validated_artifact_tags(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    tags = _bounded_artifact_strings(
+        artifact.wheel_tags,
+        label=f"{label}.wheel-tags",
+        limit=_MAX_EXPANDED_TAGS,
+        unique=True,
+    )
+    if tuple(sorted(tags)) != tags or any(
+        not _artifact_tag_is_expanded(value) for value in tags
+    ):
+        _error(f"{label}.wheel-tags", "must contain sorted expanded tags")
+    if bool(tags) is not (artifact.kind is MetadataKind.WHEEL):
+        _error(f"{label}.wheel-tags", "must agree with the artifact kind")
+    return tags
+
+
+def _validate_metadata_artifact_declarations(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> None:
+    if artifact.requires_python is not None:
+        requires_python = _string(
+            artifact.requires_python,
+            f"{label}.requires-python",
+        )
+        try:
+            SpecifierSet(requires_python)
+        except InvalidSpecifier:
+            _error(f"{label}.requires-python", "is invalid")
+    requirements = _validated_artifact_requirements(artifact, label=label)
+    extras = _validated_artifact_extras(artifact, label=label)
+    dynamic = _validated_artifact_dynamic(artifact, label=label)
+    tags = _validated_artifact_tags(artifact, label=label)
+    if sum(len(item) for item in (*requirements, *extras, *dynamic, *tags)) > (
+        _MAX_METADATA_BYTES
+    ):
+        _error(label, "contains too much nested metadata text")
+
+
+def _artifact_tag_is_expanded(value: str) -> bool:
+    try:
+        return _tag_expansion_count(value) == 1 and len(parse_tag(value)) == 1
+    except ValueError:
+        return False
+
+
+def _validate_programmatic_wheel_binding(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> None:
+    if artifact.dynamic:
+        _error(label, "wheel metadata must not declare Dynamic fields")
+    filename = artifact.path.name
+    components = filename.removesuffix(".whl").rsplit("-", maxsplit=3)
+    if len(components) != _TAG_COMPONENTS + 1:
+        _error(label, "has an invalid wheel filename")
+    try:
+        expansion = _tag_expansion_count("-".join(components[1:]))
+    except ValueError:
+        _error(label, "has an invalid wheel filename")
+    if expansion > _MAX_EXPANDED_TAGS:
+        _error(label, "wheel filename expands to too many compatibility tags")
+    try:
+        filename_name, filename_version, _build, filename_tags = parse_wheel_filename(
+            filename
+        )
+    except InvalidWheelFilename:
+        _error(label, "has an invalid wheel filename")
+    if (
+        filename_name != artifact.canonical_name
+        or filename_version != Version(artifact.version)
+        or tuple(sorted(map(str, filename_tags))) != artifact.wheel_tags
+    ):
+        _error(label, "wheel filename and inspected identity disagree")
+    member = PurePosixPath(artifact.metadata_path)
+    if (
+        len(member.parts) != _WHEEL_PATH_PARTS
+        or member.name != "METADATA"
+        or not member.parent.name.endswith(".dist-info")
+    ):
+        _error(label, "wheel metadata path is not a top-level dist-info member")
+    distribution, separator, raw_version = member.parent.name.removesuffix(
+        ".dist-info"
+    ).rpartition("-")
+    try:
+        metadata_version = Version(raw_version)
+    except InvalidVersion:
+        _error(label, "wheel metadata path has an invalid identity")
+    if (
+        not separator
+        or canonicalize_name(distribution) != artifact.canonical_name
+        or metadata_version != Version(artifact.version)
+    ):
+        _error(label, "wheel metadata path and inspected identity disagree")
+
+
+def _validate_programmatic_sdist_binding(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> None:
+    try:
+        filename_name, filename_version = parse_sdist_filename(artifact.path.name)
+    except InvalidSdistFilename:
+        _error(label, "has an invalid source distribution filename")
+    if filename_name != artifact.canonical_name or filename_version != Version(
+        artifact.version
+    ):
+        _error(label, "sdist filename and inspected identity disagree")
+    member = PurePosixPath(artifact.metadata_path)
+    if len(member.parts) != _WHEEL_PATH_PARTS or member.name != "PKG-INFO":
+        _error(label, "sdist metadata path is not a top-level PKG-INFO member")
+    distribution, separator, raw_version = member.parent.name.rpartition("-")
+    try:
+        metadata_version = Version(raw_version)
+    except InvalidVersion:
+        _error(label, "sdist metadata path has an invalid identity")
+    if (
+        not separator
+        or canonicalize_name(distribution) != artifact.canonical_name
+        or metadata_version != Version(artifact.version)
+    ):
+        _error(label, "sdist metadata path and inspected identity disagree")
+
+
+def _validate_artifact_container_binding(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> None:
+    """Re-establish loader-proven filename and member identity for public inputs."""
+    if artifact.kind is MetadataKind.WHEEL:
+        _validate_programmatic_wheel_binding(artifact, label=label)
+        return
+    if artifact.kind is MetadataKind.SDIST:
+        _validate_programmatic_sdist_binding(artifact, label=label)
+        return
+    if artifact.metadata_path != artifact.path.name or artifact.path.name.endswith(
+        ".whl"
+    ):
+        _error(label, "standalone metadata path and inspected identity disagree")
+    try:
+        parse_sdist_filename(artifact.path.name)
+    except InvalidSdistFilename:
+        return
+    _error(label, "standalone metadata path is classified as a source distribution")
+
+
+def _validate_programmatic_metadata_schema(
+    artifact: MetadataArtifact,
+    *,
+    label: str,
+) -> None:
+    """Apply packaging's version-specific Core Metadata schema to public records."""
+    lines = [
+        f"Metadata-Version: {artifact.metadata_version}",
+        f"Name: {artifact.name}",
+        f"Version: {artifact.version}",
+    ]
+    if artifact.requires_python is not None:
+        lines.append(f"Requires-Python: {artifact.requires_python}")
+    lines.extend(f"Requires-Dist: {value}" for value in artifact.requires_dist)
+    lines.extend(f"Provides-Extra: {value}" for value in artifact.provides_extra)
+    implicit_dynamic = (
+        _LEGACY_IMPLICIT_DYNAMIC_FIELDS
+        if artifact.kind is not MetadataKind.WHEEL
+        and Version(artifact.metadata_version) < _STATIC_SDIST_METADATA_VERSION
+        else ()
+    )
+    if implicit_dynamic and artifact.dynamic != implicit_dynamic:
+        _error(
+            label,
+            "legacy source metadata must preserve implicit dynamic field semantics",
+        )
+    lines.extend(
+        f"Dynamic: {value}"
+        for value in artifact.dynamic
+        if value not in implicit_dynamic
+    )
+    try:
+        _validate_core_metadata_schema(("\n".join(lines) + "\n\n").encode())
+    except _MetadataError as error:
+        _error(label, f"does not conform to Core Metadata: {error}")
+
+
+def _validate_metadata_artifacts(artifacts: Sequence[MetadataArtifact]) -> None:
+    if len(artifacts) > _MAX_METADATA_INPUTS:
+        _error("dependency metadata", "contains too many items")
+    paths: list[PurePosixPath] = []
+    artifact_ids: list[str] = []
+    total_requirements = 0
+    for index, artifact in enumerate(artifacts):
+        label = f"dependency metadata[{index}]"
+        if not isinstance(artifact, MetadataArtifact):
+            _error(label, "must be an inspected metadata artifact")
+        if not isinstance(artifact.requires_dist, tuple):
+            _error(f"{label}.requires-dist", "must be a tuple")
+        total_requirements += len(artifact.requires_dist)
+        if total_requirements > _MAX_METADATA_REQUIREMENTS:
+            _error("dependency metadata", "exceeds the aggregate Requires-Dist limit")
+        _validate_metadata_artifact_identity(artifact, label=label)
+        _validate_metadata_artifact_declarations(artifact, label=label)
+        _validate_programmatic_metadata_schema(artifact, label=label)
+        _validate_artifact_container_binding(artifact, label=label)
+        paths.append(artifact.path)
+        artifact_ids.append(artifact.artifact_id)
+    if len(paths) != len(set(paths)):
+        _error("dependency metadata", "contains duplicate paths")
+    if len(artifact_ids) != len(set(artifact_ids)):
+        _error("dependency metadata", "contains duplicate artifact identities")
+
+
+@_with_marker_evaluation_budget
 def assess_dependency_metadata(
     artifacts: Sequence[MetadataArtifact],
     *,
@@ -1836,7 +2902,27 @@ def assess_dependency_metadata(
     extras: tuple[str, ...],
 ) -> tuple[DependencyAssessment, ...]:
     """Assess exact supplied versions for one fully declared target."""
-    _ensure_target_coherence(target, label=f"dependency target {target.name!r}")
+    _validate_metadata_artifacts(artifacts)
+    _ensure_target_coherence(target, label="dependency target")
+    validated_extras = _validate_effective_extras(
+        extras,
+        label="dependency assessment extras",
+    )
+    _ensure_marker_evaluation_budget(
+        (
+            (
+                tuple(
+                    requirement
+                    for artifact in artifacts
+                    for requirement in artifact.requires_dist
+                ),
+                1,
+            ),
+        ),
+        extras=validated_extras,
+        target_count=1,
+        label="dependency assessment",
+    )
     grouped: dict[tuple[str, Version], list[MetadataArtifact]] = {}
     for artifact in artifacts:
         key = (artifact.canonical_name, Version(artifact.version))
@@ -1845,7 +2931,7 @@ def assess_dependency_metadata(
         _assessment(
             tuple(sorted(grouped[key], key=lambda item: item.path.as_posix())),
             target,
-            extras,
+            validated_extras,
         )
         for key in sorted(grouped, key=lambda item: (item[0], item[1]))
     )
@@ -1868,6 +2954,7 @@ def _unverify_library_artifact_sample(
 
 
 def _requirement_accepts_version(requirement: Requirement, version: str) -> bool:
+    _consume_dependency_work(1)
     return requirement.specifier.contains(Version(version), prereleases=True)
 
 
@@ -1886,7 +2973,7 @@ def _resolved_artifact_group(
         if (
             artifact is None
             or artifact.canonical_name != canonicalize_name(package.name)
-            or artifact.version != package.version
+            or Version(artifact.version) != Version(package.version)
         ):
             return None
         selected.append(artifact)
@@ -1907,6 +2994,21 @@ def _resolution_evidence_artifacts(
     return tuple(
         artifact for artifact in artifacts if artifact.artifact_id in selected_ids
     )
+
+
+def _target_semantic_artifacts(
+    artifacts: Sequence[MetadataArtifact], target: EnvironmentTarget
+) -> tuple[MetadataArtifact, ...]:
+    """Keep only artifacts whose metadata is selected for the declared target."""
+    grouped: dict[tuple[str, Version], list[MetadataArtifact]] = {}
+    for artifact in artifacts:
+        key = (artifact.canonical_name, Version(artifact.version))
+        grouped.setdefault(key, []).append(artifact)
+    selected: list[MetadataArtifact] = []
+    for key in sorted(grouped, key=lambda item: (item[0], item[1])):
+        group = tuple(sorted(grouped[key], key=lambda item: item.path.as_posix()))
+        selected.extend(_select_artifacts(group, target).semantic_metadata)
+    return tuple(selected)
 
 
 def _propagated_dependency_assessments(
@@ -1939,19 +3041,28 @@ def _propagated_dependency_assessments(
         assessments[key] = assessment
         for value in assessment.applicable_requirements:
             requirement = Requirement(value)
-            requested = {canonicalize_name(extra) for extra in requirement.extras}
+            requested = _canonical_requested_extras((requirement,))
             name = canonicalize_name(requirement.name)
-            for candidate_key in keys_by_name.get(name, []):
+            candidate_keys = keys_by_name.get(name, [])
+            _consume_dependency_work(len(candidate_keys))
+            for candidate_key in candidate_keys:
                 if not _requirement_accepts_version(requirement, str(candidate_key[1])):
                     continue
-                candidate_group = grouped[candidate_key]
-                eligible = any(
-                    (
-                        _artifact_satisfies_requirements(artifact, (requirement,))
-                        if requested
-                        else _artifact_satisfies_version_constraints(
-                            artifact, (requirement,)
+                candidate_group = _select_artifacts(
+                    tuple(
+                        sorted(
+                            grouped[candidate_key],
+                            key=lambda item: item.path.as_posix(),
                         )
+                    ),
+                    target,
+                ).semantic_metadata
+                _consume_dependency_work(len(candidate_group))
+                eligible = bool(candidate_group) and all(
+                    _artifact_satisfies_requirements(artifact, (requirement,))
+                    if requested
+                    else _artifact_satisfies_version_constraints(
+                        artifact, (requirement,)
                     )
                     for artifact in candidate_group
                 )
@@ -1972,12 +3083,19 @@ def _direct_dependency_groups(
     artifacts: Sequence[MetadataArtifact],
     active: Sequence[Requirement],
 ) -> dict[tuple[str, Version], list[MetadataArtifact]]:
+    requirements_by_name: dict[str, list[Requirement]] = {}
+    for requirement in active:
+        requirements_by_name.setdefault(
+            canonicalize_name(requirement.name),
+            [],
+        ).append(requirement)
     grouped: dict[tuple[str, Version], list[MetadataArtifact]] = {}
     for artifact in artifacts:
-        if any(
-            canonicalize_name(requirement.name) == artifact.canonical_name
-            and _requirement_accepts_version(requirement, artifact.version)
-            for requirement in active
+        candidates = requirements_by_name.get(artifact.canonical_name, [])
+        _consume_dependency_work(len(candidates))
+        if candidates and all(
+            _requirement_accepts_version(requirement, artifact.version)
+            for requirement in candidates
         ):
             key = (artifact.canonical_name, Version(artifact.version))
             grouped.setdefault(key, []).append(artifact)
@@ -2003,6 +3121,7 @@ def _resolver_root_keys(
     resolution: ResolverResult,
     artifacts_by_id: Mapping[str, MetadataArtifact],
 ) -> tuple[tuple[str, Version], ...]:
+    _consume_dependency_work(len(ordered_keys) * len(resolution.packages))
     return tuple(
         key
         for key in ordered_keys
@@ -2024,22 +3143,32 @@ def _initial_dependency_extras(
     ordered_keys: Sequence[tuple[str, Version]],
     active: Sequence[Requirement],
     grouped: Mapping[tuple[str, Version], Sequence[MetadataArtifact]],
+    target: EnvironmentTarget,
 ) -> dict[tuple[str, Version], set[str]]:
-    return {
-        key: {
-            canonicalize_name(extra)
+    _consume_dependency_work(len(ordered_keys) * len(active))
+    initial: dict[tuple[str, Version], set[str]] = {}
+    for key in ordered_keys:
+        matching = tuple(
+            requirement
             for requirement in active
             if canonicalize_name(requirement.name) == key[0]
             and _requirement_accepts_version(requirement, str(key[1]))
-            for extra in requirement.extras
-            if any(
+        )
+        requested = _canonical_requested_extras(matching)
+        selected = _select_artifacts(
+            tuple(sorted(grouped[key], key=lambda item: item.path.as_posix())),
+            target,
+        ).semantic_metadata
+        initial[key] = {
+            extra
+            for extra in requested
+            if all(
                 "provides-extra" not in artifact.dynamic
-                and canonicalize_name(extra) in artifact.provides_extra
-                for artifact in grouped[key]
+                and extra in artifact.provides_extra
+                for artifact in selected
             )
         }
-        for key in ordered_keys
-    }
+    return initial
 
 
 def _assess_declared_dependency_metadata(
@@ -2052,10 +3181,10 @@ def _assess_declared_dependency_metadata(
 ) -> tuple[DependencyAssessment, ...]:
     active = tuple(Requirement(item.requirement) for item in declared if item.applies)
     artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
-    active_groups: dict[str, tuple[Requirement, ...]] = {}
+    active_groups: dict[str, list[Requirement]] = {}
     for requirement in active:
         name = canonicalize_name(requirement.name)
-        active_groups[name] = (*active_groups.get(name, ()), requirement)
+        active_groups.setdefault(name, []).append(requirement)
     use_resolver_selection = (
         resolution.status is ResolutionStatus.SUCCEEDED and resolution.complete
     )
@@ -2065,6 +3194,11 @@ def _assess_declared_dependency_metadata(
         else _direct_dependency_groups(artifacts, active)
     )
     ordered_keys = tuple(sorted(grouped, key=lambda item: (item[0], item[1])))
+    ambiguous_names = {
+        name
+        for name in {key[0] for key in ordered_keys}
+        if sum(key[0] == name for key in ordered_keys) > 1
+    }
     seed_keys = (
         _resolver_root_keys(
             ordered_keys,
@@ -2075,7 +3209,7 @@ def _assess_declared_dependency_metadata(
         if use_resolver_selection
         else ordered_keys
     )
-    initial_extras = _initial_dependency_extras(ordered_keys, active, grouped)
+    initial_extras = _initial_dependency_extras(ordered_keys, active, grouped, target)
     raw_assessments = _propagated_dependency_assessments(
         grouped,
         ordered_keys,
@@ -2089,19 +3223,27 @@ def _assess_declared_dependency_metadata(
             continue
         matching_requirements = tuple(
             requirement
-            for requirement in active
-            if canonicalize_name(requirement.name) == key[0]
-            and _requirement_accepts_version(requirement, str(key[1]))
+            for requirement in active_groups.get(key[0], ())
+            if _requirement_accepts_version(requirement, str(key[1]))
         )
         assessment = raw_assessments[key]
         if configuration.project_kind is DependencyProjectKind.LIBRARY:
             assessment = _unverify_library_artifact_sample(assessment)
+        if not use_resolver_selection and key[0] in ambiguous_names:
+            assessment = replace(
+                assessment,
+                status=DependencyCompatibilityStatus.UNVERIFIED,
+                reason=(
+                    "active constraints match multiple supplied package versions; "
+                    "exact resolver provenance is required"
+                ),
+            )
         if (
             configuration.project_kind is DependencyProjectKind.LIBRARY
             and assessment.status is DependencyCompatibilityStatus.DECLARED_INCOMPATIBLE
             and matching_requirements
-            and all(
-                _exact_requirement_version(requirement) is None
+            and not any(
+                _requirement_is_singleton_pin(requirement)
                 for requirement in matching_requirements
             )
         ):
@@ -2123,11 +3265,7 @@ def _artifact_satisfies_requirements(
     if not requirements:
         return False
     canonical_name = canonicalize_name(requirements[0].name)
-    required_extras = {
-        canonicalize_name(extra)
-        for requirement in requirements
-        for extra in requirement.extras
-    }
+    required_extras = _canonical_requested_extras(requirements)
     return (
         artifact.canonical_name == canonical_name
         and all(
@@ -2137,6 +3275,29 @@ def _artifact_satisfies_requirements(
         and "provides-extra" not in artifact.dynamic
         and required_extras.issubset(artifact.provides_extra)
     )
+
+
+def _matching_metadata_artifact_ids(
+    artifacts: Sequence[MetadataArtifact], requirements: Sequence[Requirement]
+) -> tuple[str, ...]:
+    """Return candidate groups whose every viable artifact proves the extras."""
+    if not requirements:
+        return ()
+    grouped: dict[tuple[str, Version], list[MetadataArtifact]] = {}
+    for artifact in artifacts:
+        if _artifact_satisfies_version_constraints(artifact, requirements):
+            key = artifact.canonical_name, Version(artifact.version)
+            grouped.setdefault(key, []).append(artifact)
+    matching = {
+        artifact.artifact_id
+        for group in grouped.values()
+        if all(
+            _artifact_satisfies_requirements(artifact, requirements)
+            for artifact in group
+        )
+        for artifact in group
+    }
+    return tuple(sorted(matching))
 
 
 def _artifact_satisfies_version_constraints(
@@ -2176,7 +3337,7 @@ def _resolved_package_satisfies_requirements(
         and all(
             artifact is not None
             and artifact.canonical_name == canonicalize_name(package.name)
-            and artifact.version == package.version
+            and Version(artifact.version) == Version(package.version)
             and _artifact_satisfies_requirements(artifact, requirements)
             for artifact in selected
         )
@@ -2208,32 +3369,189 @@ def _active_requirement_groups(
     return groups
 
 
-def _validated_resolver_result(
+@dataclass(frozen=True)
+class _ResolverValidationContext:
+    artifacts: Sequence[MetadataArtifact]
+    declared: Sequence[EvaluatedRequirement]
+    configuration: DependencyConfiguration
+    target: EnvironmentTarget
+    expected_resolver: str
+
+
+def _resolver_result_header_is_valid(
+    resolution: ResolverResult,
+    expected_resolver: str,
+) -> bool:
+    try:
+        _string(expected_resolver, "expected resolver adapter")
+        _string(resolution.resolver, "resolver result adapter")
+        _string(resolution.reason, "resolver result reason")
+        if resolution.resolver_version is not None:
+            version = _string(resolution.resolver_version, "resolver result version")
+            if not _resolver_version_is_valid(version):
+                return False
+    except ConfigurationError:
+        return False
+    return (
+        isinstance(resolution.status, ResolutionStatus)
+        and type(resolution.complete) is bool
+        and resolution.resolver == expected_resolver
+    )
+
+
+def _normalized_resolved_packages(
+    packages: object,
+) -> tuple[ResolvedPackage, ...] | None:
+    if not isinstance(packages, tuple) or len(packages) > _MAX_RESOLVER_PACKAGES:
+        return None
+    normalized: list[ResolvedPackage] = []
+    for package in packages:
+        try:
+            if not isinstance(package, ResolvedPackage):
+                return None
+            name = canonicalize_name(
+                _string(package.name, "resolved package name"),
+                validate=True,
+            )
+            version = _string(package.version, "resolved package version")
+            canonical_version = str(Version(version))
+            if (
+                not isinstance(package.metadata_used, tuple)
+                or len(package.metadata_used) > _MAX_METADATA_INPUTS
+            ):
+                return None
+            metadata_used = tuple(
+                _string(value, "resolved package metadata identity")
+                for value in package.metadata_used
+            )
+            if len(metadata_used) != len(set(metadata_used)) or any(
+                _SHA256.fullmatch(value) is None for value in metadata_used
+            ):
+                return None
+        except (ConfigurationError, ValueError):
+            return None
+        normalized.append(
+            replace(
+                package,
+                name=name,
+                version=canonical_version,
+                metadata_used=tuple(sorted(metadata_used)),
+            )
+        )
+    ordered = tuple(
+        sorted(
+            normalized,
+            key=lambda item: (
+                item.name,
+                Version(item.version),
+            ),
+        )
+    )
+    names = tuple(item.name for item in ordered)
+    return ordered if len(names) == len(set(names)) else None
+
+
+def _resolver_status_shape_is_valid(
+    resolution: ResolverResult,
+    *,
+    requested: bool,
+) -> bool:
+    if not requested:
+        return (
+            resolution.status is ResolutionStatus.NOT_REQUESTED
+            and resolution.complete
+            and resolution.resolver_version is None
+            and not resolution.packages
+        )
+    if resolution.status is ResolutionStatus.SUCCEEDED:
+        return resolution.complete and resolution.resolver_version is not None
+    if resolution.status in {
+        ResolutionStatus.ARTIFACT_UNAVAILABLE,
+        ResolutionStatus.RESOLUTION_FAILED,
+    }:
+        return (
+            resolution.complete
+            and resolution.resolver_version is not None
+            and not resolution.packages
+        )
+    if resolution.status is ResolutionStatus.TIMED_OUT:
+        return not resolution.complete and not resolution.packages
+    return (
+        resolution.status is ResolutionStatus.UNVERIFIED
+        and not resolution.complete
+        and (not resolution.packages or resolution.resolver_version is not None)
+    )
+
+
+def _partial_resolver_provenance_is_valid(
     resolution: ResolverResult,
     artifacts: Sequence[MetadataArtifact],
-    declared: Sequence[EvaluatedRequirement],
-) -> ResolverResult:
-    """Fail closed when a replaceable resolver contradicts exact provenance."""
-    if resolution.status is not ResolutionStatus.SUCCEEDED:
-        return resolution
+) -> bool:
+    """Validate every artifact identity a partial resolver result chooses to cite."""
     artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
+    return all(
+        not package.metadata_used
+        or _resolved_artifact_group(package, artifacts_by_id) is not None
+        for package in resolution.packages
+    )
+
+
+def _resolver_failure_is_corroborated(
+    resolution: ResolverResult,
+    context: _ResolverValidationContext,
+) -> bool:
+    active_requirements = tuple(
+        item.requirement for item in context.declared if item.applies
+    )
+    if resolution.status is ResolutionStatus.ARTIFACT_UNAVAILABLE:
+        return bool(
+            not context.configuration.network
+            and _offline_artifact_unavailability(
+                active_requirements,
+                context.artifacts,
+                context.target,
+                context.configuration.project_kind,
+            )
+        )
+    if resolution.status is ResolutionStatus.RESOLUTION_FAILED:
+        return bool(_conflicting_requirement_names(active_requirements))
+    return True
+
+
+def _resolver_success_is_provenance_bound(
+    resolution: ResolverResult,
+    context: _ResolverValidationContext,
+) -> bool:
+    artifacts_by_id = {artifact.artifact_id: artifact for artifact in context.artifacts}
     canonical_names = tuple(
         canonicalize_name(package.name) for package in resolution.packages
     )
-    structurally_valid = resolution.complete and len(canonical_names) == len(
-        set(canonical_names)
+    structurally_valid = len(canonical_names) == len(set(canonical_names)) and all(
+        _resolved_artifact_group(package, artifacts_by_id) is not None
+        for package in resolution.packages
     )
-    if structurally_valid:
-        for package in resolution.packages:
-            try:
-                Version(package.version)
-            except InvalidVersion:
-                structurally_valid = False
-                break
-            if _resolved_artifact_group(package, artifacts_by_id) is None:
-                structurally_valid = False
-                break
-    active_groups = _active_requirement_groups(declared)
+    active_groups = _active_requirement_groups(context.declared)
+    _consume_dependency_work(len(active_groups) * len(resolution.packages))
+    target_bound = structurally_valid and all(
+        len(package.metadata_used) == 1
+        and (selected := _resolved_artifact_group(package, artifacts_by_id)) is not None
+        and (
+            assessment := _assessment(
+                selected,
+                context.target,
+                tuple(
+                    sorted(
+                        _canonical_requested_extras(
+                            active_groups.get(canonicalize_name(package.name), ())
+                        )
+                    )
+                ),
+            )
+        ).status
+        is DependencyCompatibilityStatus.COMPATIBLE
+        and frozenset(assessment.metadata_used) == frozenset(package.metadata_used)
+        for package in resolution.packages
+    )
     roots_covered = structurally_valid and all(
         sum(
             _resolved_package_satisfies_version_constraints(
@@ -2247,7 +3565,42 @@ def _validated_resolver_result(
         == 1
         for name, requirements in active_groups.items()
     )
-    if structurally_valid and roots_covered:
+    return structurally_valid and target_bound and roots_covered
+
+
+def _validated_resolver_result(
+    resolution: ResolverResult,
+    context: _ResolverValidationContext,
+) -> ResolverResult:
+    """Fail closed when a replaceable resolver contradicts exact provenance."""
+    if not isinstance(resolution, ResolverResult) or not (
+        _resolver_result_header_is_valid(resolution, context.expected_resolver)
+    ):
+        return _resolver_unverified("resolver returned invalid structured evidence")
+    packages = _normalized_resolved_packages(resolution.packages)
+    if packages is None:
+        return _resolver_unverified("resolver returned invalid structured evidence")
+    resolution = replace(resolution, packages=packages)
+    if (
+        not _resolver_status_shape_is_valid(
+            resolution,
+            requested=context.configuration.resolve,
+        )
+        or not _resolver_failure_is_corroborated(resolution, context)
+        or not _partial_resolver_provenance_is_valid(
+            resolution,
+            context.artifacts,
+        )
+    ):
+        return _resolver_unverified(
+            "resolver returned contradictory structured evidence"
+        )
+    if resolution.status is not ResolutionStatus.SUCCEEDED:
+        return resolution
+    if _resolver_success_is_provenance_bound(
+        resolution,
+        context,
+    ):
         return resolution
     return replace(
         resolution,
@@ -2264,34 +3617,64 @@ def _correlate_declared_requirements(
     declared: Sequence[EvaluatedRequirement],
     artifacts: Sequence[MetadataArtifact],
     resolution: ResolverResult,
+    project_kind: DependencyProjectKind,
 ) -> tuple[EvaluatedRequirement, ...]:
     active_groups = _active_requirement_groups(declared)
     artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
     evidence_artifacts = _resolution_evidence_artifacts(artifacts, resolution)
-    correlated: list[EvaluatedRequirement] = []
-    for item in declared:
-        if not item.applies:
-            correlated.append(item)
-            continue
-        requirement = Requirement(item.requirement)
-        group = tuple(active_groups[canonicalize_name(requirement.name)])
-        matching_metadata = tuple(
-            sorted(
-                artifact.artifact_id
-                for artifact in evidence_artifacts
-                if _artifact_satisfies_requirements(artifact, group)
-            )
+    correlations: dict[
+        str,
+        tuple[tuple[str, ...], tuple[str, ...], bool, str],
+    ] = {}
+    for name, active_group in active_groups.items():
+        group = tuple(active_group)
+        _consume_dependency_work(
+            len(evidence_artifacts) + len(resolution.packages) + len(artifacts)
         )
+        matching_metadata = _matching_metadata_artifact_ids(
+            evidence_artifacts,
+            group,
+        )
+        matching_versions = {
+            Version(artifact.version)
+            for artifact in evidence_artifacts
+            if _artifact_satisfies_version_constraints(artifact, group)
+        }
         resolved_versions = tuple(
             sorted(
                 f"{canonicalize_name(package.name)}=={package.version}"
                 for package in resolution.packages
                 if _resolved_package_satisfies_requirements(
-                    package, group, artifacts_by_id
+                    package,
+                    group,
+                    artifacts_by_id,
                 )
             )
         )
-        if matching_metadata:
+        complete_selection = (
+            resolution.status is ResolutionStatus.SUCCEEDED and resolution.complete
+        )
+        if (
+            project_kind is DependencyProjectKind.APPLICATION
+            and not complete_selection
+            and len(matching_versions) > 1
+        ):
+            verified = False
+            reason = (
+                "active application pin matches multiple supplied package versions; "
+                "exact resolver provenance is required"
+            )
+        elif (
+            project_kind is DependencyProjectKind.LIBRARY
+            and not complete_selection
+            and not any(_requirement_is_singleton_pin(item) for item in group)
+        ):
+            verified = False
+            reason = (
+                "a finite library artifact sample does not prove the complete "
+                "declared version set"
+            )
+        elif matching_metadata:
             verified = True
             reason = "active requirement matches directly inspected metadata"
         elif (
@@ -2329,6 +3712,21 @@ def _correlate_declared_requirements(
                 else "active requirement has no matching exact metadata or complete "
                 "resolver evidence"
             )
+        correlations[name] = (
+            matching_metadata,
+            resolved_versions,
+            verified,
+            reason,
+        )
+    correlated: list[EvaluatedRequirement] = []
+    for item in declared:
+        if not item.applies:
+            correlated.append(item)
+            continue
+        requirement = Requirement(item.requirement)
+        matching_metadata, resolved_versions, verified, reason = correlations[
+            canonicalize_name(requirement.name)
+        ]
         correlated.append(
             EvaluatedRequirement(
                 requirement=item.requirement,
@@ -2347,7 +3745,7 @@ def _exact_requirement_version(requirement: Requirement) -> str | None:
     specifiers = tuple(requirement.specifier)
     if (
         len(specifiers) != 1
-        or specifiers[0].operator != "=="
+        or specifiers[0].operator not in {"==", "==="}
         or specifiers[0].version.endswith(".*")
     ):
         return None
@@ -2355,6 +3753,21 @@ def _exact_requirement_version(requirement: Requirement) -> str | None:
         return str(Version(specifiers[0].version))
     except InvalidVersion:
         return None
+
+
+def _requirement_is_singleton_pin(requirement: Requirement) -> bool:
+    """Return whether one specifier names a single distribution version."""
+    specifiers = tuple(requirement.specifier)
+    if len(specifiers) != 1 or specifiers[0].version.endswith(".*"):
+        return False
+    if specifiers[0].operator == "===":
+        return True
+    if specifiers[0].operator != "==":
+        return False
+    try:
+        return Version(specifiers[0].version).local is not None
+    except InvalidVersion:
+        return False
 
 
 def _transitive_occurrences(
@@ -2379,7 +3792,26 @@ def _validated_resolver_closure(
     if not (resolution.status is ResolutionStatus.SUCCEEDED and resolution.complete):
         return resolution
     artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
+    resolved_keys = {
+        (canonicalize_name(package.name), Version(package.version))
+        for package in resolution.packages
+    }
+    reachable_keys = {
+        (canonicalize_name(assessment.package), Version(assessment.version))
+        for assessment in assessments
+    }
+    if reachable_keys != resolved_keys:
+        return replace(
+            resolution,
+            status=ResolutionStatus.UNVERIFIED,
+            complete=False,
+            reason=(
+                "resolver success included a package outside the exact active "
+                "dependency closure"
+            ),
+        )
     occurrences = _transitive_occurrences(assessments)
+    _consume_dependency_work(len(occurrences) * len(resolution.packages))
     closure_complete = all(
         sum(
             _resolved_package_satisfies_version_constraints(
@@ -2483,6 +3915,9 @@ def _transitive_requirement_evidence(
     active_lock = _active_requirement_groups(declared)
     artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
     evidence_artifacts = _resolution_evidence_artifacts(artifacts, resolution)
+    _consume_dependency_work(
+        len(occurrences) * (len(evidence_artifacts) + len(resolution.packages))
+    )
     evidence: list[TransitiveRequirementEvidence] = []
     for name in sorted(occurrences):
         requirement_values = tuple(sorted(occurrences[name]))
@@ -2496,24 +3931,20 @@ def _transitive_requirement_evidence(
         lock_versions = tuple(
             sorted({f"{name}=={version}" for version in raw_lock_versions})
         )
-        common_lock_versions = frozenset(
-            version
-            for version in raw_lock_versions
-            if all(
-                _requirement_accepts_version(requirement, version)
-                for requirement in (*lock_requirements, *requirements)
-            )
+        evidence_requirements = (
+            requirements
+            if project_kind is DependencyProjectKind.LIBRARY
+            else (*lock_requirements, *requirements)
         )
-        matching_metadata = tuple(
-            sorted(
-                artifact.artifact_id
-                for artifact in evidence_artifacts
-                if _artifact_satisfies_requirements(artifact, requirements)
-                and (
-                    project_kind is DependencyProjectKind.LIBRARY
-                    or artifact.version in common_lock_versions
-                )
-            )
+        matching_metadata = _matching_metadata_artifact_ids(
+            evidence_artifacts,
+            evidence_requirements,
+        )
+        matching_ids = frozenset(matching_metadata)
+        common_lock_versions = frozenset(
+            Version(artifact.version)
+            for artifact in evidence_artifacts
+            if artifact.artifact_id in matching_ids
         )
         resolved_versions = tuple(
             sorted(
@@ -2525,7 +3956,7 @@ def _transitive_requirement_evidence(
                 and (
                     project_kind is DependencyProjectKind.LIBRARY
                     or not lock_requirements
-                    or package.version in common_lock_versions
+                    or Version(package.version) in common_lock_versions
                 )
             )
         )
@@ -2582,12 +4013,55 @@ def _conflicting_requirement_names(requirements: Sequence[str]) -> tuple[str, ..
     """Name groups whose active constraints prove a direct contradiction."""
     conflicts: list[str] = []
     for name, group in _resolver_requirement_groups(requirements).items():
-        exact_versions = {
-            Version(version)
-            for requirement in group
-            if (version := _exact_requirement_version(requirement)) is not None
-        }
-        if len(exact_versions) > 1:
+        exact_versions = tuple(
+            sorted(
+                {
+                    Version(version)
+                    for requirement in group
+                    if (version := _exact_requirement_version(requirement)) is not None
+                }
+            )
+        )
+        _consume_dependency_work(len(exact_versions) * len(group))
+        exact_conflict = bool(exact_versions) and not any(
+            all(
+                requirement.specifier.contains(candidate, prereleases=True)
+                for requirement in group
+            )
+            for candidate in exact_versions
+        )
+        lower: tuple[Version, bool] | None = None
+        upper: tuple[Version, bool] | None = None
+        for requirement in group:
+            for specifier in requirement.specifier:
+                if specifier.operator not in {">", ">=", "<", "<="}:
+                    continue
+                try:
+                    boundary = Version(specifier.version)
+                except InvalidVersion:
+                    continue
+                inclusive = specifier.operator in {">=", "<="}
+                if specifier.operator in {">", ">="} and (
+                    lower is None
+                    or boundary > lower[0]
+                    or (boundary == lower[0] and not inclusive and lower[1])
+                ):
+                    lower = boundary, inclusive
+                if specifier.operator in {"<", "<="} and (
+                    upper is None
+                    or boundary < upper[0]
+                    or (boundary == upper[0] and not inclusive and upper[1])
+                ):
+                    upper = boundary, inclusive
+        bounded_conflict = bool(
+            lower is not None
+            and upper is not None
+            and (
+                lower[0] > upper[0]
+                or (lower[0] == upper[0] and not (lower[1] and upper[1]))
+            )
+        )
+        if exact_conflict or bounded_conflict:
             conflicts.append(name)
     return tuple(conflicts)
 
@@ -2596,7 +4070,6 @@ def _offline_artifact_unavailability(
     requirements: Sequence[str],
     artifacts: Sequence[MetadataArtifact],
     target: EnvironmentTarget,
-    extras: tuple[str, ...],
     project_kind: DependencyProjectKind,
 ) -> tuple[str, ...]:
     """Identify requirements the closed, revalidated wheelhouse cannot satisfy."""
@@ -2607,6 +4080,7 @@ def _offline_artifact_unavailability(
     for name, group in _resolver_requirement_groups(requirements).items():
         if name in conflicts:
             continue
+        _consume_dependency_work(len(artifacts))
         candidates = tuple(
             artifact
             for artifact in artifacts
@@ -2615,16 +4089,7 @@ def _offline_artifact_unavailability(
         if not candidates:
             unavailable.append(" & ".join(str(requirement) for requirement in group))
             continue
-        selected_extras = tuple(
-            sorted(
-                {canonicalize_name(extra) for extra in extras}
-                | {
-                    canonicalize_name(extra)
-                    for requirement in group
-                    for extra in requirement.extras
-                }
-            )
-        )
+        selected_extras = tuple(sorted(_canonical_requested_extras(group)))
         assessments = assess_dependency_metadata(
             candidates,
             target=target,
@@ -2638,16 +4103,51 @@ def _offline_artifact_unavailability(
     return tuple(unavailable)
 
 
+def _resolver_version_is_valid(value: str) -> bool:
+    match = _RESOLVER_VERSION.fullmatch(value)
+    if match is None:
+        return False
+    try:
+        Version(match.group("release"))
+    except InvalidVersion:
+        return False
+    return True
+
+
 def _resolver_version(output: str, resolver: str) -> str | None:
     line = output.strip().splitlines()
     if len(line) != 1 or not line[0].startswith(f"{resolver} "):
         return None
-    return line[0][len(resolver) + 1 :].strip() or None
+    version = line[0][len(resolver) + 1 :].strip()
+    if (
+        not version
+        or len(version) > _MAX_TEXT_LENGTH
+        or any(not character.isprintable() for character in version)
+        or not _resolver_version_is_valid(version)
+    ):
+        return None
+    return version
 
 
 def _safe_process_text(value: str, workspace: Path) -> str:
-    normalized = value.replace(str(workspace), "<workspace>")
-    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    variants = {str(workspace), workspace.as_posix()}
+    try:
+        uri = workspace.resolve().as_uri()
+    except (OSError, RuntimeError, ValueError):
+        uri = ""
+    if uri:
+        variants.add(uri)
+        variants.add(urlsplit(uri).path)
+    normalized = value
+    for variant in sorted((item for item in variants if item), key=len, reverse=True):
+        normalized = normalized.replace(variant, "<workspace>")
+    lines = []
+    for raw_line in normalized.splitlines():
+        safe_line = "".join(
+            character if character.isprintable() else " " for character in raw_line
+        ).strip()
+        if safe_line:
+            lines.append(safe_line)
     return " ".join(lines)[:_MAX_TEXT_LENGTH]
 
 
@@ -2663,7 +4163,11 @@ def _selected_metadata(
         return ()
     wheel = raw_wheels[0]
     url = wheel.get("url") if isinstance(wheel, dict) else None
-    if not isinstance(url, str):
+    if (
+        not isinstance(url, str)
+        or len(url) > _MAX_TEXT_LENGTH
+        or any(not character.isprintable() for character in url)
+    ):
         return ()
     parsed = urlsplit(url)
     if (
@@ -2673,13 +4177,16 @@ def _selected_metadata(
         or parsed.fragment
     ):
         return ()
-    selected = Path(url2pathname(unquote(parsed.path))).resolve()
+    try:
+        selected = Path(url2pathname(unquote(parsed.path))).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return ()
     artifact = artifacts_by_filename.get(selected.name)
     if (
         artifact is None
         or selected.parent != wheelhouse
         or artifact.canonical_name != package_name
-        or artifact.version != package_version
+        or Version(artifact.version) != Version(package_version)
         or artifact.kind is not MetadataKind.WHEEL
     ):
         return ()
@@ -2696,7 +4203,14 @@ def _pylock_package(
         _fail_metadata("resolver pylock.toml has an invalid package record")
     name = raw_package.get("name")
     raw_version = raw_package.get("version")
-    if not isinstance(name, str) or not isinstance(raw_version, str):
+    if (
+        not isinstance(name, str)
+        or not isinstance(raw_version, str)
+        or not name
+        or len(name) > _MAX_TEXT_LENGTH
+        or len(raw_version) > _MAX_TEXT_LENGTH
+        or any(not character.isprintable() for character in name + raw_version)
+    ):
         _fail_metadata("resolver pylock.toml omits an exact package identity")
     try:
         version = str(Version(raw_version))
@@ -2728,9 +4242,11 @@ def _resolved_packages(
         _fail_metadata("resolver produced invalid pylock.toml output")
     if document.get("lock-version") != "1.0" or document.get("created-by") != "uv":
         _fail_metadata("resolver produced an unsupported pylock.toml document")
-    raw_packages = document.get("packages")
+    raw_packages = document.get("packages", [])
     if not isinstance(raw_packages, list):
         _fail_metadata("resolver pylock.toml omits its package list")
+    if len(raw_packages) > _MAX_RESOLVER_PACKAGES:
+        _fail_metadata("resolver pylock.toml contains too many packages")
     artifacts_by_filename = {artifact.path.name: artifact for artifact in artifacts}
     packages = tuple(
         _pylock_package(
@@ -2795,6 +4311,484 @@ def _resolver_environment(workspace: Path) -> dict[str, str]:
     return environment
 
 
+class _JobObjectBasicLimitInformation(ctypes.Structure):
+    _fields_ = (
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", wintypes.DWORD),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", wintypes.DWORD),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", wintypes.DWORD),
+        ("SchedulingClass", wintypes.DWORD),
+    )
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = (
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    )
+
+
+class _JobObjectExtendedLimitInformation(ctypes.Structure):
+    _fields_ = (
+        ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+        ("IoInfo", _IoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    )
+
+
+class _ThreadEntry32(ctypes.Structure):
+    _fields_ = (
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ThreadID", wintypes.DWORD),
+        ("th32OwnerProcessID", wintypes.DWORD),
+        ("tpBasePri", wintypes.LONG),
+        ("tpDeltaPri", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+    )
+
+
+class _CtypesFunction(Protocol):
+    argtypes: object
+    restype: object
+
+    def __call__(self, *args: object) -> object: ...
+
+
+def _windows_kernel32() -> object:
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        raise OSError
+    return loader("kernel32", use_last_error=True)
+
+
+def _windows_function(library: object, name: str) -> _CtypesFunction:
+    return cast("_CtypesFunction", getattr(library, name))
+
+
+def _create_windows_kill_job(process: subprocess.Popen[bytes]) -> int | None:
+    if os.name != "nt":
+        return None
+    kernel32 = _windows_kernel32()
+    create_job = _windows_function(kernel32, "CreateJobObjectW")
+    set_information = _windows_function(kernel32, "SetInformationJobObject")
+    assign_process = _windows_function(kernel32, "AssignProcessToJobObject")
+    close_handle = _windows_function(kernel32, "CloseHandle")
+    create_job.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
+    create_job.restype = wintypes.HANDLE
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+    assign_process.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    assign_process.restype = wintypes.BOOL
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    raw_job = create_job(None, None)
+    if not isinstance(raw_job, int) or not raw_job:
+        return None
+    job = raw_job
+    information = _JobObjectExtendedLimitInformation()
+    information.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_CLOSE
+    configured = set_information(
+        job,
+        _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    )
+    process_handle = getattr(process, "_handle", None)
+    assigned = bool(
+        configured
+        and isinstance(process_handle, int)
+        and assign_process(job, wintypes.HANDLE(process_handle))
+    )
+    if not assigned:
+        close_handle(job)
+        return None
+    return int(job)
+
+
+def _close_windows_job(handle: int) -> None:
+    kernel32 = _windows_kernel32()
+    close_handle = _windows_function(kernel32, "CloseHandle")
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    if not close_handle(wintypes.HANDLE(handle)):
+        message = "CloseHandle failed for resolver Job Object"
+        raise OSError(message)
+
+
+def _terminate_windows_job(handle: int) -> None:
+    """Terminate every process assigned to one resolver Job Object."""
+    kernel32 = _windows_kernel32()
+    terminate_job = _windows_function(kernel32, "TerminateJobObject")
+    terminate_job.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    terminate_job.restype = wintypes.BOOL
+    if not terminate_job(wintypes.HANDLE(handle), wintypes.UINT(1)):
+        message = "TerminateJobObject failed for resolver Job Object"
+        raise OSError(message)
+
+
+def _dispose_windows_job(handle: int) -> bool:
+    """Close a Job, explicitly terminating its tree if close is not confirmed."""
+    try:
+        _close_windows_job(handle)
+    except OSError:
+        try:
+            _terminate_windows_job(handle)
+        except OSError:
+            return False
+        with suppress(OSError):
+            _close_windows_job(handle)
+    return True
+
+
+def _windows_process_thread_ids(process_id: int) -> tuple[int, ...]:
+    kernel32 = _windows_kernel32()
+    create_snapshot = _windows_function(kernel32, "CreateToolhelp32Snapshot")
+    thread_first = _windows_function(kernel32, "Thread32First")
+    thread_next = _windows_function(kernel32, "Thread32Next")
+    close_handle = _windows_function(kernel32, "CloseHandle")
+    create_snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    create_snapshot.restype = wintypes.HANDLE
+    thread_first.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32))
+    thread_first.restype = wintypes.BOOL
+    thread_next.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ThreadEntry32))
+    thread_next.restype = wintypes.BOOL
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    raw_snapshot = create_snapshot(_TH32CS_SNAPTHREAD, 0)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if (
+        not isinstance(raw_snapshot, int)
+        or not raw_snapshot
+        or raw_snapshot == invalid_handle
+    ):
+        return ()
+    snapshot = raw_snapshot
+    try:
+        entry = _ThreadEntry32()
+        entry.dwSize = ctypes.sizeof(_ThreadEntry32)
+        identifiers: list[int] = []
+        present = bool(thread_first(snapshot, ctypes.byref(entry)))
+        while present:
+            if int(entry.th32OwnerProcessID) == process_id:
+                identifiers.append(int(entry.th32ThreadID))
+            present = bool(thread_next(snapshot, ctypes.byref(entry)))
+        return tuple(identifiers)
+    finally:
+        close_handle(wintypes.HANDLE(snapshot))
+
+
+def _resume_windows_primary_thread(process_id: int) -> bool:
+    identifiers = _windows_process_thread_ids(process_id)
+    if len(identifiers) != 1:
+        return False
+    kernel32 = _windows_kernel32()
+    open_thread = _windows_function(kernel32, "OpenThread")
+    resume_thread = _windows_function(kernel32, "ResumeThread")
+    close_handle = _windows_function(kernel32, "CloseHandle")
+    open_thread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    open_thread.restype = wintypes.HANDLE
+    resume_thread.argtypes = (wintypes.HANDLE,)
+    resume_thread.restype = wintypes.DWORD
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    raw_thread = open_thread(_THREAD_SUSPEND_RESUME, wintypes.BOOL(), identifiers[0])
+    if not isinstance(raw_thread, int) or not raw_thread:
+        return False
+    thread = raw_thread
+    try:
+        previous_count = resume_thread(wintypes.HANDLE(thread))
+        return (
+            isinstance(previous_count, int)
+            and previous_count > 0
+            and previous_count != _INVALID_DWORD
+        )
+    finally:
+        close_handle(wintypes.HANDLE(thread))
+
+
+class _ProcessContainment:
+    def __init__(self) -> None:
+        self.process: subprocess.Popen[bytes] | None = None
+        self.windows_job: int | None = None
+        self.lock = threading.Lock()
+        self.terminated = False
+
+    def attach_process(self, process: subprocess.Popen[bytes]) -> None:
+        """Record process ownership before any later setup can be interrupted."""
+        self.process = process
+
+    def attach_windows_job(self, windows_job: int) -> None:
+        """Record Job ownership before the suspended process is resumed."""
+        self.windows_job = windows_job
+
+    def terminate(self) -> None:
+        """Kill the isolated process tree exactly once."""
+        with self.lock:
+            if self.terminated:
+                return
+            self.terminated = True
+            if self.windows_job is not None:
+                job_terminated = _dispose_windows_job(self.windows_job)
+                self.windows_job = None
+                if job_terminated:
+                    return
+            if self.process is None:
+                return
+            if os.name != "nt":
+                try:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                else:
+                    return
+            with suppress(OSError):
+                self.process.kill()
+
+
+def _cleanup_uncontained_process(
+    process: subprocess.Popen[bytes], windows_job: int | None
+) -> None:
+    """Bound cleanup before ownership passes to ``_ProcessContainment``."""
+    terminated = False
+    if windows_job is not None:
+        terminated = _dispose_windows_job(windows_job)
+    elif os.name != "nt":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        else:
+            terminated = True
+    if not terminated:
+        with suppress(OSError):
+            process.kill()
+    with suppress(OSError, subprocess.TimeoutExpired):
+        process.wait(timeout=_PROCESS_CLEANUP_SECONDS)
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            with suppress(OSError, ValueError):
+                stream.close()
+
+
+def _cleanup_failed_process_start(
+    process: subprocess.Popen[bytes],
+    windows_job: int | None,
+    containment: _ProcessContainment,
+) -> None:
+    """Clean a failed start whether or not ownership was already recorded."""
+    if containment.process is not process:
+        _cleanup_uncontained_process(process, windows_job)
+        return
+    if windows_job is not None and containment.windows_job is None:
+        containment.attach_windows_job(windows_job)
+    containment.terminate()
+    with suppress(OSError, subprocess.TimeoutExpired):
+        process.wait(timeout=_PROCESS_CLEANUP_SECONDS)
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            with suppress(OSError, ValueError):
+                stream.close()
+
+
+def _start_contained_process(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    containment: _ProcessContainment,
+) -> subprocess.Popen[bytes]:
+    creationflags = (
+        int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | _CREATE_SUSPENDED
+        if os.name == "nt"
+        else 0
+    )
+    process: subprocess.Popen[bytes] | None = None
+    windows_job: int | None = None
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creationflags,
+            start_new_session=os.name != "nt",
+        )
+        containment.attach_process(process)
+        windows_ready = os.name != "nt"
+        if os.name == "nt":
+            try:
+                windows_job = _create_windows_kill_job(process)
+                if windows_job is not None:
+                    containment.attach_windows_job(windows_job)
+                windows_ready = (
+                    windows_job is not None
+                    and _resume_windows_primary_thread(process.pid)
+                )
+            except OSError:
+                windows_ready = False
+        if not windows_ready:
+            _fail_metadata("unable to contain isolated resolver process")
+    except BaseException:
+        if process is not None:
+            _cleanup_failed_process_start(process, windows_job, containment)
+        raise
+    else:
+        return process
+
+
+def _read_process_pipe(
+    stream: BinaryIO,
+    retained: bytearray,
+    overflow: threading.Event,
+    containment: _ProcessContainment,
+    errors: list[OSError],
+) -> None:
+    """Retain bounded bytes from one pipe and stop a flooding child."""
+    try:
+        while payload := stream.read(_TAR_READ_CHUNK_BYTES):
+            remaining = _MAX_RESOLVER_STREAM_BYTES - len(retained)
+            retained.extend(payload[:remaining])
+            if len(payload) > remaining:
+                overflow.set()
+                containment.terminate()
+                return
+    except OSError as error:
+        errors.append(error)
+
+
+def _finish_process_readers(
+    process: subprocess.Popen[bytes],
+    containment: _ProcessContainment,
+    readers: Sequence[threading.Thread],
+) -> bool:
+    """Terminate the process tree and report whether a pipe reader survived."""
+    containment.terminate()
+    with suppress(OSError, subprocess.TimeoutExpired):
+        process.wait(timeout=_PROCESS_CLEANUP_SECONDS)
+    started = tuple(reader for reader in readers if reader.ident is not None)
+    for reader in started:
+        reader.join(timeout=_PROCESS_CLEANUP_SECONDS)
+    if any(reader.is_alive() for reader in started):
+        if process.stdout is not None:
+            with suppress(OSError, ValueError):
+                process.stdout.close()
+        if process.stderr is not None:
+            with suppress(OSError, ValueError):
+                process.stderr.close()
+        for reader in started:
+            reader.join(timeout=_PROCESS_CLEANUP_SECONDS)
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            with suppress(OSError, ValueError):
+                stream.close()
+    return any(reader.is_alive() for reader in started)
+
+
+def _run_bounded_process(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run one resolver command with bounded, separate UTF-8 output streams."""
+    process: subprocess.Popen[bytes] | None = None
+    containment = _ProcessContainment()
+    stdout = bytearray()
+    stderr = bytearray()
+    overflow = threading.Event()
+    stdout_errors: list[OSError] = []
+    stderr_errors: list[OSError] = []
+    readers: tuple[threading.Thread, ...] = ()
+    timed_out: subprocess.TimeoutExpired | None = None
+    returncode = -1
+    reader_survived = False
+    try:
+        process = _start_contained_process(
+            command,
+            cwd=cwd,
+            env=env,
+            containment=containment,
+        )
+        if process.stdout is None or process.stderr is None:
+            _fail_metadata("unable to capture isolated resolver output")
+        readers = (
+            threading.Thread(
+                target=_read_process_pipe,
+                args=(
+                    process.stdout,
+                    stdout,
+                    overflow,
+                    containment,
+                    stdout_errors,
+                ),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_read_process_pipe,
+                args=(
+                    process.stderr,
+                    stderr,
+                    overflow,
+                    containment,
+                    stderr_errors,
+                ),
+                daemon=True,
+            ),
+        )
+        for reader in readers:
+            reader.start()
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            timed_out = error
+            containment.terminate()
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=_PROCESS_CLEANUP_SECONDS)
+            returncode = process.returncode if process.returncode is not None else -1
+    finally:
+        owned_process = containment.process
+        if owned_process is not None:
+            reader_survived = _finish_process_readers(
+                owned_process,
+                containment,
+                readers,
+            )
+    if timed_out is not None:
+        raise timed_out
+    if reader_survived:
+        raise _ResolverPipeError
+    if stdout_errors or stderr_errors:
+        raise (stdout_errors or stderr_errors)[0]
+    if overflow.is_set():
+        raise _ResolverOutputLimitError
+    return subprocess.CompletedProcess(
+        args=list(command),
+        returncode=returncode,
+        stdout=bytes(stdout).decode("utf-8", errors="strict"),
+        stderr=bytes(stderr).decode("utf-8", errors="strict"),
+    )
+
+
 def _linux_wheel_platform(resolver_platform: str, machine: str) -> str | None:
     suffix = resolver_platform.removeprefix(f"{machine}-")
     if suffix == "unknown-linux-gnu":
@@ -2827,26 +4821,32 @@ def _resolver_platform_values(
 def _canonical_resolver_target(
     target: EnvironmentTarget,
 ) -> tuple[_CanonicalResolverTarget | None, str | None]:
+    issue: str | None = None
     if (
         target.implementation_name != "cpython"
         or target.platform_python_implementation != "CPython"
         or target.implementation_version != target.python_full_version
     ):
-        return None, (
+        issue = (
             "uv target arguments cannot faithfully represent the declared Python "
             "implementation"
         )
-    if target.platform_release or target.platform_version:
-        return None, (
+    elif target.platform_release or target.platform_version:
+        issue = (
             "uv target arguments cannot faithfully represent platform-release or "
             "platform-version marker values"
         )
 
     marker_values = _resolver_platform_values(target.resolver_platform)
-    if marker_values is None:
-        return None, (
-            "resolver-platform is not a faithfully represented uv marker target"
+    if issue is None and marker_values is None:
+        issue = "resolver-platform is not a faithfully represented uv marker target"
+    elif issue is None and target.sys_platform == "win32":
+        issue = (
+            "uv target arguments cannot faithfully represent Windows "
+            "platform-machine marker values"
         )
+    if issue is not None or marker_values is None:
+        return None, issue
 
     canonical = _CanonicalResolverTarget(
         python_full_version=target.python_full_version,
@@ -2889,13 +4889,15 @@ def _tag_interpreter_matches(tag: Tag, target: _CanonicalResolverTarget) -> bool
     if tag.interpreter in {f"py{release[0]}", target_python}:
         return tag.abi == "none"
     if tag.interpreter == target_interpreter:
-        return tag.abi in {target_interpreter, "abi3", "none"}
+        return tag.abi in {target_interpreter, "none"} or (
+            tag.abi == "abi3" and release[1] >= _MIN_STABLE_ABI_MINOR
+        )
     prefix = f"cp{release[0]}"
     minor = tag.interpreter.removeprefix(prefix)
     return (
         tag.interpreter.startswith(prefix)
         and minor.isdigit()
-        and int(minor) <= release[1]
+        and _MIN_STABLE_ABI_MINOR <= int(minor) <= release[1]
         and tag.abi == "abi3"
     )
 
@@ -2956,13 +4958,12 @@ def _tag_interpreter_matches_declared_target(
         return _tag_interpreter_matches(tag, synthetic)
     if target.implementation_name == "pypy":
         interpreter = f"pp{release[0]}{release[1]}"
-        pypy_abi = re.fullmatch(
-            rf"pypy{release[0]}{release[1]}_pp[0-9]+",
-            tag.abi,
+        implementation_release = Version(target.implementation_version).release
+        pypy_abi = (
+            f"pypy{release[0]}{release[1]}_pp"
+            f"{implementation_release[0]}{implementation_release[1]}"
         )
-        return tag.interpreter == interpreter and (
-            tag.abi == "none" or pypy_abi is not None
-        )
+        return tag.interpreter == interpreter and tag.abi in {"none", pypy_abi}
     return False
 
 
@@ -2995,15 +4996,33 @@ def _tag_platform_matches_declared_target(
 
 
 def _target_implementation_issue(target: EnvironmentTarget) -> str | None:
-    expected_implementation = {
+    implementation_labels = {
         "cpython": "CPython",
         "pypy": "PyPy",
-    }.get(target.implementation_name)
+    }
+    known_name = target.implementation_name.casefold()
+    known_label = target.platform_python_implementation.casefold()
+    if known_name in implementation_labels and target.implementation_name != known_name:
+        return "implementation-name must use its canonical marker spelling"
+    canonical_labels = {
+        label.casefold(): label for label in implementation_labels.values()
+    }
+    if (
+        known_label in canonical_labels
+        and target.platform_python_implementation != canonical_labels[known_label]
+    ):
+        return "platform-python-implementation must use its canonical spelling"
+    expected_implementation = implementation_labels.get(target.implementation_name)
     if (
         expected_implementation is not None
         and target.platform_python_implementation != expected_implementation
     ):
         return "implementation-name conflicts with platform-python-implementation"
+    expected_name = {label: name for name, label in implementation_labels.items()}.get(
+        target.platform_python_implementation
+    )
+    if expected_name is not None and target.implementation_name != expected_name:
+        return "platform-python-implementation conflicts with implementation-name"
     if (
         target.implementation_name == "cpython"
         and target.implementation_version != target.python_full_version
@@ -3063,10 +5082,205 @@ def _target_coherence_issue(target: EnvironmentTarget) -> str | None:
     )
 
 
+def _validate_target_fields(target: EnvironmentTarget, *, label: str) -> None:
+    python_version = _runtime_version(
+        target.python_full_version, f"{label}.python-full-version", python=True
+    )
+    implementation_version = _runtime_version(
+        target.implementation_version,
+        f"{label}.implementation-version",
+        python=False,
+    )
+    if str(python_version) != target.python_full_version:
+        _error(f"{label}.python-full-version", "must use its canonical form")
+    if str(implementation_version) != target.implementation_version:
+        _error(f"{label}.implementation-version", "must use its canonical form")
+    required_strings = {
+        "name": target.name,
+        "implementation-name": target.implementation_name,
+        "os-name": target.os_name,
+        "sys-platform": target.sys_platform,
+        "platform-machine": target.platform_machine,
+        "platform-python-implementation": target.platform_python_implementation,
+        "platform-system": target.platform_system,
+        "resolver-platform": target.resolver_platform,
+    }
+    for field, value in required_strings.items():
+        _string(value, f"{label}.{field}")
+    _string(target.platform_release, f"{label}.platform-release", allow_empty=True)
+    _string(target.platform_version, f"{label}.platform-version", allow_empty=True)
+    if not isinstance(target.compatible_tags, tuple):
+        _error(f"{label}.compatible-tags", "must be a tuple")
+    normalized_tags = tuple(
+        sorted(
+            map(
+                str,
+                _configured_tags(
+                    target.compatible_tags,
+                    f"{label}.compatible-tags",
+                    compressed_input=False,
+                ),
+            )
+        )
+    )
+    if normalized_tags != target.compatible_tags:
+        _error(
+            f"{label}.compatible-tags",
+            "must contain sorted expanded compatibility tags",
+        )
+    if _SAFE_RESOLVER_PLATFORM.fullmatch(target.resolver_platform) is None:
+        _error(f"{label}.resolver-platform", "contains unsupported characters")
+
+
 def _ensure_target_coherence(target: EnvironmentTarget, *, label: str) -> None:
+    _validate_target_fields(target, label=label)
     issue = _target_coherence_issue(target)
     if issue is not None:
         _error(label, issue)
+
+
+def _validate_effective_extras(values: object, *, label: str) -> tuple[str, ...]:
+    if not isinstance(values, tuple):
+        _error(label, "must be a tuple")
+    if len(values) > _MAX_EXTRAS:
+        _error(label, "contains too many items")
+    raw = tuple(_string(value, f"{label} item") for value in values)
+    if any(_EXTRA_FIELD.fullmatch(value) is None for value in raw):
+        _error(label, "contains an invalid extra name")
+    normalized = tuple(sorted(canonicalize_name(value) for value in raw))
+    if len(normalized) != len(set(normalized)):
+        _error(label, "contains duplicate normalized names")
+    if normalized != raw:
+        _error(label, "must contain sorted normalized names")
+    return normalized
+
+
+def _validated_configuration_requirements(
+    configuration: DependencyConfiguration,
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    if not isinstance(configuration.requirements, tuple):
+        _error(f"{label}.requirements", "must be a tuple")
+    if len(configuration.requirements) > _MAX_REQUIREMENTS:
+        _error(f"{label}.requirements", "contains too many items")
+    requirements = tuple(
+        _string(value, f"{label}.requirements item")
+        for value in configuration.requirements
+    )
+    parsed = _parse_requirements(requirements, configuration.project_kind)
+    if len(parsed) != len(set(parsed)):
+        _error(f"{label}.requirements", "contains duplicates")
+    return parsed
+
+
+def _validate_configuration_metadata(
+    configuration: DependencyConfiguration,
+    *,
+    label: str,
+) -> None:
+    if not isinstance(configuration.metadata_paths, tuple) or not all(
+        isinstance(path, Path) for path in configuration.metadata_paths
+    ):
+        _error(f"{label}.metadata", "must be a tuple of paths")
+    if len(configuration.metadata_paths) > _MAX_METADATA_INPUTS:
+        _error(f"{label}.metadata", "contains too many items")
+    for path in configuration.metadata_paths:
+        _string(str(path), f"{label}.metadata path")
+    if len(configuration.metadata_paths) != len(set(configuration.metadata_paths)):
+        _error(f"{label}.metadata", "contains duplicate paths")
+
+
+def _validate_configuration_targets(
+    configuration: DependencyConfiguration,
+    *,
+    label: str,
+) -> None:
+    if not isinstance(configuration.targets, tuple) or not configuration.targets:
+        _error(f"{label}.targets", "must be a non-empty tuple")
+    if len(configuration.targets) > _MAX_TARGETS or not all(
+        isinstance(target, EnvironmentTarget) for target in configuration.targets
+    ):
+        _error(f"{label}.targets", "contains invalid or too many targets")
+    for target in configuration.targets:
+        _ensure_target_coherence(target, label="dependency target")
+    target_names = tuple(target.name for target in configuration.targets)
+    if len(target_names) != len(set(target_names)):
+        _error(f"{label}.targets", "names must be unique")
+
+
+def _validate_configuration_controls(
+    configuration: DependencyConfiguration,
+    *,
+    label: str,
+) -> None:
+    if (
+        type(configuration.resolve) is not bool
+        or type(configuration.network) is not bool
+    ):
+        _error(label, "resolve and network must be booleans")
+    _positive_number(configuration.timeout_seconds, f"{label}.timeout-seconds")
+    if _string(configuration.resolver, f"{label}.resolver") != "uv":
+        _error(f"{label}.resolver", "only 'uv' is supported")
+    index_url = _index_url(configuration.index_url)
+    if configuration.network and index_url is None:
+        _error(f"{label}.index-url", "is required when network access is enabled")
+    if not configuration.network and index_url is not None:
+        _error(f"{label}.index-url", "must be disabled when network access is disabled")
+
+
+def _validate_configuration_relations(
+    configuration: DependencyConfiguration,
+    requirements: tuple[str, ...],
+    *,
+    label: str,
+) -> None:
+    if not requirements and not configuration.metadata_paths:
+        _error(label, "must declare requirements or metadata inputs")
+    if configuration.resolve and not requirements:
+        _error(f"{label}.resolve", "requires requirements")
+    if (
+        configuration.resolve
+        and not configuration.network
+        and not configuration.metadata_paths
+    ):
+        _error(f"{label}.resolve", "offline resolution requires metadata artifacts")
+    if not configuration.resolve and not configuration.metadata_paths:
+        _error(f"{label}.metadata", "is required when the resolver is not enabled")
+
+
+def _validate_dependency_configuration(
+    configuration: DependencyConfiguration,
+) -> DependencyConfiguration:
+    """Return one normalized configuration after loader-equivalent validation."""
+    label = "dependency configuration"
+    if not isinstance(configuration, DependencyConfiguration):
+        _error(label, "must be a dependency configuration")
+    if not isinstance(configuration.project_kind, DependencyProjectKind):
+        _error(f"{label}.project-kind", "is invalid")
+    requirements = _validated_configuration_requirements(
+        configuration,
+        label=label,
+    )
+    extras = _validate_effective_extras(
+        configuration.extras,
+        label=f"{label}.extras",
+    )
+    _validate_configuration_metadata(configuration, label=label)
+    _validate_configuration_targets(configuration, label=label)
+    _validate_configuration_controls(configuration, label=label)
+    _ensure_marker_evaluation_budget(
+        ((requirements, 2 if configuration.resolve else 1),),
+        extras=extras,
+        target_count=len(configuration.targets),
+        label=label,
+    )
+    _validate_configuration_relations(
+        configuration,
+        requirements,
+        label=label,
+    )
+    return replace(configuration, requirements=requirements)
 
 
 def _resolver_command(
@@ -3146,13 +5360,8 @@ def _uv_reports_unsatisfiable(diagnostic: str, version: str) -> bool:
     series = Version(parsed_version.group("version")).release[:2]
     if series not in _SUPPORTED_UV_UNSATISFIABLE_SERIES:
         return False
-    lines = [line.strip() for line in diagnostic.splitlines() if line.strip()]
-    if lines and re.fullmatch(
-        r"warning: The requested Python version .+ is not available; .+ will be "
-        r"used to build dependencies instead\.",
-        lines[0],
-    ):
-        lines.pop(0)
+    lines = _stable_uv_diagnostic(diagnostic).splitlines()
+
     if len(lines) < _MIN_UNSATISFIABLE_LINES or lines[0] != _UV_NO_SOLUTION_HEADER:
         return False
     explanation = " ".join(lines[1:])
@@ -3164,12 +5373,24 @@ def _uv_reports_unsatisfiable(diagnostic: str, version: str) -> bool:
     )
 
 
+def _stable_uv_diagnostic(diagnostic: str) -> str:
+    """Remove uv's host-Python fallback warning from retained evidence."""
+    lines = [line.strip() for line in diagnostic.splitlines() if line.strip()]
+    if lines and re.fullmatch(
+        r"warning: The requested Python version .+ is not available; .+ will be "
+        r"used to build dependencies instead\.",
+        lines[0],
+    ):
+        lines.pop(0)
+    return "\n".join(lines)
+
+
 def _uv_reports_constraint_conflict(
     diagnostic: str,
     version: str,
     requirements: Sequence[str],
 ) -> bool:
-    """Accept only versioned uv output that names contradictory exact pins."""
+    """Accept reviewed solver grammar only with an independent contradiction."""
     if not _uv_reports_unsatisfiable(diagnostic, version):
         return False
     normalized = diagnostic.casefold()
@@ -3177,31 +5398,61 @@ def _uv_reports_constraint_conflict(
         return False
     groups = _resolver_requirement_groups(requirements)
     for name in _conflicting_requirement_names(requirements):
-        exact_pins = {
-            f"{name}=={Version(version_value)}".casefold()
-            for requirement in groups[name]
-            if (version_value := _exact_requirement_version(requirement)) is not None
-        }
-        if len(exact_pins) > 1 and all(pin in normalized for pin in exact_pins):
+        constraints = {str(requirement).casefold() for requirement in groups[name]}
+        if constraints and all(constraint in normalized for constraint in constraints):
             return True
     return False
+
+
+def _read_resolver_result(path: Path) -> str:
+    """Read one regular resolver result with identity and byte limits."""
+    descriptor = -1
+    try:
+        expected_status = path.lstat()
+        if not stat.S_ISREG(expected_status.st_mode):
+            _fail_metadata("resolver output is not a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(path, flags)
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or not os.path.samestat(
+            expected_status, status
+        ):
+            _fail_metadata("resolver output changed while being read")
+        with os.fdopen(descriptor, "rb", closefd=True) as stream:
+            descriptor = -1
+            raw = stream.read(_MAX_RESOLVER_RESULT_BYTES + 1)
+    except _MetadataError:
+        raise
+    except (OSError, RuntimeError, ValueError):
+        _fail_metadata("unable to read resolver output")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if len(raw) > _MAX_RESOLVER_RESULT_BYTES:
+        _fail_metadata("resolver output exceeds the size limit")
+    try:
+        return raw.decode("utf-8", errors="strict")
+    except UnicodeError:
+        _fail_metadata("resolver output is not valid UTF-8")
 
 
 def _interpret_resolver_process(
     process: subprocess.CompletedProcess[str],
     *,
-    version: str,
-    workspace: _ResolverWorkspace,
-    artifacts: Sequence[MetadataArtifact],
-    requirements: Sequence[str],
+    context: _ResolverInterpretationContext,
 ) -> ResolverResult:
     if process.returncode != 0:
         diagnostic = process.stderr or process.stdout
-        detail = _safe_process_text(diagnostic, workspace.directory)
+        stable_diagnostic = _stable_uv_diagnostic(diagnostic)
+        detail = _safe_process_text(
+            stable_diagnostic,
+            context.workspace.directory,
+        )
         failed = process.returncode > 0 and _uv_reports_constraint_conflict(
             diagnostic,
-            version,
-            requirements,
+            context.version,
+            context.requirements,
         )
         return ResolverResult(
             status=(
@@ -3211,33 +5462,40 @@ def _interpret_resolver_process(
             ),
             complete=failed,
             resolver="uv",
-            resolver_version=version,
+            resolver_version=context.version,
             packages=(),
             reason=detail or f"resolver exited with status {process.returncode}",
         )
     try:
-        output = workspace.output.read_text(encoding="utf-8")
+        output = _read_resolver_result(context.workspace.output)
         packages, provenance_complete = _resolved_packages(
             output,
-            artifacts,
-            wheelhouse=workspace.wheelhouse,
+            context.artifacts,
+            wheelhouse=context.workspace.wheelhouse,
         )
-    except (OSError, UnicodeError, _MetadataError, InvalidVersion) as error:
+    except (
+        OSError,
+        RuntimeError,
+        UnicodeError,
+        ValueError,
+        _MetadataError,
+        InvalidVersion,
+    ) as error:
         return _resolver_unverified(
-            str(error) or "unable to parse resolver output", version
+            str(error) or "unable to parse resolver output", context.version
         )
     if not provenance_complete:
         return _resolver_unverified(
             "resolver selected package metadata whose exact artifact provenance "
             "was not established",
-            version,
+            context.version,
             packages,
         )
     return ResolverResult(
         status=ResolutionStatus.SUCCEEDED,
         complete=True,
         resolver="uv",
-        resolver_version=version,
+        resolver_version=context.version,
         packages=packages,
         reason="resolution completed",
     )
@@ -3254,8 +5512,11 @@ def _prepare_resolver_workspace(
     if resolver_target is None:
         return None, target_issue or "resolver target is unverified"
     filenames = tuple(artifact.path.name for artifact in artifacts)
-    if len(filenames) != len(set(filenames)):
-        return None, "artifact filenames are not unique in the resolver set"
+    portable_filenames = tuple(
+        unicodedata.normalize("NFC", filename).casefold() for filename in filenames
+    )
+    if len(portable_filenames) != len(set(portable_filenames)):
+        return None, ("artifact filenames are not portably unique in the resolver set")
     workspace.wheelhouse.mkdir()
     staging_error = _stage_resolver_artifacts(
         artifacts,
@@ -3297,15 +5558,10 @@ def _resolve_in_workspace(
     environment = _resolver_environment(workspace.directory)
     version: str | None = None
     try:
-        version_process = subprocess.run(  # noqa: S603
+        version_process = _run_bounded_process(
             [workspace.executable, "--version"],
-            check=False,
-            capture_output=True,
             cwd=workspace.directory,
             env=environment,
-            stdin=subprocess.DEVNULL,
-            encoding="utf-8",
-            errors="strict",
             timeout=configuration.timeout_seconds,
         )
         version = (
@@ -3322,7 +5578,6 @@ def _resolve_in_workspace(
                 active_requirements,
                 artifacts,
                 target,
-                configuration.extras,
                 configuration.project_kind,
             )
             if unavailable:
@@ -3343,15 +5598,10 @@ def _resolve_in_workspace(
             resolver_target,
             has_artifacts=bool(artifacts),
         )
-        process = subprocess.run(  # noqa: S603
+        process = _run_bounded_process(
             command,
-            check=False,
-            capture_output=True,
             cwd=workspace.directory,
             env=environment,
-            stdin=subprocess.DEVNULL,
-            encoding="utf-8",
-            errors="strict",
             timeout=configuration.timeout_seconds,
         )
     except subprocess.TimeoutExpired:
@@ -3366,17 +5616,49 @@ def _resolve_in_workspace(
                 "remains unverified"
             ),
         )
-    except (OSError, UnicodeError):
-        return _resolver_unverified(
-            "unable to execute or decode isolated resolver output", version
+    except (
+        OSError,
+        UnicodeError,
+        _MetadataError,
+        _ResolverOutputLimitError,
+    ) as error:
+        reason = (
+            "isolated resolver output exceeded the size limit"
+            if isinstance(error, _ResolverOutputLimitError)
+            else "unable to execute or decode isolated resolver output"
         )
+        return _resolver_unverified(reason, version)
     return _interpret_resolver_process(
         process,
-        version=version,
-        workspace=workspace,
-        artifacts=artifacts,
-        requirements=active_requirements,
+        context=_ResolverInterpretationContext(
+            version=version,
+            workspace=workspace,
+            artifacts=artifacts,
+            requirements=active_requirements,
+        ),
     )
+
+
+def _trusted_resolver_executable(
+    resolver: str,
+    *,
+    root: Path,
+) -> tuple[Path | None, str | None]:
+    executable = shutil.which(resolver)
+    if executable is None:
+        return None, "uv executable is unavailable"
+    try:
+        resolved = Path(executable).resolve(strict=True)
+        status = resolved.stat()
+    except (OSError, RuntimeError):
+        return None, "unable to validate the uv executable"
+    if not stat.S_ISREG(status.st_mode):
+        return None, "uv executable is not a regular file"
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return resolved, None
+    return None, "refusing to execute a resolver from inside the scanned root"
 
 
 class UvResolverAdapter:
@@ -3384,6 +5666,7 @@ class UvResolverAdapter:
 
     name = "uv"
 
+    @_with_marker_evaluation_budget
     def resolve(
         self,
         configuration: DependencyConfiguration,
@@ -3393,6 +5676,11 @@ class UvResolverAdapter:
         root: Path,
     ) -> ResolverResult:
         """Resolve one target with explicit network and timeout controls."""
+        configuration = _validate_dependency_configuration(configuration)
+        _validate_metadata_artifacts(artifacts)
+        resolved_root = _resolved_dependency_root(root)
+        if target not in configuration.targets:
+            _error("dependency resolver target", "is not declared in configuration")
         if not configuration.resolve:
             return ResolverResult(
                 status=ResolutionStatus.NOT_REQUESTED,
@@ -3402,17 +5690,23 @@ class UvResolverAdapter:
                 packages=(),
                 reason="resolver was not requested",
             )
+        _validate_target_fields(target, label="dependency resolver target")
         _resolver_target, target_issue = _canonical_resolver_target(target)
         if _resolver_target is None:
             return _resolver_unverified(target_issue or "resolver target is unverified")
-        executable = shutil.which(configuration.resolver)
-        if executable is None:
-            return _resolver_unverified("uv executable is unavailable")
+        resolved_executable, executable_issue = _trusted_resolver_executable(
+            configuration.resolver,
+            root=resolved_root,
+        )
+        if resolved_executable is None:
+            return _resolver_unverified(
+                executable_issue or "unable to validate the uv executable"
+            )
         with tempfile.TemporaryDirectory(prefix="pyahead-resolver-") as temporary:
             directory = Path(temporary)
             return _resolve_in_workspace(
                 _ResolverWorkspace(
-                    executable=executable,
+                    executable=str(resolved_executable),
                     directory=directory,
                     requirements=directory / "requirements.in",
                     output=directory / "pylock.toml",
@@ -3421,10 +5715,11 @@ class UvResolverAdapter:
                 configuration,
                 target,
                 artifacts,
-                root=root,
+                root=resolved_root,
             )
 
 
+@_with_marker_evaluation_budget
 def collect_dependency_report(
     configuration: DependencyConfiguration,
     *,
@@ -3432,27 +5727,69 @@ def collect_dependency_report(
     resolver: ResolverAdapter | None = None,
 ) -> DependencyReport:
     """Collect deterministic direct metadata and optional resolver evidence."""
-    resolved_root = root.resolve(strict=True)
+    configuration = _validate_dependency_configuration(configuration)
+    resolved_root = _resolved_dependency_root(root)
     artifacts, issues = inspect_dependency_metadata(
         configuration.metadata_paths, root=resolved_root
+    )
+    _ensure_marker_evaluation_budget(
+        (
+            (configuration.requirements, 2 if configuration.resolve else 1),
+            (
+                tuple(
+                    requirement
+                    for artifact in artifacts
+                    for requirement in artifact.requires_dist
+                ),
+                1,
+            ),
+        ),
+        extras=configuration.extras,
+        target_count=len(configuration.targets),
+        label="dependency collection",
     )
     adapter = resolver or UvResolverAdapter()
     targets: list[TargetDependencyResult] = []
     for target in configuration.targets:
-        _ensure_target_coherence(target, label=f"dependency target {target.name!r}")
+        _ensure_target_coherence(target, label="dependency target")
         declared = tuple(
             _evaluate_requirement(value, target, configuration.extras)
             for value in configuration.requirements
         )
-        resolution = (
-            _resolver_unverified(
+        if not configuration.resolve:
+            expected_resolver = configuration.resolver
+            resolution = ResolverResult(
+                status=ResolutionStatus.NOT_REQUESTED,
+                complete=True,
+                resolver="uv",
+                resolver_version=None,
+                packages=(),
+                reason="resolver was not requested",
+            )
+        elif issues:
+            expected_resolver = configuration.resolver
+            resolution = _resolver_unverified(
                 "resolver was not executed because configured metadata evidence "
                 "is incomplete"
             )
-            if configuration.resolve and issues
-            else adapter.resolve(configuration, target, artifacts, root=resolved_root)
+        else:
+            expected_resolver = adapter.name
+            resolution = adapter.resolve(
+                configuration,
+                target,
+                artifacts,
+                root=resolved_root,
+            )
+        resolution = _validated_resolver_result(
+            resolution,
+            _ResolverValidationContext(
+                artifacts=artifacts,
+                declared=declared,
+                configuration=configuration,
+                target=target,
+                expected_resolver=expected_resolver,
+            ),
         )
-        resolution = _validated_resolver_result(resolution, artifacts, declared)
         evidence_resolution = resolution
         if declared:
             assessments = _assess_declared_dependency_metadata(
@@ -3478,14 +5815,18 @@ def collect_dependency_report(
             assessments,
             artifacts,
         )
-        selected_evidence = _resolution_evidence_artifacts(
-            artifacts,
-            evidence_resolution,
+        selected_evidence = _target_semantic_artifacts(
+            _resolution_evidence_artifacts(
+                artifacts,
+                evidence_resolution,
+            ),
+            target,
         )
         correlated_declared = _correlate_declared_requirements(
             declared,
             selected_evidence,
             resolution,
+            configuration.project_kind,
         )
         targets.append(
             TargetDependencyResult(
@@ -3656,6 +5997,7 @@ def render_dependency_text(report: DependencyReport) -> str:
         (
             f"Metadata {item.artifact_id}: {item.name}=={item.version}; "
             f"Core Metadata {item.metadata_version}; "
+            f"Requires-Python {item.requires_python or 'unspecified'}; "
             f"{item.path.as_posix()}!{item.metadata_path}; sha256={item.sha256}; "
             f"dynamic={','.join(item.dynamic) or 'none'}"
         )

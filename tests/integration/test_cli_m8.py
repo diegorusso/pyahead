@@ -555,7 +555,7 @@ def test_real_offline_constraint_conflict_is_resolution_failed(
 
 
 @pytest.mark.parametrize(
-    ("target_changes", "expected_packages"),
+    "case",
     [
         (
             {},
@@ -571,11 +571,14 @@ def test_real_offline_constraint_conflict_is_resolution_failed(
                 "release-empty-only",
                 "version-empty-only",
             },
+            "succeeded",
+            ExitCode.SUCCESS,
         ),
         (
             {
                 'os-name = "posix"': 'os-name = "nt"',
                 'sys-platform = "linux"': 'sys-platform = "win32"',
+                'platform-machine = "x86_64"': 'platform-machine = "AMD64"',
                 'platform-system = "Linux"': 'platform-system = "Windows"',
                 'resolver-platform = "x86_64-manylinux_2_17"': (
                     'resolver-platform = "x86_64-pc-windows-msvc"'
@@ -586,13 +589,15 @@ def test_real_offline_constraint_conflict_is_resolution_failed(
                 "demo",
                 "impl-label-only",
                 "implementation-version-only",
-                "machine-only",
                 "nt-only",
                 "release-empty-only",
                 "version-empty-only",
                 "windows-only",
+                "windows-machine-only",
                 "windows-system-only",
             },
+            "unverified",
+            ExitCode.INCOMPLETE,
         ),
     ],
 )
@@ -600,10 +605,10 @@ def test_offline_resolution_uses_declared_transitive_marker_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    target_changes: dict[str, str],
-    expected_packages: set[str],
+    case: tuple[dict[str, str], set[str], str, ExitCode],
 ) -> None:
-    """Uv platform and implementation markers follow the canonical target."""
+    """Direct markers stay exact when uv cannot represent a declared target."""
+    target_changes, expected_packages, expected_resolution, expected_exit = case
     _write_project(tmp_path)
     wheelhouse = tmp_path / "wheelhouse"
     _write_wheel(
@@ -617,6 +622,7 @@ def test_offline_resolution_uses_declared_transitive_marker_target(
             'posix-only==1.0; os_name == "posix"',
             'nt-only==1.0; os_name == "nt"',
             'machine-only==1.0; platform_machine == "x86_64"',
+            'windows-machine-only==1.0; platform_machine == "AMD64"',
             'impl-label-only==1.0; platform_python_implementation == "CPython"',
             'linux-system-only==1.0; platform_system == "Linux"',
             'windows-system-only==1.0; platform_system == "Windows"',
@@ -633,6 +639,7 @@ def test_offline_resolution_uses_declared_transitive_marker_target(
         "posix-only",
         "nt-only",
         "machine-only",
+        "windows-machine-only",
         "impl-label-only",
         "linux-system-only",
         "windows-system-only",
@@ -664,14 +671,24 @@ def test_offline_resolution_uses_declared_transitive_marker_target(
     project.write_text(configured, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    assert main(["dependencies", "--format", "json"]) == int(ExitCode.SUCCESS)
+    assert main(["dependencies", "--format", "json"]) == int(expected_exit)
     document = cast("dict[str, object]", json.loads(capsys.readouterr().out))
     target = cast("list[dict[str, object]]", document["targets"])[0]
     resolution = cast("dict[str, object]", target["resolution"])
     packages = cast("list[dict[str, object]]", resolution["packages"])
+    transitive = cast("list[dict[str, object]]", target["transitive_requirements"])
+    transitive_names = {
+        cast("str", item["requirement"]).partition("==")[0].replace("_", "-")
+        for item in transitive
+    }
 
-    assert resolution["status"] == "succeeded"
-    assert {cast("str", item["name"]) for item in packages} == expected_packages
+    assert resolution["status"] == expected_resolution
+    assert transitive_names == expected_packages - {"demo"}
+    if expected_resolution == "succeeded":
+        assert {cast("str", item["name"]) for item in packages} == expected_packages
+    else:
+        assert packages == []
+        assert "Windows platform-machine" in cast("str", resolution["reason"])
 
 
 def test_pypy_target_is_unverified_before_transitive_resolution(
