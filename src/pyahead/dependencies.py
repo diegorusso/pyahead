@@ -108,7 +108,7 @@ _MACOS_RESOLVER_PLATFORMS = {
     "aarch64-apple-darwin": ("arm64", "arm64"),
     "x86_64-apple-darwin": ("x86_64", "x86_64"),
 }
-_SUPPORTED_UV_UNSATISFIABLE_SERIES = frozenset({(0, 11)})
+_SUPPORTED_UV_UNSATISFIABLE_SERIES = frozenset({(0, 11), (0, 12)})
 _UV_NO_SOLUTION_HEADER = (
     "\N{MULTIPLICATION SIGN} No solution found when resolving dependencies:"
 )
@@ -907,6 +907,9 @@ def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
     try:
         resolved = selected.resolve(strict=True)
         relative = PurePosixPath(resolved.relative_to(root).as_posix())
+        expected_status = resolved.lstat()
+        if not stat.S_ISREG(expected_status.st_mode):
+            _error(path.name, "metadata input is not a regular file")
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         descriptor = os.open(resolved, flags)
@@ -914,6 +917,8 @@ def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
             status = os.fstat(descriptor)
             if not stat.S_ISREG(status.st_mode):
                 _error(path.name, "metadata input is not a regular file")
+            if not os.path.samestat(expected_status, status):
+                _error(path.name, "metadata input changed while being read")
             with os.fdopen(descriptor, "rb", closefd=True) as stream:
                 descriptor = -1
                 raw = stream.read(_MAX_ARTIFACT_BYTES + 1)

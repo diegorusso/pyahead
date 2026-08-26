@@ -51,6 +51,13 @@ _UNSATISFIABLE_DIAGNOSTIC = (
     "  ╰─▶ Because you require demo==1.0 and demo==2.0, your requirements "
     "are unsatisfiable.\n"
 )
+_UV_012_MACOS_UNSATISFIABLE_DIAGNOSTIC = (
+    "warning: The requested Python version 3.12.4 is not available; 3.12.10 will "
+    "be used to build dependencies instead.\n"
+    "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+    "  ╰─▶ Because you require demo==1.0 and demo==2.0, we can conclude "
+    "that your requirements are unsatisfiable.\n"
+)
 _MISSING_DISTRIBUTION_DIAGNOSTIC = (
     "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
     "  ╰─▶ Because missing was not found in the provided package locations and "
@@ -1097,7 +1104,13 @@ def test_missing_offline_distribution_is_a_complete_report_finding(
             False,
         ),
         (
-            "0.12.0",
+            "0.12.6 (7938ca5d5 2026-08-25 aarch64-apple-darwin)",
+            _UV_012_MACOS_UNSATISFIABLE_DIAGNOSTIC,
+            ResolutionStatus.RESOLUTION_FAILED,
+            True,
+        ),
+        (
+            "0.13.0",
             _UNSATISFIABLE_DIAGNOSTIC,
             ResolutionStatus.UNVERIFIED,
             False,
@@ -2591,6 +2604,15 @@ def test_metadata_input_paths_and_duplicate_selection_fail_closed(
     missing = tmp_path / "missing.metadata"
     with pytest.raises(ConfigurationError, match="does not exist"):
         inspect_dependency_metadata((missing,), root=tmp_path)
+
+    real_open = dependency_module.os.open
+
+    def windows_directory_open(path: Path, flags: int) -> int:
+        if path.is_dir():
+            raise PermissionError
+        return real_open(path, flags)
+
+    monkeypatch.setattr(dependency_module.os, "open", windows_directory_open)
     with pytest.raises(ConfigurationError, match="regular file"):
         inspect_dependency_metadata((tmp_path,), root=tmp_path)
 
@@ -2606,6 +2628,29 @@ def test_metadata_input_paths_and_duplicate_selection_fail_closed(
 
     monkeypatch.setattr(dependency_module, "_MAX_ARTIFACT_BYTES", 1)
     with pytest.raises(ConfigurationError, match="exceeds"):
+        inspect_dependency_metadata((selected,), root=tmp_path)
+
+
+def test_metadata_input_replacement_during_open_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The opened descriptor must identify the regular file that was checked."""
+    selected = tmp_path / "demo.metadata"
+    replacement = tmp_path / "replacement.metadata"
+    selected.write_bytes(_metadata())
+    replacement.write_bytes(_metadata(identity=("replacement", "2.0")))
+    selected_resolved = selected.resolve()
+    real_open = dependency_module.os.open
+
+    def replace_before_open(path: Path, flags: int) -> int:
+        if path == selected_resolved and replacement.exists():
+            replacement.replace(selected)
+        return real_open(path, flags)
+
+    monkeypatch.setattr(dependency_module.os, "open", replace_before_open)
+
+    with pytest.raises(ConfigurationError, match="changed while being read"):
         inspect_dependency_metadata((selected,), root=tmp_path)
 
 
