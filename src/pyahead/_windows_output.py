@@ -631,11 +631,7 @@ def read_windows_rooted_file(root: Path, relative_path: Path, limit: int) -> byt
                 share_access=_FILE_SHARE_READ,
                 disposition=_FILE_OPEN,
                 attributes=0,
-                options=(
-                    _FILE_NON_DIRECTORY_FILE
-                    | _FILE_SYNCHRONOUS_IO_NONALERT
-                    | _FILE_OPEN_REPARSE_POINT
-                ),
+                options=(_FILE_SYNCHRONOUS_IO_NONALERT | _FILE_OPEN_REPARSE_POINT),
             ),
         )
         if not _is_real_file(api, handle):

@@ -343,17 +343,22 @@ closure using only each resolver package's exact `metadata_used` artifact IDs;
 unselected same-version artifacts cannot contribute dependency edges. A
 resolver package outside that root-reachable closure invalidates an otherwise
 successful result. An empty package selection is valid when every configured
-requirement marker is inactive. Missing transitive packages and conflicting
-simultaneously active constraints make the report incomplete.
+requirement marker is inactive. Missing selected transitive packages and
+uncorroborated conflict claims make the report incomplete; a resolver-backed,
+independently corroborated active root conflict is complete failure evidence.
 
 Direct inspection accepts wheels, `.tar.gz`/`.zip` source distributions with a
 single top-level, identity-matching `<name>-<version>/PKG-INFO` agreeing with
 both the filename and Core Metadata identity, and standalone Core Metadata
 files. It reads archive members as data, never extracts them, imports package
-code, or invokes a PEP 517 build backend. A matching wheel is `available`. When
-no declared target tag matches, the result is `artifact-unavailable`; a
-supplied sdist records
+code, or invokes a PEP 517 build backend. A matching wheel records
+`artifact_availability` as `available`. When no declared target tag matches,
+that field is `unavailable`; a supplied sdist instead records
 `source-build-possible` without attempting or claiming that the source builds.
+An application assessment reports either missing-wheel state as
+`artifact-unavailable`; a library artifact sample remains `unverified` because
+it is not a complete inventory. Complete resolver-level unavailability requires
+a closed application wheelhouse, as described below.
 `Requires-Python` exclusion is reported separately as `declared-incompatible`.
 An sdist or standalone metadata field declared `Dynamic` is not treated as a
 final compatibility declaration. A wheel that retains source-only `Dynamic`

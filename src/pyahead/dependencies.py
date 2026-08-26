@@ -64,6 +64,7 @@ from pyahead.model import ConfigurationError, ExitCode
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from email.message import Message
+    from types import FrameType
 
 JsonScalar: TypeAlias = bool | float | int | str | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -1231,6 +1232,7 @@ def _read_dependency_table(
     root: Path,
     config_path: Path | None = None,
 ) -> dict[str, object]:
+    label = "dependency configuration"
     try:
         resolved_root = root.resolve(strict=True)
     except (OSError, RuntimeError) as error:
@@ -1244,29 +1246,27 @@ def _read_dependency_table(
         resolved = selected.resolve(strict=True)
         resolved.relative_to(resolved_root)
     except FileNotFoundError as error:
-        raise _configuration_error(
-            selected.name, "configuration file does not exist"
-        ) from error
+        raise _configuration_error(label, "file does not exist") from error
     except (OSError, RuntimeError, ValueError) as error:
         raise _configuration_error(
-            selected.name, "unable to read configuration beneath the root"
+            label, "unable to read configuration beneath the root"
         ) from error
     document = _read_dependency_document(
         resolved_root,
         resolved.relative_to(resolved_root),
-        selected.name,
+        label,
     )
 
-    tool = _table(document.get("tool", {}), f"{selected.name}:tool")
-    pyahead = _table(tool.get("pyahead", {}), f"{selected.name}:tool.pyahead")
+    tool = _table(document.get("tool", {}), f"{label}:tool")
+    pyahead = _table(tool.get("pyahead", {}), f"{label}:tool.pyahead")
     raw = pyahead.get("dependencies")
     if raw is None:
-        _error(selected.name, "[tool.pyahead.dependencies] is required")
-    table = _table(raw, f"{selected.name}:tool.pyahead.dependencies")
+        _error(label, "[tool.pyahead.dependencies] is required")
+    table = _table(raw, f"{label}:tool.pyahead.dependencies")
     unknown = sorted(set(table).difference(_DEPENDENCY_KEYS))
     if unknown:
         _error(
-            selected.name,
+            label,
             "unknown [tool.pyahead.dependencies] key(s): "
             + ", ".join(repr(item) for item in unknown),
         )
@@ -1453,6 +1453,7 @@ def _resolved_dependency_root(root: object) -> Path:
 
 
 def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
+    label = "metadata input"
     selected = path if path.is_absolute() else root / path
     try:
         resolved = selected.resolve(strict=True)
@@ -1461,17 +1462,15 @@ def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
         _string(relative_text, "resolved metadata input path")
         relative = PurePosixPath(relative_text)
         if rooted_relative == Path() or not rooted_relative.name:
-            _error(path.name, "metadata input is not a regular file")
+            _error(label, "is not a regular file")
         raw = _read_rooted_file(root, rooted_relative, _MAX_ARTIFACT_BYTES)
     except FileNotFoundError as error:
-        raise _configuration_error(
-            path.name, "metadata input does not exist"
-        ) from error
+        raise _configuration_error(label, "does not exist") from error
     except ValueError as error:
         if isinstance(error, ConfigurationError):
             raise
         raise _configuration_error(
-            path.name, "metadata input must remain beneath the project root"
+            label, "must remain beneath the project root"
         ) from error
     except (OSError, RuntimeError) as error:
         message = (
@@ -1479,11 +1478,11 @@ def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
             if "changed while" in str(error)
             else "unable to read metadata input"
         )
-        raise _configuration_error(path.name, message) from error
+        raise _configuration_error(label, message) from error
     if len(raw) > _MAX_ARTIFACT_BYTES:
         raise _configuration_error(
-            path.name,
-            f"metadata input exceeds {_MAX_ARTIFACT_BYTES} bytes",
+            label,
+            f"exceeds {_MAX_ARTIFACT_BYTES} bytes",
         )
     return relative, raw
 
@@ -4539,17 +4538,18 @@ class _ProcessContainment:
         self.windows_job = windows_job
 
     def terminate(self) -> None:
-        """Kill the isolated process tree exactly once."""
+        """Kill the isolated process tree, retaining state for interrupted retries."""
         with self.lock:
             if self.terminated:
                 return
-            self.terminated = True
             if self.windows_job is not None:
                 job_terminated = _dispose_windows_job(self.windows_job)
-                self.windows_job = None
                 if job_terminated:
+                    self.windows_job = None
+                    self.terminated = True
                     return
             if self.process is None:
+                self.terminated = self.windows_job is None
                 return
             if os.name != "nt":
                 try:
@@ -4557,9 +4557,74 @@ class _ProcessContainment:
                 except OSError:
                     pass
                 else:
+                    self.terminated = self.windows_job is None
                     return
-            with suppress(OSError):
+            try:
                 self.process.kill()
+            except OSError:
+                pass
+            else:
+                self.terminated = self.windows_job is None
+
+
+def _retry_windows_job_disposal(
+    windows_job: int,
+) -> tuple[bool, BaseException | None]:
+    interruption: BaseException | None = None
+    for _attempt in range(2):
+        try:
+            terminated = _dispose_windows_job(windows_job)
+        except BaseException as error:  # noqa: BLE001
+            if interruption is None:
+                interruption = error
+            continue
+        if terminated:
+            return True, interruption
+    return False, interruption
+
+
+def _terminate_uncontained_root(
+    process: subprocess.Popen[bytes],
+) -> BaseException | None:
+    interruption: BaseException | None = None
+    for _attempt in range(2):
+        try:
+            process.kill()
+        except OSError:
+            break
+        except BaseException as error:  # noqa: BLE001
+            if interruption is None:
+                interruption = error
+            continue
+        break
+    return interruption
+
+
+def _retry_process_group_termination(
+    process: subprocess.Popen[bytes],
+) -> tuple[bool, BaseException | None]:
+    interruption: BaseException | None = None
+    for _attempt in range(2):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            break
+        except BaseException as error:  # noqa: BLE001
+            if interruption is None:
+                interruption = error
+            continue
+        return True, interruption
+    return False, interruption
+
+
+def _finish_uncontained_cleanup(
+    process: subprocess.Popen[bytes],
+) -> BaseException | None:
+    interruption = _wait_for_process_cleanup(process)
+    return _preserve_first_cleanup_error(
+        interruption,
+        _close_process_streams(process),
+    )
 
 
 def _cleanup_uncontained_process(
@@ -4567,24 +4632,78 @@ def _cleanup_uncontained_process(
 ) -> None:
     """Bound cleanup before ownership passes to ``_ProcessContainment``."""
     terminated = False
+    interruption: BaseException | None = None
     if windows_job is not None:
-        terminated = _dispose_windows_job(windows_job)
+        terminated, interruption = _retry_windows_job_disposal(windows_job)
     elif os.name != "nt":
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        else:
-            terminated = True
+        terminated, interruption = _retry_process_group_termination(process)
     if not terminated:
-        with suppress(OSError):
-            process.kill()
-    with suppress(OSError, subprocess.TimeoutExpired):
-        process.wait(timeout=_PROCESS_CLEANUP_SECONDS)
-    for stream in (process.stdout, process.stderr):
-        if stream is not None:
-            with suppress(OSError, ValueError):
-                stream.close()
+        root_interruption = _terminate_uncontained_root(process)
+        if interruption is None:
+            interruption = root_interruption
+    finish_interruption = _finish_uncontained_cleanup(process)
+    if interruption is None:
+        interruption = finish_interruption
+    if interruption is not None:
+        raise interruption
+
+
+def _replay_deferred_sigint(
+    handler: object,
+    signum: int,
+    frame: FrameType | None,
+) -> None:
+    """Run the prior SIGINT disposition after process ownership is recorded."""
+    if handler is signal.SIG_IGN:
+        return
+    if handler is signal.SIG_DFL or not callable(handler):
+        signal.default_int_handler(signum, frame)
+    else:
+        handler(signum, frame)
+
+
+def _popen_attached_process(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    creationflags: int,
+    containment: _ProcessContainment,
+) -> subprocess.Popen[bytes]:
+    """Spawn and record ownership before replaying a main-thread SIGINT."""
+
+    def spawn() -> subprocess.Popen[bytes]:
+        process = subprocess.Popen(  # noqa: S603
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creationflags,
+            start_new_session=os.name != "nt",
+        )
+        containment.attach_process(process)
+        return process
+
+    if threading.current_thread() is not threading.main_thread():
+        return spawn()
+
+    deferred_sigint: list[tuple[int, FrameType | None]] = []
+
+    def record_sigint(signum: int, frame: FrameType | None) -> None:
+        if not deferred_sigint:
+            deferred_sigint.append((signum, frame))
+
+    prior_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, record_sigint)
+    try:
+        process = spawn()
+    finally:
+        signal.signal(signal.SIGINT, prior_handler)
+        if deferred_sigint:
+            _replay_deferred_sigint(prior_handler, *deferred_sigint[0])
+    return process
 
 
 def _cleanup_failed_process_start(
@@ -4598,13 +4717,12 @@ def _cleanup_failed_process_start(
         return
     if windows_job is not None and containment.windows_job is None:
         containment.attach_windows_job(windows_job)
-    containment.terminate()
-    with suppress(OSError, subprocess.TimeoutExpired):
-        process.wait(timeout=_PROCESS_CLEANUP_SECONDS)
-    for stream in (process.stdout, process.stderr):
-        if stream is not None:
-            with suppress(OSError, ValueError):
-                stream.close()
+    interruption = _retry_containment_termination(containment)
+    finish_interruption = _finish_uncontained_cleanup(process)
+    if interruption is not None:
+        raise interruption
+    if finish_interruption is not None:
+        raise finish_interruption
 
 
 def _start_contained_process(
@@ -4622,17 +4740,13 @@ def _start_contained_process(
     process: subprocess.Popen[bytes] | None = None
     windows_job: int | None = None
     try:
-        process = subprocess.Popen(  # noqa: S603
+        process = _popen_attached_process(
             command,
             cwd=cwd,
             env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             creationflags=creationflags,
-            start_new_session=os.name != "nt",
+            containment=containment,
         )
-        containment.attach_process(process)
         windows_ready = os.name != "nt"
         if os.name == "nt":
             try:
@@ -4648,8 +4762,13 @@ def _start_contained_process(
         if not windows_ready:
             _fail_metadata("unable to contain isolated resolver process")
     except BaseException:
-        if process is not None:
-            _cleanup_failed_process_start(process, windows_job, containment)
+        owned_process = containment.process
+        if owned_process is not None:
+            _cleanup_failed_process_start(
+                owned_process,
+                windows_job,
+                containment,
+            )
         raise
     else:
         return process
@@ -4675,32 +4794,113 @@ def _read_process_pipe(
         errors.append(error)
 
 
+def _retry_containment_termination(
+    containment: _ProcessContainment,
+) -> BaseException | None:
+    interruption: BaseException | None = None
+    for _attempt in range(2):
+        try:
+            containment.terminate()
+        except BaseException as error:  # noqa: BLE001
+            if interruption is None:
+                interruption = error
+            continue
+        if containment.terminated:
+            break
+    return interruption
+
+
+def _wait_for_process_cleanup(
+    process: subprocess.Popen[bytes],
+) -> BaseException | None:
+    interruption: BaseException | None = None
+    for _attempt in range(2):
+        try:
+            process.wait(timeout=_PROCESS_CLEANUP_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        except BaseException as error:  # noqa: BLE001
+            if interruption is None:
+                interruption = error
+            continue
+        break
+    return interruption
+
+
+def _join_process_reader(reader: threading.Thread) -> BaseException | None:
+    interruption: BaseException | None = None
+    for _attempt in range(2):
+        try:
+            reader.join(timeout=_PROCESS_CLEANUP_SECONDS)
+        except BaseException as error:  # noqa: BLE001
+            if interruption is None:
+                interruption = error
+            continue
+        break
+    return interruption
+
+
+def _close_process_streams(
+    process: subprocess.Popen[bytes],
+) -> BaseException | None:
+    interruption: BaseException | None = None
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            for _attempt in range(2):
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    break
+                except BaseException as error:  # noqa: BLE001
+                    if interruption is None:
+                        interruption = error
+                    continue
+                break
+    return interruption
+
+
+def _preserve_first_cleanup_error(
+    current: BaseException | None,
+    candidate: BaseException | None,
+) -> BaseException | None:
+    return current if current is not None else candidate
+
+
 def _finish_process_readers(
     process: subprocess.Popen[bytes],
     containment: _ProcessContainment,
     readers: Sequence[threading.Thread],
 ) -> bool:
     """Terminate the process tree and report whether a pipe reader survived."""
-    containment.terminate()
-    with suppress(OSError, subprocess.TimeoutExpired):
-        process.wait(timeout=_PROCESS_CLEANUP_SECONDS)
+    interruption = _retry_containment_termination(containment)
+    interruption = _preserve_first_cleanup_error(
+        interruption,
+        _wait_for_process_cleanup(process),
+    )
     started = tuple(reader for reader in readers if reader.ident is not None)
     for reader in started:
-        reader.join(timeout=_PROCESS_CLEANUP_SECONDS)
+        interruption = _preserve_first_cleanup_error(
+            interruption,
+            _join_process_reader(reader),
+        )
     if any(reader.is_alive() for reader in started):
-        if process.stdout is not None:
-            with suppress(OSError, ValueError):
-                process.stdout.close()
-        if process.stderr is not None:
-            with suppress(OSError, ValueError):
-                process.stderr.close()
+        interruption = _preserve_first_cleanup_error(
+            interruption,
+            _close_process_streams(process),
+        )
         for reader in started:
-            reader.join(timeout=_PROCESS_CLEANUP_SECONDS)
-    for stream in (process.stdout, process.stderr):
-        if stream is not None:
-            with suppress(OSError, ValueError):
-                stream.close()
-    return any(reader.is_alive() for reader in started)
+            interruption = _preserve_first_cleanup_error(
+                interruption,
+                _join_process_reader(reader),
+            )
+    interruption = _preserve_first_cleanup_error(
+        interruption,
+        _close_process_streams(process),
+    )
+    reader_survived = any(reader.is_alive() for reader in started)
+    if interruption is not None:
+        raise interruption
+    return reader_survived
 
 
 def _run_bounded_process(

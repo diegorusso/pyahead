@@ -445,6 +445,9 @@ def test_windows_rooted_reader_uses_relative_handle_and_closes_it(
     assert not (
         observed_creation[0].share_access & windows_output_module._FILE_SHARE_WRITE  # noqa: SLF001
     )
+    assert not (
+        observed_creation[0].options & windows_output_module._FILE_NON_DIRECTORY_FILE  # noqa: SLF001
+    )
     assert len(closed) == expected_closed_handles
 
     with pytest.raises(OSError, match="alternate data streams"):

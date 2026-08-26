@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import json
 import os
 import shutil
 import struct
@@ -16,9 +17,11 @@ import zipfile
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from jsonschema import Draft202012Validator
 from packaging.requirements import Requirement
 
 import pyahead._windows_output as windows_output_module
@@ -80,6 +83,11 @@ _MISSING_CONFLICT_DISTRIBUTION_DIAGNOSTIC = (
     "  ╰─▶ Because demo was not found in the provided package locations and you "
     "require demo==1.0 and demo==2.0, your requirements are unsatisfiable.\n"
 )
+
+
+def _os_with_name(name: str) -> SimpleNamespace:
+    """Override the dependency module's platform without mutating global ``os``."""
+    return SimpleNamespace(**{**vars(os), "name": name})
 
 
 def _metadata(  # noqa: PLR0913
@@ -793,6 +801,33 @@ def test_transitive_provenance_accepts_pep440_equivalent_version_spelling(
     assert report.targets[0].resolution.status is ResolutionStatus.SUCCEEDED
     assert report.targets[0].transitive_requirements[0].verified is True
     assert report.exit_code is ExitCode.SUCCESS
+
+
+def test_equivalent_application_locks_emit_schema_valid_transitive_evidence(
+    tmp_path: Path,
+) -> None:
+    """Equivalent lock spellings remain distinct evidence rows in schema v1."""
+    root_wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    child_wheel = tmp_path / "child-1.0-py3-none-any.whl"
+    _wheel(root_wheel, requires_dist=("child>=1",))
+    _wheel(child_wheel)
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(root_wheel, child_wheel),
+            requirements=("demo==1.0", "child==1", "child==1.0"),
+        ),
+        root=tmp_path,
+    )
+
+    transitive = report.targets[0].transitive_requirements[0]
+    assert transitive.locked_versions == ("child==1", "child==1.0")
+    assert transitive.verified is True
+    schema_path = Path(__file__).parents[2] / "docs/schema/dependency-report-v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(
+        dependency_module.dependency_report_document(report)
+    )
 
 
 def test_requirement_extras_are_correlated_with_declared_metadata(
@@ -3005,6 +3040,21 @@ def test_configuration_file_and_root_failures_are_bounded(tmp_path: Path) -> Non
         load_dependency_configuration(tmp_path, outside)
 
 
+def test_configuration_open_failure_does_not_reflect_untrusted_path(
+    tmp_path: Path,
+) -> None:
+    """Native configuration failures use a fixed, control-free label."""
+    selected = Path("missing\nconfig.toml")
+
+    with pytest.raises(ConfigurationError) as captured:
+        load_dependency_configuration(tmp_path, selected)
+
+    message = str(captured.value)
+    assert message.startswith("dependency configuration: ")
+    assert "\n" not in message
+    assert selected.name not in message
+
+
 @pytest.mark.parametrize(
     ("old", "new", "match"),
     [
@@ -3697,6 +3747,8 @@ def test_metadata_input_replacement_during_open_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The opened descriptor must identify the regular file that was checked."""
+    if not dependency_module._supports_rooted_descriptor_reads():  # noqa: SLF001
+        pytest.skip("requires POSIX directory-relative descriptor reads")
     selected = tmp_path / "demo.metadata"
     replacement = tmp_path / "replacement.metadata"
     selected.write_bytes(_metadata())
@@ -4908,7 +4960,7 @@ def test_interruption_before_containment_cleans_the_suspended_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No signal window can orphan a child before containment is handed off."""
+    """A real SIGINT is replayed only after process ownership is recorded."""
 
     class FakeProcess:
         pid = 42
@@ -4929,45 +4981,28 @@ def test_interruption_before_containment_cleans_the_suspended_process(
 
     process = FakeProcess()
     creationflags: list[int] = []
-    armed = False
 
     def fake_popen(
         _command: Sequence[str], **kwargs: object
     ) -> subprocess.Popen[bytes]:
-        nonlocal armed
         creationflags.append(cast("int", kwargs["creationflags"]))
-        armed = True
+        dependency_module.signal.raise_signal(dependency_module.signal.SIGINT)
         return cast("subprocess.Popen[bytes]", process)
 
-    def interrupt_after_popen(
-        frame: FrameType, event: str, _argument: object
-    ) -> object:
-        if (
-            armed
-            and event == "line"
-            and frame.f_code is dependency_module._start_contained_process.__code__  # noqa: SLF001
-        ):
-            raise KeyboardInterrupt
-        return interrupt_after_popen
-
-    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
     monkeypatch.setattr(dependency_module.subprocess, "Popen", fake_popen)
 
     containment = dependency_module._ProcessContainment()  # noqa: SLF001
-    previous_trace = sys.gettrace()
-    sys.settrace(interrupt_after_popen)
-    try:
-        with pytest.raises(KeyboardInterrupt):
-            dependency_module._start_contained_process(  # noqa: SLF001
-                ["resolver"],
-                cwd=tmp_path,
-                env={},
-                containment=containment,
-            )
-    finally:
-        sys.settrace(previous_trace)
+    with pytest.raises(KeyboardInterrupt):
+        dependency_module._start_contained_process(  # noqa: SLF001
+            ["resolver"],
+            cwd=tmp_path,
+            env={},
+            containment=containment,
+        )
 
     assert creationflags[0] & dependency_module._CREATE_SUSPENDED  # noqa: SLF001
+    assert containment.process is process
     assert process.killed is True
     assert process.waited is True
     assert process.stdout.closed is True
@@ -5014,7 +5049,7 @@ def test_interruption_during_containment_handoff_closes_the_assigned_job(
             raise KeyboardInterrupt
         return interrupt_return
 
-    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
     monkeypatch.setattr(dependency_module.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
         dependency_module,
@@ -5207,7 +5242,7 @@ def test_windows_job_and_suspended_thread_apis_are_fail_closed(
         pid = process_id
         _handle = process_handle
 
-    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
     monkeypatch.setattr(dependency_module, "_windows_kernel32", lambda: kernel)
     process = cast("subprocess.Popen[bytes]", FakeProcess())
 
@@ -5894,12 +5929,30 @@ def test_resolver_wheelhouse_rejects_portable_filename_collisions(
     assert "portably unique" in result.reason
 
 
+def test_metadata_open_failure_does_not_reflect_untrusted_path(
+    tmp_path: Path,
+) -> None:
+    """Native open failures use a fixed label rather than an unsafe path."""
+    selected = tmp_path / "missing\nname.metadata"
+
+    with pytest.raises(ConfigurationError) as captured:
+        inspect_dependency_metadata((selected,), root=tmp_path)
+
+    message = str(captured.value)
+    assert message.startswith("metadata input: ")
+    assert "\n" not in message
+    assert selected.name not in message
+
+
 def test_resolved_metadata_path_controls_are_rejected(
     tmp_path: Path,
 ) -> None:
     """A safe symlink label cannot smuggle its target path into text output."""
     target = tmp_path / "evil\nname.metadata"
-    target.write_bytes(_metadata())
+    try:
+        target.write_bytes(_metadata())
+    except OSError:
+        pytest.skip("control-character filenames are unavailable")
     link = tmp_path / "safe.metadata"
     try:
         link.symlink_to(target.name)
@@ -5928,7 +5981,7 @@ def test_windows_resolver_environment_and_kernel_loader_are_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Windows-only resolver state is isolated and loader absence fails closed."""
-    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
     monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
 
     environment = dependency_module._resolver_environment(tmp_path)  # noqa: SLF001
@@ -5992,10 +6045,10 @@ def test_windows_job_creation_rejects_invalid_or_unassigned_handles(
 
     process = cast("subprocess.Popen[bytes]", FakeProcess(80))
     monkeypatch.setattr(dependency_module, "_windows_kernel32", lambda: kernel)
-    monkeypatch.setattr(dependency_module.os, "name", "posix")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("posix"))
     assert dependency_module._create_windows_kill_job(process) is None  # noqa: SLF001
 
-    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
     assert dependency_module._create_windows_kill_job(process) is None  # noqa: SLF001
     assert "CloseHandle" not in calls
 
@@ -6148,7 +6201,7 @@ def test_process_containment_is_idempotent(
     def close_failure(_handle: int) -> None:
         raise OSError
 
-    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
     monkeypatch.setattr(dependency_module, "_close_windows_job", close_failure)
     terminated_jobs: list[int] = []
     monkeypatch.setattr(
@@ -6188,12 +6241,58 @@ def test_process_containment_is_idempotent(
     def failed_killpg(_process_id: int, _signal: int) -> None:
         raise OSError
 
-    monkeypatch.setattr(dependency_module.os, "name", "posix")
-    monkeypatch.setattr(dependency_module.os, "killpg", failed_killpg)
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("posix"))
+    monkeypatch.setattr(
+        dependency_module.os,
+        "killpg",
+        failed_killpg,
+        raising=False,
+    )
     process_owned = dependency_module._ProcessContainment()  # noqa: SLF001
     process_owned.attach_process(cast("subprocess.Popen[bytes]", process))
     process_owned.terminate()
     assert process.kills == 1
+
+
+def test_process_containment_retries_after_interrupted_job_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupted Job disposal cannot poison the later cleanup retry."""
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    process = _FakeCleanupProcess()
+    containment = dependency_module._ProcessContainment()  # noqa: SLF001
+    containment.attach_process(cast("subprocess.Popen[bytes]", process))
+    job_handle = 70
+    expected_attempts = 2
+    containment.attach_windows_job(job_handle)
+    attempts = 0
+
+    def interrupted_once(handle: int) -> bool:
+        nonlocal attempts
+        attempts += 1
+        assert handle == job_handle
+        if attempts == 1:
+            raise KeyboardInterrupt
+        return True
+
+    monkeypatch.setattr(
+        dependency_module,
+        "_dispose_windows_job",
+        interrupted_once,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        containment.terminate()
+    assert containment.terminated is False
+    assert containment.windows_job == job_handle
+    assert process.kills == 0
+
+    containment.terminate()
+
+    assert attempts == expected_attempts
+    assert containment.terminated is True
+    assert containment.windows_job is None
+    assert process.kills == 0
 
 
 def test_preownership_cleanup_terminates_and_closes_process_resources(
@@ -6201,7 +6300,7 @@ def test_preownership_cleanup_terminates_and_closes_process_resources(
 ) -> None:
     """Pre-handoff cleanup terminates the Job tree and closes process streams."""
     closed_jobs: list[int] = []
-    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
     monkeypatch.setattr(
         dependency_module,
         "_close_windows_job",
@@ -6237,6 +6336,138 @@ def test_preownership_cleanup_terminates_and_closes_process_resources(
     assert fallback.waits == 1
     assert fallback.stdout.closed is True
     assert fallback.stderr.closed is True
+
+
+def test_preownership_cleanup_finishes_after_interrupted_job_disposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interrupted Job disposal is retried before re-raising the signal."""
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    process = _FakeCleanupProcess()
+    expected_attempts = 2
+    attempts = 0
+
+    def interrupted_disposal(_handle: int) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise KeyboardInterrupt
+        return True
+
+    monkeypatch.setattr(
+        dependency_module,
+        "_dispose_windows_job",
+        interrupted_disposal,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        dependency_module._cleanup_uncontained_process(  # noqa: SLF001
+            cast("subprocess.Popen[bytes]", process),
+            74,
+        )
+
+    assert attempts == expected_attempts
+    assert process.kills == 0
+    assert process.waits == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+def test_preownership_cleanup_retries_an_interrupted_root_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupted root kill is retried before streams are closed."""
+
+    class InterruptedKillProcess(_FakeCleanupProcess):
+        def kill(self) -> None:
+            self.kills += 1
+            if self.kills == 1:
+                raise KeyboardInterrupt
+
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    process = InterruptedKillProcess()
+    expected_kills = 2
+
+    with pytest.raises(KeyboardInterrupt):
+        dependency_module._cleanup_uncontained_process(  # noqa: SLF001
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        )
+
+    assert process.kills == expected_kills
+    assert process.waits == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+def test_preownership_cleanup_retries_an_interrupted_process_group_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A POSIX interruption cannot skip the second process-group kill."""
+    process = _FakeCleanupProcess()
+    attempts = 0
+    expected_attempts = 2
+
+    def interrupted_killpg(_process_id: int, _signal: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise KeyboardInterrupt
+
+    fake_os = _os_with_name("posix")
+    fake_os.killpg = interrupted_killpg
+    monkeypatch.setattr(dependency_module, "os", fake_os)
+
+    with pytest.raises(KeyboardInterrupt):
+        dependency_module._cleanup_uncontained_process(  # noqa: SLF001
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        )
+
+    assert attempts == expected_attempts
+    assert process.kills == 0
+    assert process.waits == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
+def test_preownership_cleanup_retries_interrupted_wait_and_close() -> None:
+    """Wait and stream cleanup finish before their first interruption is replayed."""
+
+    class InterruptingStream(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_attempts = 0
+
+        def close(self) -> None:
+            self.close_attempts += 1
+            if self.close_attempts == 1:
+                raise KeyboardInterrupt
+            super().close()
+
+    class InterruptingProcess(_FakeCleanupProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stdout = InterruptingStream()
+
+        def wait(self, *, timeout: float) -> int:
+            super().wait(timeout=timeout)
+            if self.waits == 1:
+                raise KeyboardInterrupt
+            return -1
+
+    process = InterruptingProcess()
+    expected_attempts = 2
+
+    interruption = dependency_module._finish_uncontained_cleanup(  # noqa: SLF001
+        cast("subprocess.Popen[bytes]", process)
+    )
+
+    assert isinstance(interruption, KeyboardInterrupt)
+    assert process.waits == expected_attempts
+    assert process.stdout.close_attempts == expected_attempts
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
 
 
 def test_failed_process_start_cleans_before_and_after_ownership(
@@ -6320,7 +6551,7 @@ def test_windows_contained_start_rejects_uncontained_or_unresumable_children(
         return cast("int | None", job_result)
 
     closed_jobs: list[int] = []
-    monkeypatch.setattr(dependency_module.os, "name", "nt")
+    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
     monkeypatch.setattr(
         dependency_module.subprocess,
         "Popen",
@@ -6405,6 +6636,39 @@ def test_pipe_reader_and_reader_shutdown_failure_paths_are_bounded(
     assert reader.joins == expected_reader_joins
     assert FakeProcess.stdout.closed is True
     assert FakeProcess.stderr.closed is True
+
+
+def test_reader_shutdown_retries_interrupted_containment_before_reraising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final cleanup cannot abandon a tree when its first termination is interrupted."""
+
+    class InterruptingContainment:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def terminate(self) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise KeyboardInterrupt
+
+    interrupting = InterruptingContainment()
+    containment = dependency_module._ProcessContainment()  # noqa: SLF001
+    monkeypatch.setattr(containment, "terminate", interrupting.terminate)
+    process = _FakeCleanupProcess()
+    expected_attempts = 2
+
+    with pytest.raises(KeyboardInterrupt):
+        dependency_module._finish_process_readers(  # noqa: SLF001
+            cast("subprocess.Popen[bytes]", process),
+            containment,
+            (),
+        )
+
+    assert interrupting.attempts == expected_attempts
+    assert process.waits == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
 
 
 def test_bounded_process_requires_both_output_pipes(
