@@ -1475,9 +1475,23 @@ Separate application and library semantics:
 Initial dependency evidence should distinguish:
 
 1. `declared-incompatible`: available distribution metadata excludes a target through `Requires-Python`;
-2. `resolution-failed`: dependency constraints cannot be solved for the target;
-3. `artifact-unavailable`: no suitable wheel is available for a platform, but source build may remain possible;
-4. `unverified`: required metadata or index access was unavailable.
+2. `resolution-failed`: reviewed resolver grammar and an independent check both
+   prove that the active dependency constraints contradict one another;
+3. `artifact-unavailable`: a completed, recognized offline resolution over exact
+   application pins proves that its closed wheelhouse has no suitable artifact;
+4. `unverified`: required metadata, inventory closure, recognized resolver
+   evidence, or index access was unavailable.
+
+`artifact_availability` is a separate fact about the supplied sample. It may say
+that a matching wheel is `available`, a wrong-target wheel is `unavailable`, or
+an sdist makes a source build `source-build-possible`. A direct application or
+library sample remains compatibility `unverified`, including when a matching
+wheel is present, unless a complete resolution closes the relevant inventory.
+An exact, final `Requires-Python` exclusion remains sufficient for
+`declared-incompatible` because it does not depend on proving artifact absence.
+A complete negative resolution verifies only the independently contradictory or
+unavailable root group. Unrelated roots and transitive requirements retain their
+own evidence state, and any incomplete row keeps exit code 3 precedence.
 
 Use `packaging` for metadata semantics and an isolated `uv` resolver adapter initially. Resolver use is opt-in, network-visible, separately timed out, and never part of the default static command.
 
@@ -2339,6 +2353,11 @@ Acceptance:
 - exact final `Requires-Python` exclusions remain `declared-incompatible`;
 - `resolution-failed` still requires reviewed resolver grammar plus an
   independently demonstrated active constraint contradiction;
+- a complete negative result verifies only its corroborated root group, while
+  unrelated incomplete roots or transitives retain exit-status precedence;
+- the closed JSON Schema validates structure and status shapes, and the trusted
+  model-to-document boundary separately recomputes cross-row root identity and
+  PEP 440 contradiction semantics before machine output is emitted;
 - timeouts, unsupported resolver evidence, unknown diagnostic grammar, and
   incomplete evidence remain incomplete and take exit-status precedence; and
 - a real offline unsatisfiable-constraint regression runs against an explicitly

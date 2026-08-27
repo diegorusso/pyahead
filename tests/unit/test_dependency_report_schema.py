@@ -40,7 +40,7 @@ RESOLVED_PACKAGE_DOCUMENT: dict[str, object] = {
 RESOLUTION_SHAPES: dict[str, tuple[bool, bool, str | None, bool]] = {
     "not-requested": (False, True, None, False),
     "succeeded": (True, True, "0.12.6", True),
-    "artifact-unavailable": (True, True, "0.12.6", False),
+    "artifact-unavailable": (True, True, "0.11.21", False),
     "resolution-failed": (True, True, "0.12.6", False),
     "timed-out": (True, False, None, False),
     "unverified": (True, False, "0.12.6", True),
@@ -212,6 +212,29 @@ def _resolution_document(status: str) -> dict[str, object]:
             ("targets", 0, "declared_requirements", 0),
         )
         declared["resolved_versions"] = []
+    if status in {
+        "not-requested",
+        "resolution-failed",
+        "timed-out",
+        "unverified",
+    }:
+        assessment = _nested_object(document, ("targets", 0, "assessments", 0))
+        assessment.update(
+            {
+                "reason": "complete resolver evidence was not established",
+                "status": "unverified",
+            }
+        )
+    elif status == "artifact-unavailable":
+        assessment = _nested_object(document, ("targets", 0, "assessments", 0))
+        assessment.update(
+            {
+                "artifact_availability": "unavailable",
+                "reason": "closed target inventory has no compatible wheel",
+                "source_build_possible": False,
+                "status": "artifact-unavailable",
+            }
+        )
     if status == "resolution-failed":
         target = _nested_object(document, ("targets", 0))
         declared_rows = cast(
@@ -272,8 +295,15 @@ def _assessment_document(
     status: str,
     requires_python_status: str,
     artifact_availability: str,
+    *,
+    resolution_status: str | None = None,
 ) -> dict[str, object]:
-    document = _resolution_document("not-requested")
+    if resolution_status is None:
+        resolution_status = {
+            "artifact-unavailable": "artifact-unavailable",
+            "compatible": "succeeded",
+        }.get(status, "not-requested")
+    document = _resolution_document(resolution_status)
     assessment = _nested_object(document, ("targets", 0, "assessments", 0))
     assessment.update(
         {
@@ -557,6 +587,146 @@ def test_dependency_report_schema_accepts_an_injected_resolver_adapter_name() ->
     Draft202012Validator(_schema()).validate(document)
 
 
+@pytest.mark.parametrize("status", ["artifact-unavailable", "resolution-failed"])
+def test_dependency_report_schema_rejects_custom_negative_resolver(
+    status: str,
+) -> None:
+    """Complete negative conclusions require the reviewed uv adapter grammar."""
+    document = _resolution_document(status)
+    _nested_object(document, ("targets", 0, "resolution"))["resolver"] = (
+        "custom-adapter"
+    )
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
+@pytest.mark.parametrize(
+    ("status", "version"),
+    [
+        ("artifact-unavailable", "0.11.22"),
+        ("resolution-failed", "0.13.0"),
+    ],
+)
+def test_dependency_report_schema_rejects_unreviewed_negative_resolver_version(
+    status: str,
+    version: str,
+) -> None:
+    """Unknown uv diagnostic grammar cannot become complete negative evidence."""
+    document = _resolution_document(status)
+    _nested_object(document, ("targets", 0, "resolution"))["resolver_version"] = version
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
+def test_dependency_report_schema_rejects_unbound_artifact_failure() -> None:
+    """A compatible supplied root cannot substantiate artifact-unavailable."""
+    document = _resolution_document("artifact-unavailable")
+    assessment = _nested_object(document, ("targets", 0, "assessments", 0))
+    assessment.update(
+        {
+            "artifact_availability": "available",
+            "reason": "compatible wheel supplied",
+            "status": "compatible",
+        }
+    )
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
+@pytest.mark.parametrize("requirement", ["demo>=1", "demo===1.0"])
+def test_dependency_report_schema_rejects_non_application_artifact_pin(
+    requirement: str,
+) -> None:
+    """Only the application's configured ``==`` pin can close its inventory."""
+    document = _resolution_document("artifact-unavailable")
+    declared = _nested_object(
+        document,
+        ("targets", 0, "declared_requirements", 0),
+    )
+    declared["requirement"] = requirement
+    document["requirements"] = [requirement]
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "demo==1.0",
+        'demo==1.0; python_version >= "3.11"',
+    ],
+)
+def test_dependency_report_schema_accepts_exact_artifact_inventory(
+    requirement: str,
+) -> None:
+    """Exact equality pins, including active markers, retain their valid shape."""
+    document = _resolution_document("artifact-unavailable")
+    declared = _nested_object(
+        document,
+        ("targets", 0, "declared_requirements", 0),
+    )
+    declared["requirement"] = requirement
+    document["requirements"] = [requirement]
+
+    Draft202012Validator(_schema()).validate(document)
+
+
+def test_dependency_report_schema_rejects_compatible_artifact_failure_leak() -> None:
+    """An artifact-negative target cannot also claim a compatible assessment."""
+    document = _resolution_document("artifact-unavailable")
+    target = _nested_object(document, ("targets", 0))
+    assessments = cast("list[dict[str, object]]", target["assessments"])
+    compatible = deepcopy(assessments[0])
+    compatible.update(
+        {
+            "artifact_availability": "available",
+            "package": "other",
+            "reason": "compatible wheel supplied",
+            "status": "compatible",
+            "version": "2.0",
+        }
+    )
+    assessments.append(compatible)
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
+def test_dependency_report_schema_rejects_unbound_solver_conflict() -> None:
+    """Matching metadata alone cannot substantiate resolution-failed."""
+    document = _resolution_document("resolution-failed")
+    target = _nested_object(document, ("targets", 0))
+    declared = cast("list[dict[str, object]]", target["declared_requirements"])
+    del declared[1:]
+    declared[0]["matching_metadata"] = [ARTIFACT_ID]
+    document["requirements"] = ["demo[speed]==1.0"]
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
+def test_dependency_report_schema_rejects_single_satisfiable_solver_root() -> None:
+    """One satisfiable range cannot substantiate resolution-failed."""
+    document = _resolution_document("resolution-failed")
+    target = _nested_object(document, ("targets", 0))
+    declared = cast("list[dict[str, object]]", target["declared_requirements"])
+    del declared[1:]
+    declared[0].update(
+        {
+            "matching_metadata": [],
+            "requirement": "demo>=1",
+        }
+    )
+    document["requirements"] = ["demo>=1"]
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
 @pytest.mark.parametrize(
     ("status", "path", "invalid_value"),
     [
@@ -676,18 +846,12 @@ def test_dependency_report_schema_rejects_impossible_complete_evidence() -> None
 
     for status in ("artifact-unavailable", "resolution-failed"):
         unverified_negative = _resolution_document(status)
-        _nested_object(
-            unverified_negative,
-            ("targets", 0, "declared_requirements", 0),
-        )["verified"] = False
+        target = _nested_object(unverified_negative, ("targets", 0))
+        for declared in cast(
+            "list[dict[str, object]]", target["declared_requirements"]
+        ):
+            declared["verified"] = False
         documents.append(unverified_negative)
-
-    one_root_conflict = _resolution_document("resolution-failed")
-    target = _nested_object(one_root_conflict, ("targets", 0))
-    declared = cast("list[object]", target["declared_requirements"])
-    del declared[1:]
-    one_root_conflict["requirements"] = ["demo[speed]==1.0"]
-    documents.append(one_root_conflict)
 
     inactive_unavailability = _resolution_document("artifact-unavailable")
     inactive_declared = _nested_object(
@@ -709,6 +873,46 @@ def test_dependency_report_schema_rejects_impossible_complete_evidence() -> None
     for document in documents:
         with pytest.raises(ValidationError):
             validator.validate(document)
+
+
+def test_dependency_report_schema_accepts_one_row_bounded_conflict() -> None:
+    """One active requirement may contain an independently provable contradiction."""
+    document = _resolution_document("resolution-failed")
+    target = _nested_object(document, ("targets", 0))
+    declared = cast("list[dict[str, object]]", target["declared_requirements"])
+    del declared[1:]
+    declared[0]["requirement"] = "demo<1,>=2"
+    declared[0]["matching_metadata"] = []
+    document["requirements"] = ["demo<1,>=2"]
+
+    Draft202012Validator(_schema()).validate(document)
+
+
+def test_dependency_report_schema_accepts_partial_rows_beside_a_conflict() -> None:
+    """A proven root conflict may coexist with unrelated incomplete evidence."""
+    document = _resolution_document("resolution-failed")
+    target = _nested_object(document, ("targets", 0))
+    declared = cast("list[dict[str, object]]", target["declared_requirements"])
+    unrelated = deepcopy(declared[0])
+    unrelated.update(
+        {
+            "matching_metadata": [],
+            "requirement": "missing==1.0",
+            "resolved_versions": [],
+            "verified": False,
+        }
+    )
+    declared.append(unrelated)
+    transitive = deepcopy(
+        _nested_object(
+            _incomplete_document(),
+            ("targets", 0, "transitive_requirements", 0),
+        )
+    )
+    target["transitive_requirements"] = [transitive]
+    document["requirements"] = ["demo[speed]==1.0", "demo==2.0", "missing==1.0"]
+
+    Draft202012Validator(_schema()).validate(document)
 
 
 def test_dependency_report_schema_accepts_unverified_extra_after_success() -> None:
@@ -1036,7 +1240,7 @@ def test_dependency_report_schema_accepts_unverified_missing_extra_row() -> None
 
 
 def test_dependency_report_schema_rejects_false_solver_conflict_row() -> None:
-    """A complete solver contradiction verifies every active transitive row."""
+    """A solver-failure status still needs an independently verified root."""
     document = _incomplete_document()
     resolution = _nested_object(document, ("targets", 0, "resolution"))
     resolution.update(
@@ -1185,6 +1389,8 @@ def test_dependency_report_schema_rejects_noncanonical_collection_shapes() -> No
         ("declared-incompatible", "incompatible", "available"),
         ("artifact-unavailable", "compatible", "unavailable"),
         ("artifact-unavailable", "unspecified", "source-build-possible"),
+        ("unverified", "compatible", "unavailable"),
+        ("unverified", "unspecified", "source-build-possible"),
         ("unverified", "incompatible", "available"),
     ],
 )
@@ -1201,6 +1407,62 @@ def test_dependency_report_schema_accepts_valid_assessment_status_combinations(
             artifact_availability,
         )
     )
+
+
+@pytest.mark.parametrize(
+    "resolution_status",
+    ["not-requested", "timed-out", "unverified"],
+)
+def test_dependency_report_schema_requires_resolution_for_compatibility(
+    resolution_status: str,
+) -> None:
+    """A supplied matching artifact is not complete compatibility evidence."""
+    document = _assessment_document(
+        "compatible",
+        "compatible",
+        "available",
+        resolution_status=resolution_status,
+    )
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
+@pytest.mark.parametrize(
+    "resolution_status",
+    ["not-requested", "resolution-failed", "succeeded", "timed-out", "unverified"],
+)
+def test_dependency_report_schema_binds_artifact_failure_to_closed_inventory(
+    resolution_status: str,
+) -> None:
+    """Sample absence becomes a finding only under closed offline resolution."""
+    document = _assessment_document(
+        "artifact-unavailable",
+        "compatible",
+        "unavailable",
+        resolution_status=resolution_status,
+    )
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(_schema()).validate(document)
+
+
+@pytest.mark.parametrize(
+    "resolution_status",
+    ["not-requested", "timed-out", "unverified"],
+)
+def test_dependency_report_schema_preserves_exact_declared_exclusion(
+    resolution_status: str,
+) -> None:
+    """Incomplete resolution does not erase exact final Requires-Python evidence."""
+    document = _assessment_document(
+        "declared-incompatible",
+        "incompatible",
+        "unavailable",
+        resolution_status=resolution_status,
+    )
+
+    Draft202012Validator(_schema()).validate(document)
 
 
 @pytest.mark.parametrize(

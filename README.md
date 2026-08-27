@@ -44,8 +44,12 @@ does not run those tests in a hosted scanner.
 `pyahead dependencies` separately inspects supplied wheel, source-distribution,
 or Core Metadata files without executing build backends. An optional isolated
 `uv` adapter has explicit offline/online and timeout controls. Dependency
-results distinguish declared incompatibility, failed resolution, missing target
-wheels, and incomplete evidence.
+results distinguish exact declared incompatibility, independently corroborated
+constraint failures, closed-wheelhouse target-artifact absence, sample-level
+artifact availability, and incomplete evidence. Direct artifact samples remain
+compatibility unverified until a complete resolution closes the relevant
+inventory, except that an exact, final `Requires-Python` exclusion remains
+declared incompatible.
 
 Gate B is exercised by repository tests and clean wheel/sdist installation.
 Gate C requires evidence from 100 active public repositories, at least 95%

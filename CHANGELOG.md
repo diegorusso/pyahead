@@ -15,9 +15,12 @@ stabilizing.
   offline, network, index, and timeout controls. Wheel structure, direct URL,
   coherent-target, and complete transitive-dependency evidence fail closed;
   closed-wheelhouse artifact absence remains distinct from proven constraint
-  conflicts and operational index failures, library artifact samples remain
-  incomplete availability evidence, and resolver-selected extras require exact
-  `Provides-Extra` provenance. Nested dependency extras reach a fixed point, and
+  conflicts and operational index failures. Direct application and library
+  samples retain precise artifact availability but remain incomplete
+  compatibility evidence until resolution closes the inventory, except that an
+  exact, final `Requires-Python` exclusion remains declared incompatible;
+  resolver-selected extras require exact `Provides-Extra` provenance. Nested
+  dependency extras reach a fixed point, and
   archive member, shared expanded-data, and decoder limits are enforced before
   unbounded object creation, decompression, or LZMA dictionary allocation.
   Dependency evaluation and correlation share a bounded work budget, and public

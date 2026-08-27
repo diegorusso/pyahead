@@ -280,6 +280,11 @@ pyahead dependencies --format json --output pyahead-dependencies.json
 
 JSON output follows the closed, versioned
 [`dependency-report-v1.json`](schema/dependency-report-v1.json) schema.
+The schema validates the complete document structure, limits, and allowed status
+shapes. Cross-row package identity and PEP 440 constraint satisfiability cannot
+be expressed by portable JSON Schema, so PyAhead recomputes those invariants at
+the trusted model-to-document boundary before emitting JSON. Schema validation
+alone must not turn an unowned or modified report into compatibility evidence.
 
 Configuration must explicitly distinguish an application from a library.
 Applications use exact `==` pins because the configured lock set and deployment
@@ -378,10 +383,12 @@ code, or invokes a PEP 517 build backend. A matching wheel records
 `artifact_availability` as `available`. When no declared target tag matches,
 that field is `unavailable`; a supplied sdist instead records
 `source-build-possible` without attempting or claiming that the source builds.
-An application assessment reports either missing-wheel state as
-`artifact-unavailable`; a library artifact sample remains `unverified` because
-it is not a complete inventory. Complete resolver-level unavailability requires
-a closed application wheelhouse, as described below.
+Those values describe only the supplied sample. Without a complete resolution,
+both application and library assessments remain compatibility `unverified`,
+including when the sample contains a matching wheel. A wrong-target wheel or
+sdist-only sample therefore retains its precise availability value without
+becoming a compatibility failure. Complete `compatible` or
+`artifact-unavailable` status requires the resolution evidence described below.
 `Requires-Python` exclusion is reported separately as `declared-incompatible`.
 An sdist or standalone metadata field declared `Dynamic` is not treated as a
 final compatibility declaration. A wheel that retains source-only `Dynamic`
@@ -465,24 +472,34 @@ is never attributed to a same-name/version local artifact. Online resolution
 may contact artifact or redirect hosts selected by the configured index; the
 index URL is not a host-level egress allowlist.
 
-When offline resolution is requested for an application with exact pins, the
-revalidated wheelhouse is a closed artifact inventory. A missing package,
-missing pinned version, or lack of a target-compatible supplied wheel is then
-complete `artifact-unavailable` evidence. Without resolution, configured
-metadata inputs may be partial, so a missing requirement remains unverified. A
+An offline application wheelhouse becomes closed compatibility evidence only
+after a recognized resolver completes the configured exact-pin resolution
+attempt. A missing package, missing pinned version, or lack of a
+target-compatible supplied wheel is then complete `artifact-unavailable`
+evidence. Without completed resolution, configured metadata inputs may be
+partial, so matching and unsuitable direct samples remain unverified. A
 configured library artifact sample is not a complete platform inventory, even
-for an exact requirement or in metadata-only mode, so an unsuitable sampled
-artifact remains `unverified`. A library public equality such as `==1.0` also
-admits unseen local versions and cannot make a sampled exclusion definitive;
-an equality with an explicit local segment names one version. When complete
-resolution selects another compatible artifact, the unsuitable sample does not
-override that result. Resolver text is not enough by itself to prove a conflict:
+for an exact requirement or in metadata-only mode. A library public equality
+such as `==1.0` also admits unseen local versions and cannot make a sampled
+exclusion definitive; an equality with an explicit local segment names one
+version. When complete resolution selects another compatible artifact, the
+unsuitable sample does not override that result. Resolver text is not enough by
+itself to prove a conflict:
 `resolution-failed` requires reviewed unsatisfiable-output grammar from a
 recognized exact `uv` version, excludes availability and Python-version
 diagnostics, and is accepted only when active exact or simple bounded
 constraints independently contradict one another. Uncorroborated transitive
 solver text, and missing or unreachable distributions from an online index,
 remain `unverified` operational evidence.
+The reviewed failure shape is exact: the version probe emits only its canonical
+stdout line, while resolution exits 1 with empty stdout and the diagnostic on
+stderr. An injected adapter, an unexpected exit code, or output on another stream
+cannot establish a compatibility failure.
+A complete negative resolver status applies only to the independently
+corroborated root group. It does not verify unrelated roots or transitive
+requirements; any such incomplete evidence keeps exit code 3 precedence.
+Repository CI pins `uv 0.11.21` for the real offline regression. Other versions
+remain unverified unless their diagnostic series is in the reviewed allowlist.
 
 The result categories are intentionally not interchangeable:
 

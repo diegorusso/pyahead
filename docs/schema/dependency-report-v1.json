@@ -1,4 +1,5 @@
 {
+  "$comment": "This schema validates the closed report structure. Cross-row package identity and PEP 440 constraint satisfiability are enforced at PyAhead's model-to-document semantic-validation boundary and must be re-evaluated before trusting unowned JSON as compatibility evidence.",
   "$defs": {
     "artifact_id": {
       "pattern": "^[0-9a-f]{64}$",
@@ -653,6 +654,28 @@
           "if": {
             "properties": {
               "status": {
+                "enum": [
+                  "artifact-unavailable",
+                  "resolution-failed"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolver": {
+                "const": "uv"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
                 "const": "artifact-unavailable"
               }
             },
@@ -669,8 +692,7 @@
                 "maxItems": 0
               },
               "resolver_version": {
-                "maxLength": 4096,
-                "minLength": 1,
+                "pattern": "^0\\.11\\.21(?: \\([A-Za-z0-9][A-Za-z0-9 ._+\\-]*\\))?$",
                 "type": "string"
               }
             }
@@ -696,8 +718,7 @@
                 "maxItems": 0
               },
               "resolver_version": {
-                "maxLength": 4096,
-                "minLength": 1,
+                "pattern": "^0\\.(?:11|12)(?:\\.[0-9]+)*(?: \\([A-Za-z0-9][A-Za-z0-9 ._+\\-]*\\))?$",
                 "type": "string"
               }
             }
@@ -975,6 +996,81 @@
                   "status": {
                     "enum": [
                       "not-requested",
+                      "resolution-failed",
+                      "timed-out",
+                      "unverified"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            },
+            "required": [
+              "resolution"
+            ]
+          },
+          "then": {
+            "properties": {
+              "assessments": {
+                "items": {
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "declared-incompatible",
+                        "unverified"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "assessments": {
+                "contains": {
+                  "properties": {
+                    "status": {
+                      "const": "artifact-unavailable"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "assessments"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolution": {
+                "properties": {
+                  "status": {
+                    "const": "artifact-unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "resolution": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not-requested",
                       "succeeded",
                       "timed-out",
                       "unverified"
@@ -1173,67 +1269,96 @@
           },
           "then": {
             "properties": {
+              "assessments": {
+                "items": {
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "artifact-unavailable",
+                        "declared-incompatible",
+                        "unverified"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                }
+              },
               "declared_requirements": {
                 "contains": {
                   "properties": {
                     "applies": {
                       "const": true
+                    },
+                    "requirement": {
+                      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\\s*\\[[A-Za-z0-9._-]+(?:\\s*,\\s*[A-Za-z0-9._-]+)*\\])?\\s*={2}\\s*[A-Za-z0-9][^\\s,;*]*(?:\\s*;.+)?$"
+                    },
+                    "verified": {
+                      "const": true
                     }
                   },
                   "required": [
-                    "applies"
+                    "applies",
+                    "requirement",
+                    "verified"
                   ]
                 },
                 "minContains": 1
               }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "resolution": {
-                "properties": {
-                  "status": {
-                    "enum": [
-                      "artifact-unavailable",
-                      "resolution-failed"
-                    ]
-                  }
-                },
-                "required": [
-                  "status"
-                ]
-              }
             },
-            "required": [
-              "resolution"
-            ]
-          },
-          "then": {
-            "properties": {
-              "declared_requirements": {
-                "items": {
-                  "if": {
-                    "properties": {
-                      "applies": {
-                        "const": true
-                      }
+            "anyOf": [
+              {
+                "properties": {
+                  "assessments": {
+                    "contains": {
+                      "properties": {
+                        "status": {
+                          "const": "artifact-unavailable"
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ]
                     },
-                    "required": [
-                      "applies"
-                    ]
-                  },
-                  "then": {
-                    "properties": {
-                      "verified": {
-                        "const": true
-                      }
-                    }
+                    "minContains": 1
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "declared_requirements": {
+                    "contains": {
+                      "properties": {
+                        "applies": {
+                          "const": true
+                        },
+                        "matching_metadata": {
+                          "maxItems": 0
+                        },
+                        "requirement": {
+                          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\\s*\\[[A-Za-z0-9._-]+(?:\\s*,\\s*[A-Za-z0-9._-]+)*\\])?\\s*={2}\\s*[A-Za-z0-9][^\\s,;*]*(?:\\s*;.+)?$"
+                        },
+                        "resolved_versions": {
+                          "maxItems": 0
+                        },
+                        "verified": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "applies",
+                        "matching_metadata",
+                        "requirement",
+                        "resolved_versions",
+                        "verified"
+                      ]
+                    },
+                    "minContains": 1
                   }
                 }
               }
-            }
+            ]
           }
         },
         {
@@ -1255,53 +1380,72 @@
             ]
           },
           "then": {
-            "properties": {
-              "declared_requirements": {
-                "contains": {
-                  "properties": {
-                    "applies": {
-                      "const": true
-                    }
-                  },
-                  "required": [
-                    "applies"
-                  ]
-                },
-                "minContains": 2
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "resolution": {
+            "anyOf": [
+              {
                 "properties": {
-                  "status": {
-                    "const": "resolution-failed"
+                  "declared_requirements": {
+                    "contains": {
+                      "properties": {
+                        "applies": {
+                          "const": true
+                        },
+                        "resolved_versions": {
+                          "maxItems": 0
+                        },
+                        "verified": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "applies",
+                        "resolved_versions",
+                        "verified"
+                      ]
+                    },
+                    "minContains": 2
                   }
                 },
                 "required": [
-                  "status"
+                  "declared_requirements"
+                ]
+              },
+              {
+                "properties": {
+                  "declared_requirements": {
+                    "contains": {
+                      "properties": {
+                        "applies": {
+                          "const": true
+                        },
+                        "matching_metadata": {
+                          "maxItems": 0
+                        },
+                        "requirement": {
+                          "pattern": "(?:===|~=|==|!=|<=|>=|<|>)[^,;]+,\\s*(?:===|~=|==|!=|<=|>=|<|>)"
+                        },
+                        "resolved_versions": {
+                          "maxItems": 0
+                        },
+                        "verified": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "applies",
+                        "matching_metadata",
+                        "requirement",
+                        "resolved_versions",
+                        "verified"
+                      ]
+                    },
+                    "minContains": 1
+                  }
+                },
+                "required": [
+                  "declared_requirements"
                 ]
               }
-            },
-            "required": [
-              "resolution"
             ]
-          },
-          "then": {
-            "properties": {
-              "transitive_requirements": {
-                "items": {
-                  "properties": {
-                    "verified": {
-                      "const": true
-                    }
-                  }
-                }
-              }
-            }
           }
         },
         {
@@ -1894,6 +2038,7 @@
                           "status": {
                             "enum": [
                               "not-requested",
+                              "resolution-failed",
                               "timed-out",
                               "unverified"
                             ]
@@ -1973,6 +2118,7 @@
                         "enum": [
                           "artifact-unavailable",
                           "not-requested",
+                          "resolution-failed",
                           "timed-out",
                           "unverified"
                         ]

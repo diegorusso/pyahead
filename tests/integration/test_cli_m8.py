@@ -1,6 +1,9 @@
 """End-to-end CLI tests for M8 dependency compatibility evidence."""
 
+import gzip
+import io
 import json
+import tarfile
 import zipfile
 from pathlib import Path
 from typing import cast
@@ -43,6 +46,24 @@ def _write_wheel(
         for member, payload in members.items():
             info = zipfile.ZipInfo(member, date_time=(2020, 1, 1, 0, 0, 0))
             archive.writestr(info, payload)
+
+
+def _write_sdist(path: Path) -> None:
+    payload = b"".join(
+        (
+            b"Metadata-Version: 2.4\n",
+            b"Name: demo\n",
+            b"Version: 1.0\n",
+            b"Requires-Python: >=3.12\n\n",
+        )
+    )
+    raw_tar = io.BytesIO()
+    with tarfile.open(fileobj=raw_tar, mode="w") as archive:
+        member = tarfile.TarInfo("demo-1.0/PKG-INFO")
+        member.size = len(payload)
+        member.mtime = 0
+        archive.addfile(member, io.BytesIO(payload))
+    path.write_bytes(gzip.compress(raw_tar.getvalue(), mtime=0))
 
 
 def _write_project(root: Path) -> None:
@@ -91,7 +112,7 @@ def test_dependencies_command_emits_exact_offline_json(
     _write_project(tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    assert main(["dependencies", "--format", "json"]) == int(ExitCode.SUCCESS)
+    assert main(["dependencies", "--format", "json"]) == int(ExitCode.INCOMPLETE)
     captured = capsys.readouterr()
     document = cast("dict[str, object]", json.loads(captured.out))
     metadata = cast("list[dict[str, object]]", document["metadata"])
@@ -103,7 +124,8 @@ def test_dependencies_command_emits_exact_offline_json(
     assert cast("dict[str, object]", document["controls"])["network"] is False
     assert metadata[0]["version"] == "1.0"
     assert metadata[0]["metadata_version"] == "2.4"
-    assert assessment["status"] == "compatible"
+    assert assessment["status"] == "unverified"
+    assert assessment["artifact_availability"] == "available"
     assert assessment["metadata_used"] == [metadata[0]["artifact_id"]]
 
 
@@ -217,7 +239,7 @@ def test_metadata_only_requires_python_exclusion_is_a_cli_finding(
     ]
 
 
-def test_metadata_only_unavailable_wheel_is_a_cli_finding(
+def test_metadata_only_unavailable_wheel_is_incomplete_cli_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -236,7 +258,7 @@ def test_metadata_only_unavailable_wheel_is_a_cli_finding(
     )
     monkeypatch.chdir(tmp_path)
 
-    assert main(["dependencies", "--format", "json"]) == int(ExitCode.FINDINGS)
+    assert main(["dependencies", "--format", "json"]) == int(ExitCode.INCOMPLETE)
     document = cast("dict[str, object]", json.loads(capsys.readouterr().out))
     metadata = cast("list[dict[str, object]]", document["metadata"])
     target = cast("list[dict[str, object]]", document["targets"])[0]
@@ -249,10 +271,13 @@ def test_metadata_only_unavailable_wheel_is_a_cli_finding(
             "artifact_availability": "unavailable",
             "metadata_used": [metadata[0]["artifact_id"]],
             "package": "demo",
-            "reason": "no matching wheel or source distribution is supplied",
+            "reason": (
+                "the supplied artifact sample does not establish complete target "
+                "compatibility; complete resolver evidence is required"
+            ),
             "requires_python_status": "compatible",
             "source_build_possible": False,
-            "status": "artifact-unavailable",
+            "status": "unverified",
             "version": "1.0",
         }
     ]
@@ -456,7 +481,12 @@ def test_offline_resolver_correlates_transitive_extras_with_selected_metadata(
 
 @pytest.mark.parametrize(
     "case",
-    ["missing-package", "missing-version", "missing-platform-wheel"],
+    [
+        "missing-package",
+        "missing-version",
+        "missing-platform-wheel",
+        "sdist-only",
+    ],
 )
 def test_offline_artifact_unavailability_is_deterministic_after_path_redaction(
     tmp_path: Path,
@@ -482,7 +512,7 @@ def test_offline_artifact_unavailability_is_deterministic_after_path_redaction(
                 'requirements = ["demo==1.0"]',
                 'requirements = ["demo==2.0"]',
             )
-        else:
+        elif case == "missing-platform-wheel":
             portable = root / "wheelhouse" / "demo-1.0-py3-none-any.whl"
             portable.unlink()
             platform_wheel = (
@@ -493,6 +523,12 @@ def test_offline_artifact_unavailability_is_deterministic_after_path_redaction(
                 tag="cp311-cp311-manylinux_2_17_x86_64",
             )
             document = document.replace(portable.name, platform_wheel.name)
+        else:
+            portable = root / "wheelhouse" / "demo-1.0-py3-none-any.whl"
+            portable.unlink()
+            sdist = root / "wheelhouse" / "demo-1.0.tar.gz"
+            _write_sdist(sdist)
+            document = document.replace(portable.name, sdist.name)
         project.write_text(
             document.replace("resolve = false", "resolve = true"),
             encoding="utf-8",
@@ -552,6 +588,38 @@ def test_real_offline_constraint_conflict_is_resolution_failed(
     assert resolution["status"] == "resolution-failed"
     assert resolution["complete"] is True
     assert all(item["verified"] is True for item in declared)
+
+
+def test_real_offline_library_range_conflict_is_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A corroborated library range contradiction is complete failure evidence."""
+    _write_project(tmp_path)
+    project = tmp_path / "pyproject.toml"
+    project.write_text(
+        project.read_text(encoding="utf-8")
+        .replace('project-kind = "application"', 'project-kind = "library"')
+        .replace(
+            'requirements = ["demo==1.0"]',
+            'requirements = ["demo<1", "demo>=2"]',
+        )
+        .replace("resolve = false", "resolve = true"),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["dependencies", "--format", "json"]) == int(ExitCode.FINDINGS)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    document = cast("dict[str, object]", json.loads(captured.out))
+    target = cast("list[dict[str, object]]", document["targets"])[0]
+    resolution = cast("dict[str, object]", target["resolution"])
+    declared = cast("list[dict[str, object]]", target["declared_requirements"])
+    assert resolution["status"] == "resolution-failed"
+    assert resolution["complete"] is True
+    assert [item["verified"] for item in declared] == [True, True]
 
 
 @pytest.mark.parametrize(

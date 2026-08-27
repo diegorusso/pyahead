@@ -79,6 +79,26 @@ _MISSING_DISTRIBUTION_DIAGNOSTIC = (
     "you require missing==1.0, we can conclude that your requirements are "
     "unsatisfiable.\n"
 )
+_MISSING_VERSION_DIAGNOSTIC = (
+    "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+    "  ╰─▶ Because there is no version of demo==1.0 and you require demo==1.0, "
+    "we can conclude that your requirements are unsatisfiable.\n"
+)
+_WRONG_ABI_DIAGNOSTIC = (
+    "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+    "  ╰─▶ Because demo==1.0 has no wheels with a matching Python ABI tag "
+    "(e.g., `cp312`) and you require demo==1.0, we can conclude that your "
+    "requirements are unsatisfiable.\n"
+    "  hint: You require CPython 3.12 (`cp312`), but we only found wheels for "
+    "`demo` (v1.0) with the following Python ABI tag: `cp311`\n"
+)
+_NO_USABLE_WHEELS_DIAGNOSTIC = (
+    "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+    "  ╰─▶ Because demo==1.0 has no usable wheels and you require demo==1.0, "
+    "we can conclude that your requirements are unsatisfiable.\n"
+    "  hint: Wheels are required for `demo` because building from source is "
+    "disabled for all packages (i.e., with `--no-build`)\n"
+)
 _MISSING_CONFLICT_DISTRIBUTION_DIAGNOSTIC = (
     "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
     "  ╰─▶ Because demo was not found in the provided package locations and you "
@@ -339,7 +359,7 @@ def test_direct_inspection_never_runs_a_backend_and_records_exact_metadata(
         target=_target(),
         extras=("speed",),
     )[0]
-    assert assessment.status is DependencyCompatibilityStatus.COMPATIBLE
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
     assert assessment.requires_python_status is RequiresPythonStatus.COMPATIBLE
     assert assessment.artifact_availability is ArtifactAvailability.AVAILABLE
     assert assessment.applicable_requirements == (
@@ -437,7 +457,7 @@ def test_target_specific_wheel_metadata_excludes_other_platform_semantics(
     )[0]
 
     assert issues == ()
-    assert assessment.status is DependencyCompatibilityStatus.COMPATIBLE
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
     assert assessment.requires_python_status is RequiresPythonStatus.COMPATIBLE
     assert assessment.applicable_requirements == ("linux-dependency==1",)
 
@@ -462,7 +482,7 @@ def test_missing_wheel_is_distinct_from_source_build_possibility(
     )[0]
 
     assert issues == ()
-    assert assessment.status is DependencyCompatibilityStatus.ARTIFACT_UNAVAILABLE
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
     assert assessment.artifact_availability is (
         ArtifactAvailability.SOURCE_BUILD_POSSIBLE
     )
@@ -487,7 +507,7 @@ def test_available_wheel_preserves_supplied_source_fallback(tmp_path: Path) -> N
     )[0]
 
     assert issues == ()
-    assert assessment.status is DependencyCompatibilityStatus.COMPATIBLE
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
     assert assessment.artifact_availability is ArtifactAvailability.AVAILABLE
     assert assessment.source_build_possible is True
 
@@ -629,7 +649,10 @@ def test_unrelated_extra_metadata_does_not_create_dependency_evidence(
     assert len(report.metadata) == _ARTIFACT_COUNT
     assert tuple(item.package for item in report.targets[0].assessments) == ("demo",)
     assert report.targets[0].declared_requirements[0].verified is True
-    assert report.exit_code is ExitCode.SUCCESS
+    assert report.targets[0].assessments[0].status is (
+        DependencyCompatibilityStatus.UNVERIFIED
+    )
+    assert report.exit_code is ExitCode.INCOMPLETE
 
 
 def test_plain_application_pin_with_local_variants_is_not_a_false_finding(
@@ -667,7 +690,7 @@ def test_plain_application_pin_with_local_variants_is_not_a_false_finding(
         "1.0+cpu",
     )
     assert selected.targets[0].declared_requirements[0].verified is True
-    assert selected.exit_code is ExitCode.SUCCESS
+    assert selected.exit_code is ExitCode.INCOMPLETE
 
 
 def test_pep440_equivalent_version_spellings_are_one_direct_candidate(
@@ -691,7 +714,7 @@ def test_pep440_equivalent_version_spellings_are_one_direct_candidate(
 
     assert len(report.targets[0].assessments) == 1
     assert report.targets[0].declared_requirements[0].verified is True
-    assert report.exit_code is ExitCode.SUCCESS
+    assert report.exit_code is ExitCode.INCOMPLETE
 
 
 def test_simultaneous_application_pins_use_their_constraint_intersection(
@@ -713,7 +736,7 @@ def test_simultaneous_application_pins_use_their_constraint_intersection(
 
     assert tuple(item.version for item in report.targets[0].assessments) == ("1.0+cpu",)
     assert all(item.verified for item in report.targets[0].declared_requirements)
-    assert report.exit_code is ExitCode.SUCCESS
+    assert report.exit_code is ExitCode.INCOMPLETE
 
 
 def test_transitive_application_lock_with_local_variants_is_unverified(
@@ -849,7 +872,7 @@ def test_requirement_extras_are_correlated_with_declared_metadata(
     matching = collect_dependency_report(configuration, root=tmp_path)
     assert matching.metadata[0].provides_extra == ("speed",)
     assert matching.targets[0].declared_requirements[0].verified is True
-    assert matching.exit_code is ExitCode.SUCCESS
+    assert matching.exit_code is ExitCode.INCOMPLETE
 
 
 def test_complete_resolver_evidence_cannot_borrow_unknown_metadata(
@@ -957,6 +980,14 @@ def test_complete_resolver_rejects_packages_outside_the_reachable_closure(
     assert resolution.complete is False
     assert "outside the exact active dependency closure" in resolution.reason
     assert tuple(item.package for item in report.targets[0].assessments) == ("demo",)
+    assert report.targets[0].assessments[0].status is (
+        DependencyCompatibilityStatus.UNVERIFIED
+    )
+    schema_path = Path(__file__).parents[2] / "docs/schema/dependency-report-v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(
+        dependency_module.dependency_report_document(report)
+    )
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
@@ -1064,7 +1095,7 @@ def test_nested_dependency_extras_reach_a_fixed_point(
     )
 
     assert all(item.verified for item in complete.targets[0].transitive_requirements)
-    assert complete.exit_code is ExitCode.SUCCESS
+    assert complete.exit_code is ExitCode.INCOMPLETE
 
 
 def test_nested_dependency_extras_reassess_earlier_packages(
@@ -1116,7 +1147,7 @@ def test_root_project_extras_do_not_activate_dependency_extras(
 
     assert base.targets[0].assessments[0].applicable_requirements == ()
     assert base.targets[0].transitive_requirements == ()
-    assert base.exit_code is ExitCode.SUCCESS
+    assert base.exit_code is ExitCode.INCOMPLETE
 
     _wheel(
         demo,
@@ -1394,7 +1425,7 @@ def test_timeout_remains_incomplete_in_the_aggregate_report(tmp_path: Path) -> N
     )
 
     assert report.targets[0].assessments[0].status is (
-        DependencyCompatibilityStatus.COMPATIBLE
+        DependencyCompatibilityStatus.UNVERIFIED
     )
     assert report.targets[0].resolution.status is ResolutionStatus.TIMED_OUT
     assert report.exit_code is ExitCode.INCOMPLETE
@@ -1404,10 +1435,10 @@ def test_any_incomplete_target_takes_precedence_over_complete_findings(
     tmp_path: Path,
 ) -> None:
     """A finding on one target cannot hide incomplete evidence on another."""
-    wheel = tmp_path / "other-1.0-py3-none-any.whl"
-    _wheel(wheel)
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel, requires_python=">=3.13")
     first = _target(name="first")
-    second = _target(name="second")
+    second = _target(name="second", python="3.13.1")
 
     class MixedResolver:
         name = "mixed-test"
@@ -1421,14 +1452,10 @@ def test_any_incomplete_target_takes_precedence_over_complete_findings(
             root: Path,
         ) -> ResolverResult:
             del configuration, artifacts, root
-            status = (
-                ResolutionStatus.ARTIFACT_UNAVAILABLE
-                if target.name == "first"
-                else ResolutionStatus.TIMED_OUT
-            )
+            del target
             return ResolverResult(
-                status=status,
-                complete=status is ResolutionStatus.ARTIFACT_UNAVAILABLE,
+                status=ResolutionStatus.TIMED_OUT,
+                complete=False,
                 resolver=self.name,
                 resolver_version="1.0",
                 packages=(),
@@ -1438,7 +1465,7 @@ def test_any_incomplete_target_takes_precedence_over_complete_findings(
     configuration = replace(
         _configuration(
             metadata_paths=(wheel,),
-            requirements=("missing==1.0",),
+            requirements=("demo==1.0",),
             resolve=True,
         ),
         targets=(first, second),
@@ -1449,10 +1476,13 @@ def test_any_incomplete_target_takes_precedence_over_complete_findings(
         resolver=MixedResolver(),
     )
 
-    assert report.targets[0].resolution.status is (
-        ResolutionStatus.ARTIFACT_UNAVAILABLE
+    assert report.targets[0].assessments[0].status is (
+        DependencyCompatibilityStatus.DECLARED_INCOMPATIBLE
     )
     assert report.targets[1].resolution.status is ResolutionStatus.TIMED_OUT
+    assert report.targets[1].assessments[0].status is (
+        DependencyCompatibilityStatus.UNVERIFIED
+    )
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
@@ -1876,31 +1906,44 @@ def test_replaceable_resolver_order_is_canonicalized(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("artifact_name", "artifact_tag", "requirements"),
+    "case",
     [
-        (None, None, ("missing==1.0",)),
-        ("demo-2.0-py3-none-any.whl", "py3-none-any", ("demo==1.0",)),
+        (None, None, ("missing==1.0",), _MISSING_DISTRIBUTION_DIAGNOSTIC),
+        (
+            "demo-2.0-py3-none-any.whl",
+            "py3-none-any",
+            ("demo==1.0",),
+            _MISSING_VERSION_DIAGNOSTIC,
+        ),
         (
             "demo-1.0-cp311-cp311-manylinux_2_17_x86_64.whl",
             "cp311-cp311-manylinux_2_17_x86_64",
             ("demo==1.0",),
+            _WRONG_ABI_DIAGNOSTIC,
+        ),
+        (
+            "demo-1.0.tar.gz",
+            None,
+            ("demo==1.0",),
+            _NO_USABLE_WHEELS_DIAGNOSTIC,
         ),
     ],
 )
 def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    artifact_name: str | None,
-    artifact_tag: str | None,
-    requirements: tuple[str, ...],
+    case: tuple[str | None, str | None, tuple[str, ...], str],
 ) -> None:
-    """Missing names, versions, and target wheels are artifact availability."""
+    """Missing names, versions, target wheels, and wheels are availability."""
+    artifact_name, artifact_tag, requirements, diagnostic = case
     metadata_paths: tuple[Path, ...] = ()
     artifacts: tuple[dependency_module.MetadataArtifact, ...] = ()
-    if artifact_name is not None and artifact_tag is not None:
+    if artifact_name is not None:
         wheel = tmp_path / artifact_name
-        _wheel(wheel, tag=artifact_tag)
+        if artifact_tag is None:
+            _sdist(wheel)
+        else:
+            _wheel(wheel, tag=artifact_tag)
         inspected, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
         assert issues == ()
         metadata_paths = (wheel,)
@@ -1917,7 +1960,9 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
         command: list[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
     monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
@@ -1936,8 +1981,303 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
     assert result.status is ResolutionStatus.ARTIFACT_UNAVAILABLE
     assert result.complete is True
     assert result.resolver_version == "0.11.21"
-    assert len(calls) == 1
+    assert len(calls) == _RESOLVER_PROCESS_COUNT
+    assert "pip" in calls[1]
+    assert "compile" in calls[1]
     assert str(tmp_path) not in result.reason
+
+
+@pytest.mark.parametrize(
+    ("resolver_version", "returncode", "diagnostic"),
+    [
+        ("0.11.22", 1, _MISSING_DISTRIBUTION_DIAGNOSTIC),
+        ("0.11.21.0", 1, _MISSING_DISTRIBUTION_DIAGNOSTIC),
+        (
+            "0.11.21",
+            1,
+            (
+                "\N{MULTIPLICATION SIGN} No solution found when resolving "
+                "dependencies:\n"
+                "╰─▶ Because missing is absent and you require missing==1.0, "
+                "we can conclude that your requirements are unsatisfiable.\n"
+            ),
+        ),
+        (
+            "0.11.21",
+            1,
+            _MISSING_DISTRIBUTION_DIAGNOSTIC + "hint: unreviewed advice\n",
+        ),
+        (
+            "0.11.21",
+            1,
+            _MISSING_DISTRIBUTION_DIAGNOSTIC.replace("missing==1.0", "missing===1.0.0"),
+        ),
+        ("0.11.21", 1, _MISSING_VERSION_DIAGNOSTIC),
+        ("0.11.21", 2, _MISSING_DISTRIBUTION_DIAGNOSTIC),
+        ("0.11.21", -9, _MISSING_DISTRIBUTION_DIAGNOSTIC),
+    ],
+    ids=[
+        "unreviewed-version",
+        "noncanonical-reviewed-version",
+        "unknown-grammar",
+        "unknown-hint",
+        "arbitrary-equality-spelling",
+        "different-closed-requirement",
+        "unreviewed-exit-code",
+        "signal",
+    ],
+)
+def test_closed_artifact_absence_rejects_unreviewed_uv_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resolver_version: str,
+    returncode: int,
+    diagnostic: str,
+) -> None:
+    """Only the exact reviewed uv proof for the independently absent pin closes."""
+    wheel = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                f"uv {resolver_version}\n",
+                "",
+            )
+        return subprocess.CompletedProcess(command, returncode, "", diagnostic)
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    result = UvResolverAdapter().resolve(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("missing==1.0",),
+            resolve=True,
+        ),
+        _target(),
+        artifacts,
+        root=tmp_path,
+    )
+
+    assert calls == _RESOLVER_PROCESS_COUNT
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert result.complete is False
+
+
+def test_closed_artifact_absence_rejects_ambiguous_failure_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second non-empty stream prevents a complete negative conclusion."""
+    wheel = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "error: network transport failed\n",
+            _MISSING_DISTRIBUTION_DIAGNOSTIC,
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    result = UvResolverAdapter().resolve(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("missing==1.0",),
+            resolve=True,
+        ),
+        _target(),
+        artifacts,
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert result.complete is False
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [(_MISSING_DISTRIBUTION_DIAGNOSTIC, ""), (" \n", _MISSING_DISTRIBUTION_DIAGNOSTIC)],
+    ids=["stdout-only-diagnostic", "whitespace-stdout"],
+)
+def test_closed_artifact_absence_rejects_nonempty_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    stderr: str,
+) -> None:
+    """Reviewed uv failures require exactly empty stdout and non-empty stderr."""
+    wheel = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout,
+            stderr,
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    result = UvResolverAdapter().resolve(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("missing==1.0",),
+            resolve=True,
+        ),
+        _target(),
+        artifacts,
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert result.complete is False
+
+
+def test_resolver_version_rejects_stderr_contamination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Version identity requires exit zero, exact stdout, and empty stderr."""
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "uv 0.11.21\n",
+            "warning: unexpected version diagnostic\n",
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    result = UvResolverAdapter().resolve(
+        _configuration(requirements=("demo==1.0",), resolve=True, network=True),
+        _target(),
+        (),
+        root=tmp_path,
+    )
+
+    assert calls == 1
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert result.complete is False
+    assert result.resolver_version is None
+
+
+def test_closed_artifact_absence_binds_requested_extras(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A diagnostic for different extras cannot close the requested sample."""
+    wheel = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        diagnostic = _MISSING_DISTRIBUTION_DIAGNOSTIC.replace(
+            "missing==1.0", "missing[other]==1.0"
+        )
+        return subprocess.CompletedProcess(command, 1, "", diagnostic)
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    result = UvResolverAdapter().resolve(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("missing[speed]==1.0",),
+            resolve=True,
+        ),
+        _target(),
+        artifacts,
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert result.complete is False
+
+
+def test_closed_wrong_abi_evidence_binds_hint_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wrong-version ABI hint cannot prove the exact pin unavailable."""
+    wheel = tmp_path / "demo-1.0-cp311-cp311-manylinux_2_17_x86_64.whl"
+    _wheel(wheel, tag="cp311-cp311-manylinux_2_17_x86_64")
+    artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
+    assert issues == ()
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            _WRONG_ABI_DIAGNOSTIC.replace("(v1.0)", "(v9.9)"),
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    result = UvResolverAdapter().resolve(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("demo==1.0",),
+            resolve=True,
+        ),
+        _target(),
+        artifacts,
+        root=tmp_path,
+    )
+
+    assert result.status is ResolutionStatus.UNVERIFIED
+    assert result.complete is False
 
 
 def test_root_extras_do_not_activate_same_named_dependency_extras(
@@ -1996,11 +2336,21 @@ def test_missing_offline_distribution_is_a_complete_report_finding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A closed artifact inventory verifies the missing direct requirement."""
+    calls = 0
 
     def fake_run(
         command: list[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            _MISSING_DISTRIBUTION_DIAGNOSTIC,
+        )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
     monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
@@ -2016,10 +2366,71 @@ def test_missing_offline_distribution_is_a_complete_report_finding(
     )
 
     target = report.targets[0]
+    assert calls == _RESOLVER_PROCESS_COUNT
     assert target.resolution.status is ResolutionStatus.ARTIFACT_UNAVAILABLE
     assert target.resolution.complete is True
     assert target.declared_requirements[0].verified is True
     assert report.exit_code is ExitCode.FINDINGS
+
+
+def test_artifact_failure_closes_only_the_root_named_by_uv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing-root proof cannot close another unsuitable root or transitive."""
+    other = tmp_path / "other-1.0-cp311-cp311-manylinux_2_17_x86_64.whl"
+    _wheel(
+        other,
+        tag="cp311-cp311-manylinux_2_17_x86_64",
+        requires_dist=("child==1.0",),
+    )
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            _MISSING_DISTRIBUTION_DIAGNOSTIC,
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(other,),
+            requirements=("absent==1.0", "missing==1.0", "other==1.0"),
+            resolve=True,
+        ),
+        root=tmp_path,
+    )
+
+    target = report.targets[0]
+    declared = {item.requirement: item for item in target.declared_requirements}
+    assert target.resolution.status is ResolutionStatus.ARTIFACT_UNAVAILABLE
+    assert target.resolution.complete is True
+    assert "missing==1.0" in target.resolution.reason
+    assert "other==1.0" not in target.resolution.reason
+    assert declared["absent==1.0"].verified is False
+    assert declared["missing==1.0"].verified is True
+    assert declared["other==1.0"].verified is True
+    assert declared["other==1.0"].matching_metadata
+    assert target.assessments[0].package == "other"
+    assert target.assessments[0].status is DependencyCompatibilityStatus.UNVERIFIED
+    assert target.transitive_requirements[0].requirement == "child==1.0"
+    assert target.transitive_requirements[0].verified is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+    schema_path = Path(__file__).parents[2] / "docs/schema/dependency-report-v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(
+        dependency_module.dependency_report_document(report)
+    )
 
 
 @pytest.mark.parametrize(
@@ -2027,25 +2438,36 @@ def test_missing_offline_distribution_is_a_complete_report_finding(
     [
         (
             "0.11.21",
+            1,
             _UNSATISFIABLE_DIAGNOSTIC,
             ResolutionStatus.RESOLUTION_FAILED,
             True,
         ),
-        ("0.11.21", "resolver crashed", ResolutionStatus.UNVERIFIED, False),
+        ("0.11.21", 1, "resolver crashed", ResolutionStatus.UNVERIFIED, False),
         (
             "0.11.21",
+            1,
             _MISSING_CONFLICT_DISTRIBUTION_DIAGNOSTIC,
             ResolutionStatus.UNVERIFIED,
             False,
         ),
         (
             "0.12.6 (7938ca5d5 2026-08-25 aarch64-apple-darwin)",
+            1,
             _UV_012_MACOS_UNSATISFIABLE_DIAGNOSTIC,
             ResolutionStatus.RESOLUTION_FAILED,
             True,
         ),
         (
             "0.13.0",
+            1,
+            _UNSATISFIABLE_DIAGNOSTIC,
+            ResolutionStatus.UNVERIFIED,
+            False,
+        ),
+        (
+            "0.11.21",
+            2,
             _UNSATISFIABLE_DIAGNOSTIC,
             ResolutionStatus.UNVERIFIED,
             False,
@@ -2055,10 +2477,10 @@ def test_missing_offline_distribution_is_a_complete_report_finding(
 def test_resolver_requires_constraints_and_versioned_solver_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    case: tuple[str, str, ResolutionStatus, bool],
+    case: tuple[str, int, str, ResolutionStatus, bool],
 ) -> None:
     """Only an identified solver contradiction is compatibility failure evidence."""
-    resolver_version, stderr, status, complete = case
+    resolver_version, returncode, stderr, status, complete = case
     calls: list[list[str]] = []
 
     def fake_run(
@@ -2069,7 +2491,7 @@ def test_resolver_requires_constraints_and_versioned_solver_evidence(
             return subprocess.CompletedProcess(
                 command, 0, f"uv {resolver_version}\n", ""
             )
-        return subprocess.CompletedProcess(command, 1, "", stderr)
+        return subprocess.CompletedProcess(command, returncode, "", stderr)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
     monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
@@ -2091,6 +2513,132 @@ def test_resolver_requires_constraints_and_versioned_solver_evidence(
     assert ":all:" in calls[1]
     assert calls[1][calls[1].index("--keyring-provider") + 1] == "disabled"
     assert "--no-python-downloads" in calls[1]
+
+
+def test_resolver_conflict_does_not_complete_unrelated_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One contradictory root cannot verify other roots or transitives."""
+    other = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(other, requires_dist=("child==1.0",))
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            _UNSATISFIABLE_DIAGNOSTIC,
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(other,),
+            requirements=(
+                "demo==1.0",
+                "demo==2.0",
+                "missing==1.0",
+                "other==1.0",
+            ),
+            resolve=True,
+            network=True,
+        ),
+        root=tmp_path,
+    )
+
+    target = report.targets[0]
+    declared = {item.requirement: item for item in target.declared_requirements}
+    assert target.resolution.status is ResolutionStatus.RESOLUTION_FAILED
+    assert target.resolution.complete is True
+    assert declared["demo==1.0"].verified is True
+    assert declared["demo==2.0"].verified is True
+    assert declared["missing==1.0"].verified is False
+    assert declared["other==1.0"].verified is True
+    assert target.assessments[0].status is DependencyCompatibilityStatus.UNVERIFIED
+    assert target.transitive_requirements[0].requirement == "child==1.0"
+    assert target.transitive_requirements[0].verified is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+    schema_path = Path(__file__).parents[2] / "docs/schema/dependency-report-v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(
+        dependency_module.dependency_report_document(report)
+    )
+
+
+def test_resolver_conflict_closes_only_the_group_named_by_uv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reviewed diagnostic cannot verify a second contradictory root group."""
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            _UNSATISFIABLE_DIAGNOSTIC,
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        _configuration(
+            requirements=(
+                "demo==1.0",
+                "demo==2.0",
+                "other==1.0",
+                "other==2.0",
+            ),
+            resolve=True,
+            network=True,
+        ),
+        root=tmp_path,
+    )
+
+    declared = {
+        item.requirement: item for item in report.targets[0].declared_requirements
+    }
+    assert report.targets[0].resolution.status is ResolutionStatus.RESOLUTION_FAILED
+    assert declared["demo==1.0"].verified is True
+    assert declared["demo==2.0"].verified is True
+    assert declared["other==1.0"].verified is False
+    assert declared["other==2.0"].verified is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        _UNSATISFIABLE_DIAGNOSTIC.replace("demo==", "notdemo=="),
+        _UNSATISFIABLE_DIAGNOSTIC.replace(".0", ".0.post1"),
+    ],
+    ids=["name-prefix", "version-suffix"],
+)
+def test_constraint_evidence_rejects_requirement_token_collisions(
+    diagnostic: str,
+) -> None:
+    """Longer names or versions cannot satisfy active-constraint correlation."""
+    assert not dependency_module._uv_reports_constraint_conflict(  # noqa: SLF001
+        diagnostic,
+        "0.11.21",
+        ("demo==1.0", "demo==2.0"),
+    )
 
 
 def test_offline_library_range_absence_remains_unverified(
@@ -2162,7 +2710,7 @@ def test_library_artifact_sample_without_target_wheel_is_incomplete(
     assessment = report.targets[0].assessments[0]
     assert assessment.artifact_availability is ArtifactAvailability.UNAVAILABLE
     assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
-    assert "library artifacts" in assessment.reason
+    assert "supplied artifact sample" in assessment.reason
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
@@ -2184,6 +2732,24 @@ def test_library_sdist_sample_keeps_source_build_possibility_incomplete(
         ArtifactAvailability.SOURCE_BUILD_POSSIBLE
     )
     assert assessment.source_build_possible is True
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_library_matching_artifact_sample_remains_incomplete(tmp_path: Path) -> None:
+    """One matching library wheel is still only a partial artifact sample."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    configuration = replace(
+        _configuration(metadata_paths=(wheel,), requirements=("demo>=1",)),
+        project_kind=DependencyProjectKind.LIBRARY,
+    )
+
+    report = collect_dependency_report(configuration, root=tmp_path)
+
+    assessment = report.targets[0].assessments[0]
+    assert assessment.artifact_availability is ArtifactAvailability.AVAILABLE
+    assert assessment.requires_python_status is RequiresPythonStatus.COMPATIBLE
     assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
     assert report.exit_code is ExitCode.INCOMPLETE
 
@@ -2327,8 +2893,13 @@ def test_complete_library_resolution_ignores_unselected_unsuitable_sample(
     assert report.exit_code is ExitCode.SUCCESS
 
 
-def test_complete_library_resolution_accepts_compatible_same_version_artifact(
+@pytest.mark.parametrize(
+    "project_kind",
+    [DependencyProjectKind.APPLICATION, DependencyProjectKind.LIBRARY],
+)
+def test_complete_resolution_accepts_compatible_same_version_artifact(
     tmp_path: Path,
+    project_kind: DependencyProjectKind,
 ) -> None:
     """A compatible selected wheel accounts for unsuitable same-version samples."""
     unsuitable = tmp_path / "demo-1.0-cp311-cp311-manylinux_2_17_x86_64.whl"
@@ -2377,7 +2948,7 @@ def test_complete_library_resolution_accepts_compatible_same_version_artifact(
             requirements=("demo==1.0",),
             resolve=True,
         ),
-        project_kind=DependencyProjectKind.LIBRARY,
+        project_kind=project_kind,
     )
     report = collect_dependency_report(
         configuration,
@@ -3991,7 +4562,7 @@ def test_core_metadata_and_wheel_only_results_keep_availability_distinct(
     _wheel(wheel, tag="cp311-cp311-win_amd64")
     artifacts, _issues = inspect_dependency_metadata((wheel,), root=tmp_path)
     assessment = assess_dependency_metadata(artifacts, target=_target(), extras=())[0]
-    assert assessment.status is DependencyCompatibilityStatus.ARTIFACT_UNAVAILABLE
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
     assert assessment.artifact_availability is ArtifactAvailability.UNAVAILABLE
     assert assessment.source_build_possible is False
 
@@ -4279,7 +4850,7 @@ def test_report_text_and_incomplete_precedence_are_visible(tmp_path: Path) -> No
     )
     text = render_dependency_text(report)
     assert "Dependency compatibility (application; offline" in text
-    assert "demo==1.0: compatible" in text
+    assert "demo==1.0: unverified" in text
     assert report.metadata[0].artifact_id in text
     assert "Core Metadata 2.4" in text
     assert "demo-1.0-py3-none-any.whl!demo-1.0.dist-info/METADATA" in text
@@ -4338,7 +4909,7 @@ def test_direct_extra_evidence_cannot_borrow_a_wrong_target_wheel(
         item.artifact_id for item in report.metadata if item.path.name == portable.name
     )
     assert target.declared_requirements[0].verified is False
-    assert target.assessments[0].status is DependencyCompatibilityStatus.COMPATIBLE
+    assert target.assessments[0].status is DependencyCompatibilityStatus.UNVERIFIED
     assert target.assessments[0].metadata_used == (portable_id,)
     assert report.exit_code is ExitCode.INCOMPLETE
 
@@ -5403,6 +5974,775 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
     assert transitive_result.complete is False
 
 
+def test_arbitrary_equality_spelling_retains_a_common_witness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PEP 440 equality normalization cannot create an ``===`` contradiction."""
+    assert (
+        dependency_module._conflicting_requirement_names(  # noqa: SLF001
+            ("demo==1.0", "demo===1.0.0")
+        )
+        == ()
+    )
+    diagnostic = _UNSATISFIABLE_DIAGNOSTIC.replace(
+        "demo==1.0 and demo==2.0",
+        "demo==1.0 and demo===1.0.0",
+    )
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(command, 1, "", diagnostic)
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        replace(
+            _configuration(
+                requirements=("demo==1.0", "demo===1.0.0"),
+                resolve=True,
+                network=True,
+            ),
+            project_kind=DependencyProjectKind.LIBRARY,
+        ),
+        root=tmp_path,
+    )
+
+    target = report.targets[0]
+    assert target.resolution.status is ResolutionStatus.UNVERIFIED
+    assert target.resolution.complete is False
+    assert all(not item.verified for item in target.declared_requirements)
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_complete_library_range_conflict_is_a_report_finding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A named, independently contradictory library group closes its rows."""
+    diagnostic = (
+        "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+        "  ╰─▶ Because you require demo<1 and demo>=2, your requirements are "
+        "unsatisfiable.\n"
+    )
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.12.0\n", "")
+        return subprocess.CompletedProcess(command, 1, "", diagnostic)
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    configuration = replace(
+        _configuration(
+            requirements=("demo<1", "demo>=2"),
+            resolve=True,
+            network=True,
+        ),
+        project_kind=DependencyProjectKind.LIBRARY,
+    )
+    report = collect_dependency_report(configuration, root=tmp_path)
+
+    target = report.targets[0]
+    assert target.resolution.status is ResolutionStatus.RESOLUTION_FAILED
+    assert target.resolution.complete is True
+    assert all(item.verified for item in target.declared_requirements)
+    assert report.exit_code is ExitCode.FINDINGS
+    schema_path = Path(__file__).parents[2] / "docs/schema/dependency-report-v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(
+        dependency_module.dependency_report_document(report)
+    )
+    partial = replace(
+        report,
+        targets=(
+            replace(
+                target,
+                declared_requirements=(
+                    replace(target.declared_requirements[0], verified=False),
+                    *target.declared_requirements[1:],
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative contains contradictory declared evidence",
+    ):
+        dependency_module.dependency_report_document(partial)
+
+
+@pytest.mark.parametrize(
+    "requirements",
+    [
+        ("alpha>=1", "beta>=1"),
+        ("demo>=1,<2",),
+    ],
+    ids=["unrelated-ranges", "satisfiable-bounds"],
+)
+def test_machine_document_rejects_forged_solver_contradictions(
+    tmp_path: Path,
+    requirements: tuple[str, ...],
+) -> None:
+    """Structural rows cannot replace semantic PEP 440 contradiction proof."""
+    seed = tmp_path / "seed-1.0-py3-none-any.whl"
+    _wheel(seed)
+    configuration = replace(
+        _configuration(metadata_paths=(seed,), requirements=requirements),
+        project_kind=DependencyProjectKind.LIBRARY,
+    )
+    report = collect_dependency_report(configuration, root=tmp_path)
+    target = report.targets[0]
+    failure_name = "alpha" if requirements[0].startswith("alpha") else "demo"
+    forged = replace(
+        report,
+        resolve=True,
+        targets=(
+            replace(
+                target,
+                declared_requirements=tuple(
+                    replace(item, verified=True)
+                    for item in target.declared_requirements
+                ),
+                resolution=dependency_module._UvResolverResult(  # noqa: SLF001
+                    status=ResolutionStatus.RESOLUTION_FAILED,
+                    complete=True,
+                    resolver="uv",
+                    resolver_version="0.11.21",
+                    packages=(),
+                    reason="claimed contradictory roots",
+                    verified_failure_names=(failure_name,),
+                    verified_failure_requirements=(
+                        dependency_module._failure_requirement_identities(  # noqa: SLF001
+                            report.requirements,
+                            frozenset({failure_name}),
+                        )
+                    ),
+                    verified_artifact_snapshots=(
+                        dependency_module._metadata_artifact_snapshots(  # noqa: SLF001
+                            report.metadata
+                        )
+                    ),
+                    verified_target_snapshot=dependency_module._target_snapshot(  # noqa: SLF001
+                        target.target
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative contains contradictory declared evidence",
+    ):
+        dependency_module.dependency_report_document(forged)
+
+
+def test_machine_document_recomputes_unrelated_rows_beside_a_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A carried conflict cannot turn an evidence-free sibling root complete."""
+    diagnostic = (
+        "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+        "  ╰─▶ Because you require alpha<1 and alpha>=2, your requirements are "
+        "unsatisfiable.\n"
+    )
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.12.0\n", "")
+        return subprocess.CompletedProcess(command, 1, "", diagnostic)
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        replace(
+            _configuration(
+                requirements=("alpha<1", "alpha>=2", "beta>=1"),
+                resolve=True,
+                network=True,
+            ),
+            project_kind=DependencyProjectKind.LIBRARY,
+        ),
+        root=tmp_path,
+    )
+    target = report.targets[0]
+    assert [item.verified for item in target.declared_requirements] == [
+        True,
+        True,
+        False,
+    ]
+    assert report.exit_code is ExitCode.INCOMPLETE
+    dependency_module.dependency_report_document(report)
+    forged = replace(
+        report,
+        targets=(
+            replace(
+                target,
+                declared_requirements=(
+                    *target.declared_requirements[:2],
+                    replace(target.declared_requirements[2], verified=True),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative contains contradictory declared evidence",
+    ):
+        dependency_module.dependency_report_document(forged)
+
+
+def test_machine_document_recomputes_inactive_conflict_markers(
+    tmp_path: Path,
+) -> None:
+    """Caller-supplied applies flags cannot activate target-inactive roots."""
+    seed = tmp_path / "seed-1.0-py3-none-any.whl"
+    _wheel(seed)
+    requirements = (
+        'alpha<1; python_version < "3"',
+        'alpha>=2; python_version < "3"',
+    )
+    report = collect_dependency_report(
+        replace(
+            _configuration(metadata_paths=(seed,), requirements=requirements),
+            project_kind=DependencyProjectKind.LIBRARY,
+        ),
+        root=tmp_path,
+    )
+    target = report.targets[0]
+    forged = replace(
+        report,
+        resolve=True,
+        targets=(
+            replace(
+                target,
+                declared_requirements=tuple(
+                    replace(
+                        item,
+                        applies=True,
+                        matching_extras=("base",),
+                        verified=True,
+                    )
+                    for item in target.declared_requirements
+                ),
+                resolution=dependency_module._UvResolverResult(  # noqa: SLF001
+                    status=ResolutionStatus.RESOLUTION_FAILED,
+                    complete=True,
+                    resolver="uv",
+                    resolver_version="0.12.0",
+                    packages=(),
+                    reason="claimed inactive contradiction",
+                    verified_failure_names=("alpha",),
+                    verified_failure_requirements=("alpha<1", "alpha>=2"),
+                    verified_artifact_snapshots=(
+                        dependency_module._metadata_artifact_snapshots(  # noqa: SLF001
+                            report.metadata
+                        )
+                    ),
+                    verified_target_snapshot=dependency_module._target_snapshot(  # noqa: SLF001
+                        target.target
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative requirement identity changed after uv review",
+    ):
+        dependency_module.dependency_report_document(forged)
+
+
+@pytest.mark.parametrize("secondary_kind", ["sdist", "metadata"])
+def test_machine_document_uses_target_selected_mixed_root_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    secondary_kind: str,
+) -> None:
+    """Serialization uses the same semantic artifact selection as collection."""
+    wheel = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    if secondary_kind == "sdist":
+        secondary = tmp_path / "other-1.0.tar.gz"
+        _sdist(secondary)
+    else:
+        secondary = tmp_path / "other-1.0.metadata"
+        secondary.write_bytes(_metadata(identity=("other", "1.0")))
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            _MISSING_DISTRIBUTION_DIAGNOSTIC,
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(wheel, secondary),
+            requirements=("missing==1.0", "other==1.0"),
+            resolve=True,
+        ),
+        root=tmp_path,
+    )
+    declared = {
+        item.requirement: item for item in report.targets[0].declared_requirements
+    }
+
+    assert declared["missing==1.0"].verified is True
+    assert declared["other==1.0"].matching_metadata == (
+        report.targets[0].assessments[0].metadata_used[0],
+    )
+    assert declared["other==1.0"].verified is True
+    assert report.exit_code is ExitCode.INCOMPLETE
+    dependency_module.dependency_report_document(report)
+
+
+def test_machine_document_rejects_changed_failed_root_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reviewed missing-root evidence cannot be transplanted to another pin."""
+    other = tmp_path / "other-1.0-py3-none-any.whl"
+    _wheel(other)
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            _MISSING_DISTRIBUTION_DIAGNOSTIC,
+        )
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(other,),
+            requirements=("missing==1.0",),
+            resolve=True,
+        ),
+        root=tmp_path,
+    )
+    target = report.targets[0]
+    assert target.resolution.status is ResolutionStatus.ARTIFACT_UNAVAILABLE
+    dependency_module.dependency_report_document(report)
+    changed_target = _target(
+        name="cp313-windows",
+        python="3.13.1",
+        sys_platform="win32",
+        tags=("cp313-cp313-win_amd64",),
+    )
+    transplanted_target = replace(
+        report,
+        targets=(replace(target, target=changed_target),),
+    )
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative target changed after uv review",
+    ):
+        dependency_module.dependency_report_document(transplanted_target)
+
+    forged = replace(
+        report,
+        requirements=("missing==2.0",),
+        targets=(
+            replace(
+                target,
+                declared_requirements=(
+                    replace(
+                        target.declared_requirements[0],
+                        requirement="missing==2.0",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative requirement identity changed after uv review",
+    ):
+        dependency_module.dependency_report_document(forged)
+
+
+def test_machine_document_rejects_changed_conflict_constraints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reviewed contradictory constraints cannot prove a different group."""
+    diagnostic = (
+        "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
+        "  ╰─▶ Because you require demo<1 and demo>=2, your requirements are "
+        "unsatisfiable.\n"
+    )
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(command, 1, "", diagnostic)
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        replace(
+            _configuration(
+                requirements=("demo<1", "demo>=2"),
+                resolve=True,
+                network=True,
+            ),
+            project_kind=DependencyProjectKind.LIBRARY,
+        ),
+        root=tmp_path,
+    )
+    target = report.targets[0]
+    assert target.resolution.status is ResolutionStatus.RESOLUTION_FAILED
+    dependency_module.dependency_report_document(report)
+    forged = replace(
+        report,
+        requirements=("demo<1", "demo>=3"),
+        targets=(
+            replace(
+                target,
+                declared_requirements=tuple(
+                    replace(item, requirement="demo>=3")
+                    if item.requirement == "demo>=2"
+                    else item
+                    for item in target.declared_requirements
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative requirement identity changed after uv review",
+    ):
+        dependency_module.dependency_report_document(forged)
+
+
+def test_machine_document_validates_nonnegative_metadata_models(
+    tmp_path: Path,
+) -> None:
+    """Serialization rejects metadata models collection could never produce."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,)),
+        root=tmp_path,
+    )
+    forged = replace(
+        report,
+        metadata=(replace(report.metadata[0], version="2.0"),),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="wheel filename and inspected identity disagree",
+    ):
+        dependency_module.dependency_report_document(forged)
+
+
+def test_machine_document_recomputes_disagreeing_artifact_assessments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One candidate cannot be removed to conceal same-version disagreement."""
+    first = tmp_path / "demo-1.0-cp311-cp311-manylinux_2_17_x86_64.whl"
+    second = tmp_path / "demo-1.0-cp311-abi3-manylinux_2_17_x86_64.whl"
+    _wheel(
+        first,
+        tag="cp311-cp311-manylinux_2_17_x86_64",
+    )
+    _wheel(
+        second,
+        tag="cp311-abi3-manylinux_2_17_x86_64",
+        requires_dist=("other==1.0",),
+    )
+    calls = 0
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+        return subprocess.CompletedProcess(command, 1, "", _WRONG_ABI_DIAGNOSTIC)
+
+    monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(first, second),
+            requirements=("demo==1.0",),
+            resolve=True,
+        ),
+        root=tmp_path,
+    )
+    target = report.targets[0]
+    assessment = target.assessments[0]
+    assert assessment.status is DependencyCompatibilityStatus.UNVERIFIED
+    assert len(assessment.metadata_used) == _ARTIFACT_COUNT
+    assert report.exit_code is ExitCode.INCOMPLETE
+    dependency_module.dependency_report_document(report)
+
+    changed_snapshot = replace(
+        report,
+        metadata=(
+            replace(report.metadata[0], requires_python=">=9"),
+            *report.metadata[1:],
+        ),
+    )
+    assert changed_snapshot.metadata[0].artifact_id == report.metadata[0].artifact_id
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative artifact snapshot changed after uv review",
+    ):
+        dependency_module.dependency_report_document(changed_snapshot)
+
+    duplicate_identity = replace(
+        report,
+        metadata=(
+            report.metadata[0],
+            replace(
+                report.metadata[1],
+                artifact_id=report.metadata[0].artifact_id,
+                sha256=report.metadata[0].sha256,
+            ),
+        ),
+    )
+    with pytest.raises(ConfigurationError, match="duplicate artifact identities"):
+        dependency_module.dependency_report_document(duplicate_identity)
+
+    for metadata_used in (assessment.metadata_used, assessment.metadata_used[:1]):
+        forged = replace(
+            report,
+            targets=(
+                replace(
+                    target,
+                    assessments=(
+                        replace(
+                            assessment,
+                            status=DependencyCompatibilityStatus.ARTIFACT_UNAVAILABLE,
+                            metadata_used=metadata_used,
+                            reason="concealed candidate disagreement",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        with pytest.raises(
+            ConfigurationError,
+            match="complete negative contains contradictory assessment evidence",
+        ):
+            dependency_module.dependency_report_document(forged)
+
+    calls = 0
+    single = collect_dependency_report(
+        _configuration(
+            metadata_paths=(first,),
+            requirements=("demo==1.0",),
+            resolve=True,
+        ),
+        root=tmp_path,
+    )
+    single_target = single.targets[0]
+    assert single_target.resolution.status is ResolutionStatus.ARTIFACT_UNAVAILABLE
+    assert single.exit_code is ExitCode.FINDINGS
+    dependency_module.dependency_report_document(single)
+    removed_reviewed_artifact = replace(
+        report,
+        metadata=single.metadata,
+        targets=(replace(single_target, resolution=target.resolution),),
+    )
+    assert removed_reviewed_artifact.exit_code is ExitCode.FINDINGS
+
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative artifact inventory changed after uv review",
+    ):
+        dependency_module.dependency_report_document(removed_reviewed_artifact)
+
+
+def test_verified_failure_snapshots_reject_reused_artifact_identity() -> None:
+    """One artifact ID cannot carry two different reviewed projections."""
+    artifact_id = "a" * 64
+    resolution = dependency_module._UvResolverResult(  # noqa: SLF001
+        status=ResolutionStatus.RESOLUTION_FAILED,
+        complete=True,
+        resolver="uv",
+        resolver_version="0.11.21",
+        packages=(),
+        reason="contradictory roots",
+        verified_artifact_snapshots=(
+            (artifact_id, "b" * 64),
+            (artifact_id, "c" * 64),
+        ),
+    )
+
+    assert (
+        dependency_module._verified_failure_artifact_snapshots(  # noqa: SLF001
+            resolution
+        )
+        is None
+    )
+
+
+def test_machine_document_rejects_arbitrary_equality_application_closure(
+    tmp_path: Path,
+) -> None:
+    """A forged ``===`` root cannot bypass the application's ``==`` contract."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,), requirements=("demo==1.0",)),
+        root=tmp_path,
+    )
+    target = report.targets[0]
+    forged = replace(
+        report,
+        resolve=True,
+        requirements=("demo===1.0",),
+        targets=(
+            replace(
+                target,
+                declared_requirements=(
+                    replace(
+                        target.declared_requirements[0],
+                        requirement="demo===1.0",
+                        verified=True,
+                    ),
+                ),
+                resolution=ResolverResult(
+                    status=ResolutionStatus.ARTIFACT_UNAVAILABLE,
+                    complete=True,
+                    resolver="uv",
+                    resolver_version="0.11.21",
+                    packages=(),
+                    reason="claimed closed application inventory",
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="application requirements must use one exact == version pin",
+    ):
+        dependency_module.dependency_report_document(forged)
+
+
+@pytest.mark.parametrize(
+    ("assessment_package", "assessment_version"),
+    [("other", "1.0"), ("demo", "2.0"), ("demo", "1.0")],
+    ids=["different-package", "different-version", "different-metadata"],
+)
+def test_machine_document_binds_artifact_assessment_to_failed_root(
+    tmp_path: Path,
+    assessment_package: str,
+    assessment_version: str,
+) -> None:
+    """A negative assessment cannot borrow closure from another package root."""
+    other = tmp_path / "other-1.0-cp311-cp311-manylinux_2_17_x86_64.whl"
+    _wheel(other, tag="cp311-cp311-manylinux_2_17_x86_64")
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(other,),
+            requirements=("demo==1.0", "other==1.0"),
+        ),
+        root=tmp_path,
+    )
+    target = report.targets[0]
+    declared = tuple(
+        replace(item, verified=True) if item.requirement == "demo==1.0" else item
+        for item in target.declared_requirements
+    )
+    forged_assessment = replace(
+        target.assessments[0],
+        package=assessment_package,
+        status=DependencyCompatibilityStatus.ARTIFACT_UNAVAILABLE,
+        version=assessment_version,
+        reason="borrowed another root's closure",
+    )
+    forged = replace(
+        report,
+        resolve=True,
+        targets=(
+            replace(
+                target,
+                assessments=(forged_assessment,),
+                declared_requirements=declared,
+                resolution=dependency_module._UvResolverResult(  # noqa: SLF001
+                    status=ResolutionStatus.ARTIFACT_UNAVAILABLE,
+                    complete=True,
+                    resolver="uv",
+                    resolver_version="0.11.21",
+                    packages=(),
+                    reason="closed inventory lacks demo==1.0",
+                    verified_failure_names=("demo",),
+                    verified_failure_requirements=("demo==1.0",),
+                    verified_artifact_snapshots=(
+                        dependency_module._metadata_artifact_snapshots(  # noqa: SLF001
+                            report.metadata
+                        )
+                    ),
+                    verified_target_snapshot=dependency_module._target_snapshot(  # noqa: SLF001
+                        target.target
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="complete negative contains contradictory assessment evidence",
+    ):
+        dependency_module.dependency_report_document(forged)
+
+
 def test_local_version_witness_downgrades_false_adapter_conflict(
     tmp_path: Path,
 ) -> None:
@@ -5444,6 +6784,154 @@ def test_local_version_witness_downgrades_false_adapter_conflict(
     resolution = report.targets[0].resolution
     assert resolution.status is ResolutionStatus.UNVERIFIED
     assert resolution.complete is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_replaceable_adapter_cannot_claim_a_complete_constraint_conflict(
+    tmp_path: Path,
+) -> None:
+    """Reviewed uv diagnostics cannot be replaced by a structured adapter claim."""
+    first = tmp_path / "demo-1.0-py3-none-any.whl"
+    second = tmp_path / "demo-2.0-py3-none-any.whl"
+    _wheel(first)
+    _wheel(second)
+
+    class UnreviewedConflictResolver:
+        name = "uv"
+
+        def resolve(
+            self,
+            configuration: DependencyConfiguration,
+            target: EnvironmentTarget,
+            artifacts: Sequence[dependency_module.MetadataArtifact],
+            *,
+            root: Path,
+        ) -> ResolverResult:
+            del configuration, target, artifacts, root
+            return ResolverResult(
+                status=ResolutionStatus.RESOLUTION_FAILED,
+                complete=True,
+                resolver=self.name,
+                resolver_version="0.11.21",
+                packages=(),
+                reason="claimed direct constraint conflict",
+            )
+
+    report = collect_dependency_report(
+        _configuration(
+            metadata_paths=(first, second),
+            requirements=("demo==1.0", "demo==2.0"),
+            resolve=True,
+        ),
+        root=tmp_path,
+        resolver=UnreviewedConflictResolver(),
+    )
+
+    resolution = report.targets[0].resolution
+    assert dependency_module._conflicting_requirement_names(  # noqa: SLF001
+        ("demo==1.0", "demo==2.0")
+    ) == ("demo",)
+    assert resolution.status is ResolutionStatus.UNVERIFIED
+    assert resolution.complete is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_injected_exact_uv_instance_cannot_claim_a_negative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the adapter constructed inside collection may carry reviewed proof."""
+    adapter = UvResolverAdapter()
+
+    def false_conflict(
+        configuration: DependencyConfiguration,
+        target: EnvironmentTarget,
+        artifacts: Sequence[dependency_module.MetadataArtifact],
+        *,
+        root: Path,
+    ) -> ResolverResult:
+        del configuration, target, artifacts, root
+        return ResolverResult(
+            status=ResolutionStatus.RESOLUTION_FAILED,
+            complete=True,
+            resolver="uv",
+            resolver_version="0.11.21",
+            packages=(),
+            reason="claimed direct constraint conflict",
+        )
+
+    monkeypatch.setattr(adapter, "resolve", false_conflict)
+    report = collect_dependency_report(
+        _configuration(
+            requirements=("demo==1.0", "demo==2.0"),
+            resolve=True,
+            network=True,
+        ),
+        root=tmp_path,
+        resolver=adapter,
+    )
+
+    resolution = report.targets[0].resolution
+    assert resolution.status is ResolutionStatus.UNVERIFIED
+    assert resolution.complete is False
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
+@pytest.mark.parametrize("stale_field", ["requirements", "artifacts"])
+def test_internal_uv_negative_requires_exact_reviewed_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stale_field: str,
+) -> None:
+    """Collection rejects private proof for different roots or staged artifacts."""
+
+    def stale_negative(
+        _self: UvResolverAdapter,
+        _configuration: DependencyConfiguration,
+        _target: EnvironmentTarget,
+        _artifacts: Sequence[dependency_module.MetadataArtifact],
+        *,
+        root: Path,
+    ) -> ResolverResult:
+        del root
+        return dependency_module._UvResolverResult(  # noqa: SLF001
+            status=ResolutionStatus.RESOLUTION_FAILED,
+            complete=True,
+            resolver="uv",
+            resolver_version="0.11.21",
+            packages=(),
+            reason="reviewed different resolver inputs",
+            verified_failure_names=("demo",),
+            verified_failure_requirements=(
+                ("demo<1", "demo>=3")
+                if stale_field == "requirements"
+                else ("demo<1", "demo>=2")
+            ),
+            verified_artifact_snapshots=(
+                (("f" * 64, "e" * 64),) if stale_field == "artifacts" else ()
+            ),
+            verified_target_snapshot=dependency_module._target_snapshot(  # noqa: SLF001
+                _target
+            ),
+        )
+
+    monkeypatch.setattr(UvResolverAdapter, "resolve", stale_negative)
+    report = collect_dependency_report(
+        replace(
+            _configuration(
+                requirements=("demo<1", "demo>=2"),
+                resolve=True,
+                network=True,
+            ),
+            project_kind=DependencyProjectKind.LIBRARY,
+        ),
+        root=tmp_path,
+    )
+
+    resolution = report.targets[0].resolution
+    assert resolution.status is ResolutionStatus.UNVERIFIED
+    assert resolution.complete is False
+    assert resolution.reason == "resolver returned contradictory structured evidence"
     assert report.exit_code is ExitCode.INCOMPLETE
 
 

@@ -128,6 +128,7 @@ _MAX_RESOLVER_PACKAGES = 10_000
 _MAX_TIMEOUT_SECONDS = 86_400
 _MAX_TAG_VALUES = 256
 _MAX_EXPANDED_TAGS = 4096
+_UV_RESOLUTION_FAILURE_EXIT = 1
 _PROCESS_CLEANUP_SECONDS = 1.0
 _CREATE_SUSPENDED = 0x00000004
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
@@ -140,6 +141,7 @@ _TAG_COMPONENTS = 3
 _PYTHON_MAJOR = 3
 _MIN_STABLE_ABI_MINOR = 2
 _WHEEL_PATH_PARTS = 2
+_ARTIFACT_SNAPSHOT_PARTS = 2
 _DYNAMIC_FIELD = re.compile(r"[A-Za-z][A-Za-z0-9-]*\Z")
 _EXTRA_FIELD = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
 _SAFE_RESOLVER_PLATFORM = re.compile(r"[A-Za-z0-9_.-]+\Z")
@@ -182,12 +184,45 @@ _UV_NON_SOLVER_TERMS = (
 _UV_ARTIFACT_AVAILABILITY_TERMS = (
     "current python version",
     "does not satisfy python",
+    "has no usable wheels",
     "has no wheels with a matching",
     "is not available in the package registry",
     "requires python",
     "there is no version of",
     "was not found in the package registry",
     "was not found in the provided package locations",
+)
+_REVIEWED_UV_ARTIFACT_AVAILABILITY_VERSION = Version("0.11.21")
+_UV_MISSING_PACKAGE_PROOF = re.compile(
+    r"\A╰─▶ Because (?P<name>[A-Za-z0-9][A-Za-z0-9._-]*) was not found in "
+    r"the provided package locations and you require (?P<requirement>.+), we "
+    r"can conclude that your requirements are unsatisfiable\.\Z"
+)
+_UV_MISSING_VERSION_PROOF = re.compile(
+    r"\A╰─▶ Because there is no version of (?P<proof>.+) and you require "
+    r"(?P<requirement>.+), we can conclude that your requirements are "
+    r"unsatisfiable\.\Z"
+)
+_UV_WRONG_ABI_PROOF = re.compile(
+    r"\A╰─▶ Because (?P<proof>.+) has no wheels with a matching Python ABI "
+    r"tag \(e\.g\., `[^`]+`\) and you require (?P<requirement>.+), we can "
+    r"conclude that your requirements are unsatisfiable\.\Z"
+)
+_UV_NO_USABLE_WHEELS_PROOF = re.compile(
+    r"\A╰─▶ Because (?P<proof>.+) has no usable wheels and you require "
+    r"(?P<requirement>.+), we can conclude that your requirements are "
+    r"unsatisfiable\.\Z"
+)
+_UV_WRONG_ABI_HINT = re.compile(
+    r"\Ahint: You require [^,]+ \(`[^`]+`\), but we only found wheels for "
+    r"`(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)` \(v(?P<version>[^)]+)\) with "
+    r"the following "
+    r"Python ABI tag: `[^`]+`\Z"
+)
+_UV_NO_USABLE_WHEELS_HINT = re.compile(
+    r"\Ahint: Wheels are required for "
+    r"`(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)` because building from source is "
+    r"disabled for all packages \(i\.e\., with `--no-build`\)\Z"
 )
 _ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
 _ZIP_CENTRAL_DIRECTORY_SIGNATURE = b"PK\x01\x02"
@@ -397,6 +432,18 @@ class _ResolverInterpretationContext:
     workspace: _ResolverWorkspace
     artifacts: Sequence[MetadataArtifact]
     requirements: Sequence[str]
+    target: EnvironmentTarget
+    closed_artifact_unavailability: tuple[_ClosedArtifactUnavailability, ...]
+
+
+@dataclass(frozen=True)
+class _ClosedArtifactUnavailability:
+    """One exact application pin absent from a revalidated offline wheelhouse."""
+
+    canonical_name: str
+    version: str
+    requirements: tuple[str, ...]
+    description: str
 
 
 @dataclass(frozen=True)
@@ -436,6 +483,44 @@ class MetadataArtifact:
     wheel_tags: tuple[str, ...]
     metadata_path: str
     sha256: str
+
+
+def _metadata_artifact_document(artifact: MetadataArtifact) -> dict[str, JsonValue]:
+    """Return the complete deterministic machine projection of one artifact."""
+    return {
+        "artifact_id": artifact.artifact_id,
+        "canonical_name": artifact.canonical_name,
+        "dynamic": list(artifact.dynamic),
+        "kind": artifact.kind.value,
+        "metadata_path": artifact.metadata_path,
+        "metadata_version": artifact.metadata_version,
+        "name": artifact.name,
+        "path": artifact.path.as_posix(),
+        "provides_extra": list(artifact.provides_extra),
+        "requires_dist": list(artifact.requires_dist),
+        "requires_python": artifact.requires_python,
+        "sha256": artifact.sha256,
+        "version": artifact.version,
+        "wheel_tags": list(artifact.wheel_tags),
+    }
+
+
+def _metadata_artifact_snapshot(artifact: MetadataArtifact) -> tuple[str, str]:
+    """Bind an artifact identity to every field emitted in machine reports."""
+    encoded = json.dumps(
+        _metadata_artifact_document(artifact),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return artifact.artifact_id, hashlib.sha256(encoded).hexdigest()
+
+
+def _metadata_artifact_snapshots(
+    artifacts: Sequence[MetadataArtifact],
+) -> tuple[tuple[str, str], ...]:
+    """Return a canonical immutable projection of a staged artifact inventory."""
+    return tuple(sorted(_metadata_artifact_snapshot(item) for item in artifacts))
 
 
 @dataclass(frozen=True)
@@ -506,6 +591,99 @@ class ResolverResult:
     resolver_version: str | None
     packages: tuple[ResolvedPackage, ...]
     reason: str
+
+
+@dataclass(frozen=True)
+class _UvResolverResult(ResolverResult):
+    """Private uv evidence retaining only the roots its diagnostic proved."""
+
+    verified_failure_names: tuple[str, ...] = ()
+    verified_failure_requirements: tuple[str, ...] | None = None
+    verified_artifact_snapshots: tuple[tuple[str, str], ...] | None = None
+    verified_target_snapshot: str | None = None
+
+
+def _verified_failure_names(resolution: ResolverResult) -> frozenset[str]:
+    """Return validated root identities carried only by internal uv results."""
+    if not isinstance(resolution, _UvResolverResult):
+        return frozenset()
+    names = resolution.verified_failure_names
+    if (
+        not names
+        or names != tuple(sorted(set(names)))
+        or any(not name or canonicalize_name(name) != name for name in names)
+    ):
+        return frozenset()
+    return frozenset(names)
+
+
+def _verified_failure_artifact_snapshots(
+    resolution: ResolverResult,
+) -> tuple[tuple[str, str], ...] | None:
+    """Return the exact staged artifact snapshots carried by internal uv evidence."""
+    if not isinstance(resolution, _UvResolverResult):
+        return None
+    snapshots = resolution.verified_artifact_snapshots
+    if (
+        snapshots is None
+        or snapshots != tuple(sorted(set(snapshots)))
+        or any(
+            not isinstance(item, tuple)
+            or len(item) != _ARTIFACT_SNAPSHOT_PARTS
+            or _SHA256.fullmatch(item[0]) is None
+            or _SHA256.fullmatch(item[1]) is None
+            for item in snapshots
+        )
+    ):
+        return None
+    artifact_ids = tuple(item[0] for item in snapshots)
+    if len(artifact_ids) != len(set(artifact_ids)):
+        return None
+    return snapshots
+
+
+def _verified_failure_target_snapshot(resolution: ResolverResult) -> str | None:
+    """Return the exact target snapshot carried by internal uv evidence."""
+    if not isinstance(resolution, _UvResolverResult):
+        return None
+    snapshot = resolution.verified_target_snapshot
+    return snapshot if snapshot is not None and _SHA256.fullmatch(snapshot) else None
+
+
+def _failure_requirement_identities(
+    requirements: Sequence[str],
+    names: frozenset[str],
+) -> tuple[str, ...]:
+    """Return canonical marker-free requirements for the corroborated roots."""
+    identities = set()
+    for value in requirements:
+        requirement = Requirement(value.partition(";")[0].rstrip())
+        if canonicalize_name(requirement.name) in names:
+            identities.add(str(requirement))
+    return tuple(sorted(identities))
+
+
+def _verified_failure_requirements(
+    resolution: ResolverResult,
+) -> frozenset[str] | None:
+    """Return the exact active requirement group carried by internal uv evidence."""
+    if not isinstance(resolution, _UvResolverResult):
+        return None
+    requirements = resolution.verified_failure_requirements
+    if requirements is None or requirements != tuple(sorted(set(requirements))):
+        return None
+    try:
+        for value in requirements:
+            requirement = Requirement(value)
+            if (
+                requirement.marker is not None
+                or requirement.url is not None
+                or str(requirement) != value
+            ):
+                return None
+    except InvalidRequirement:
+        return None
+    return frozenset(requirements)
 
 
 class ResolverAdapter(Protocol):
@@ -2777,27 +2955,35 @@ def assess_dependency_metadata(
         key = (artifact.canonical_name, Version(artifact.version))
         grouped.setdefault(key, []).append(artifact)
     return tuple(
-        _assessment(
-            tuple(sorted(grouped[key], key=lambda item: item.path.as_posix())),
-            target,
-            validated_extras,
+        _assessment_with_closure(
+            _assessment(
+                tuple(sorted(grouped[key], key=lambda item: item.path.as_posix())),
+                target,
+                validated_extras,
+            ),
+            closure_proven=False,
         )
         for key in sorted(grouped, key=lambda item: (item[0], item[1]))
     )
 
 
-def _unverify_library_artifact_sample(
+def _assessment_with_closure(
     assessment: DependencyAssessment,
+    *,
+    closure_proven: bool,
 ) -> DependencyAssessment:
-    """Keep a finite library artifact sample from claiming universal absence."""
-    if assessment.status is not DependencyCompatibilityStatus.ARTIFACT_UNAVAILABLE:
+    """Separate sample observations from conclusions requiring resolver closure."""
+    if closure_proven or assessment.status not in {
+        DependencyCompatibilityStatus.COMPATIBLE,
+        DependencyCompatibilityStatus.ARTIFACT_UNAVAILABLE,
+    }:
         return assessment
     return replace(
         assessment,
         status=DependencyCompatibilityStatus.UNVERIFIED,
         reason=(
-            "supplied library artifacts do not establish target artifact "
-            "availability; complete resolver evidence is required"
+            "the supplied artifact sample does not establish complete target "
+            "compatibility; complete resolver evidence is required"
         ),
     )
 
@@ -3037,6 +3223,7 @@ def _assess_declared_dependency_metadata(
     use_resolver_selection = (
         resolution.status is ResolutionStatus.SUCCEEDED and resolution.complete
     )
+    verified_failure_names = _verified_failure_names(resolution)
     grouped = (
         _resolver_dependency_groups(resolution, artifacts_by_id)
         if use_resolver_selection
@@ -3076,8 +3263,6 @@ def _assess_declared_dependency_metadata(
             if _requirement_accepts_version(requirement, str(key[1]))
         )
         assessment = raw_assessments[key]
-        if configuration.project_kind is DependencyProjectKind.LIBRARY:
-            assessment = _unverify_library_artifact_sample(assessment)
         if not use_resolver_selection and key[0] in ambiguous_names:
             assessment = replace(
                 assessment,
@@ -3104,6 +3289,19 @@ def _assess_declared_dependency_metadata(
                     "for the declared range; complete resolver evidence is required"
                 ),
             )
+        assessment = _assessment_with_closure(
+            assessment,
+            closure_proven=bool(
+                resolution.complete
+                and (
+                    resolution.status is ResolutionStatus.SUCCEEDED
+                    or (
+                        resolution.status is ResolutionStatus.ARTIFACT_UNAVAILABLE
+                        and key[0] in verified_failure_names
+                    )
+                )
+            ),
+        )
         assessments.append(assessment)
     return tuple(assessments)
 
@@ -3225,6 +3423,7 @@ class _ResolverValidationContext:
     configuration: DependencyConfiguration
     target: EnvironmentTarget
     expected_resolver: str
+    built_in_uv_evidence: bool
 
 
 def _resolver_result_header_is_valid(
@@ -3349,21 +3548,50 @@ def _resolver_failure_is_corroborated(
     resolution: ResolverResult,
     context: _ResolverValidationContext,
 ) -> bool:
+    if resolution.status not in {
+        ResolutionStatus.ARTIFACT_UNAVAILABLE,
+        ResolutionStatus.RESOLUTION_FAILED,
+    }:
+        return True
     active_requirements = tuple(
         item.requirement for item in context.declared if item.applies
     )
+    verified_names = _verified_failure_names(resolution)
+    verified_requirements = _verified_failure_requirements(resolution)
+    verified_artifact_snapshots = _verified_failure_artifact_snapshots(resolution)
+    verified_target_snapshot = _verified_failure_target_snapshot(resolution)
+    if (
+        not context.built_in_uv_evidence
+        or not verified_names
+        or not verified_requirements
+        or verified_requirements
+        != frozenset(
+            _failure_requirement_identities(active_requirements, verified_names)
+        )
+        or verified_artifact_snapshots is None
+        or verified_artifact_snapshots
+        != _metadata_artifact_snapshots(context.artifacts)
+        or verified_target_snapshot != _target_snapshot(context.target)
+    ):
+        return False
     if resolution.status is ResolutionStatus.ARTIFACT_UNAVAILABLE:
-        return bool(
-            not context.configuration.network
-            and _offline_artifact_unavailability(
+        independently_unavailable = {
+            item.canonical_name
+            for item in _offline_artifact_unavailability(
                 active_requirements,
                 context.artifacts,
                 context.target,
                 context.configuration.project_kind,
             )
+        }
+        return bool(
+            not context.configuration.network
+            and verified_names.issubset(independently_unavailable)
         )
     if resolution.status is ResolutionStatus.RESOLUTION_FAILED:
-        return bool(_conflicting_requirement_names(active_requirements))
+        return verified_names.issubset(
+            _conflicting_requirement_names(active_requirements)
+        )
     return True
 
 
@@ -3469,6 +3697,12 @@ def _correlate_declared_requirements(
     project_kind: DependencyProjectKind,
 ) -> tuple[EvaluatedRequirement, ...]:
     active_groups = _active_requirement_groups(declared)
+    conflicting_names = frozenset(
+        _conflicting_requirement_names(
+            tuple(item.requirement for item in declared if item.applies)
+        )
+    )
+    verified_failure_names = _verified_failure_names(resolution)
     artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
     evidence_artifacts = _resolution_evidence_artifacts(artifacts, resolution)
     correlations: dict[
@@ -3514,6 +3748,14 @@ def _correlate_declared_requirements(
                 "exact resolver provenance is required"
             )
         elif (
+            resolution.status is ResolutionStatus.RESOLUTION_FAILED
+            and resolution.complete
+            and name in conflicting_names
+            and name in verified_failure_names
+        ):
+            verified = True
+            reason = "complete resolver evidence proves the declared set unsatisfiable"
+        elif (
             project_kind is DependencyProjectKind.LIBRARY
             and not complete_selection
             and not any(_requirement_is_singleton_pin(item) for item in group)
@@ -3534,14 +3776,9 @@ def _correlate_declared_requirements(
             verified = True
             reason = "active requirement matches complete resolver evidence"
         elif (
-            resolution.status is ResolutionStatus.RESOLUTION_FAILED
-            and resolution.complete
-        ):
-            verified = True
-            reason = "complete resolver evidence proves the declared set unsatisfiable"
-        elif (
             resolution.status is ResolutionStatus.ARTIFACT_UNAVAILABLE
             and resolution.complete
+            and name in verified_failure_names
             and not any(
                 _artifact_satisfies_version_constraints(artifact, group)
                 for artifact in artifacts
@@ -3602,6 +3839,22 @@ def _exact_requirement_version(requirement: Requirement) -> str | None:
         return str(Version(specifiers[0].version))
     except InvalidVersion:
         return None
+
+
+def _raw_exact_requirement_version(requirement: Requirement) -> str | None:
+    """Retain spelling for arbitrary-equality witness checks."""
+    specifiers = tuple(requirement.specifier)
+    if (
+        len(specifiers) != 1
+        or specifiers[0].operator not in {"==", "==="}
+        or specifiers[0].version.endswith(".*")
+    ):
+        return None
+    try:
+        Version(specifiers[0].version)
+    except InvalidVersion:
+        return None
+    return specifiers[0].version
 
 
 def _requirement_is_singleton_pin(requirement: Requirement) -> bool:
@@ -3691,15 +3944,7 @@ def _validated_resolver_closure(
 def _transitive_coverage_verdict(
     coverage: _TransitiveCoverage,
 ) -> tuple[bool, str]:
-    if (
-        coverage.resolution.status is ResolutionStatus.RESOLUTION_FAILED
-        and coverage.resolution.complete
-    ):
-        verdict = (
-            True,
-            "complete resolver evidence proves the declared set unsatisfiable",
-        )
-    elif coverage.project_kind is DependencyProjectKind.LIBRARY:
+    if coverage.project_kind is DependencyProjectKind.LIBRARY:
         verified = bool(
             coverage.resolution.status is ResolutionStatus.SUCCEEDED
             and coverage.resolution.complete
@@ -3865,9 +4110,10 @@ def _conflicting_requirement_names(requirements: Sequence[str]) -> tuple[str, ..
         exact_versions = tuple(
             sorted(
                 {
-                    Version(version)
+                    version
                     for requirement in group
-                    if (version := _exact_requirement_version(requirement)) is not None
+                    if (version := _raw_exact_requirement_version(requirement))
+                    is not None
                 }
             )
         )
@@ -3920,15 +4166,34 @@ def _offline_artifact_unavailability(
     artifacts: Sequence[MetadataArtifact],
     target: EnvironmentTarget,
     project_kind: DependencyProjectKind,
-) -> tuple[str, ...]:
+) -> tuple[_ClosedArtifactUnavailability, ...]:
     """Identify requirements the closed, revalidated wheelhouse cannot satisfy."""
     if project_kind is not DependencyProjectKind.APPLICATION:
         return ()
+    groups = _resolver_requirement_groups(requirements)
+    if any(
+        any(_exact_requirement_version(requirement) is None for requirement in group)
+        for group in groups.values()
+    ):
+        return ()
     conflicts = frozenset(_conflicting_requirement_names(requirements))
-    unavailable: list[str] = []
-    for name, group in _resolver_requirement_groups(requirements).items():
+    unavailable: list[_ClosedArtifactUnavailability] = []
+    for name, group in groups.items():
         if name in conflicts:
             continue
+        exact_versions = {
+            version
+            for requirement in group
+            if (version := _exact_requirement_version(requirement)) is not None
+        }
+        if len(exact_versions) != 1:
+            continue
+        closure = _ClosedArtifactUnavailability(
+            canonical_name=name,
+            version=exact_versions.pop(),
+            requirements=tuple(str(requirement) for requirement in group),
+            description=" & ".join(str(requirement) for requirement in group),
+        )
         _consume_dependency_work(len(artifacts))
         candidates = tuple(
             artifact
@@ -3936,7 +4201,7 @@ def _offline_artifact_unavailability(
             if _artifact_satisfies_version_constraints(artifact, group)
         )
         if not candidates:
-            unavailable.append(" & ".join(str(requirement) for requirement in group))
+            unavailable.append(closure)
             continue
         selected_extras = tuple(sorted(_canonical_requested_extras(group)))
         assessments = assess_dependency_metadata(
@@ -3945,10 +4210,14 @@ def _offline_artifact_unavailability(
             extras=selected_extras,
         )
         if assessments and all(
-            assessment.status is DependencyCompatibilityStatus.ARTIFACT_UNAVAILABLE
+            assessment.artifact_availability
+            in {
+                ArtifactAvailability.SOURCE_BUILD_POSSIBLE,
+                ArtifactAvailability.UNAVAILABLE,
+            }
             for assessment in assessments
         ):
-            unavailable.append(" & ".join(str(requirement) for requirement in group))
+            unavailable.append(closure)
     return tuple(unavailable)
 
 
@@ -3964,10 +4233,10 @@ def _resolver_version_is_valid(value: str) -> bool:
 
 
 def _resolver_version(output: str, resolver: str) -> str | None:
-    line = output.strip().splitlines()
-    if len(line) != 1 or not line[0].startswith(f"{resolver} "):
+    line = output.removesuffix("\n")
+    if "\n" in line or not line.startswith(f"{resolver} "):
         return None
-    version = line[0][len(resolver) + 1 :].strip()
+    version = line[len(resolver) + 1 :]
     if (
         not version
         or len(version) > _MAX_TEXT_LENGTH
@@ -5423,6 +5692,156 @@ def _uv_reports_unsatisfiable(diagnostic: str, version: str) -> bool:
     )
 
 
+def _same_exact_requirement(left: str, right: str) -> bool:
+    try:
+        left_requirement = Requirement(left)
+        right_requirement = Requirement(right)
+    except InvalidRequirement:
+        return False
+    left_specifiers = tuple(left_requirement.specifier)
+    right_specifiers = tuple(right_requirement.specifier)
+    if (
+        len(left_specifiers) != 1
+        or len(right_specifiers) != 1
+        or left_specifiers[0].operator not in {"==", "==="}
+        or right_specifiers[0].operator not in {"==", "==="}
+        or left_specifiers[0].version.endswith(".*")
+        or right_specifiers[0].version.endswith(".*")
+        or canonicalize_name(left_requirement.name)
+        != canonicalize_name(right_requirement.name)
+        or left_requirement.extras != right_requirement.extras
+    ):
+        return False
+    if left_specifiers[0].operator == right_specifiers[0].operator == "===":
+        return left_specifiers[0].version == right_specifiers[0].version
+    if left_specifiers[0].operator != right_specifiers[0].operator:
+        return False
+    try:
+        return Version(left_specifiers[0].version) == Version(
+            right_specifiers[0].version
+        )
+    except InvalidVersion:
+        return False
+
+
+def _closed_requirement_matches(
+    value: str,
+    closed: Sequence[_ClosedArtifactUnavailability],
+) -> _ClosedArtifactUnavailability | None:
+    return next(
+        (
+            item
+            for item in closed
+            if any(
+                _same_exact_requirement(value, requirement)
+                for requirement in item.requirements
+            )
+        ),
+        None,
+    )
+
+
+def _reviewed_uv_artifact_diagnostic(
+    diagnostic: str,
+    version: str,
+    closed: Sequence[_ClosedArtifactUnavailability],
+) -> tuple[str, str | None] | None:
+    """Return one bounded proof and optional reviewed hint from uv 0.11.21."""
+    parsed_version = re.fullmatch(r"(?P<version>[0-9]+(?:\.[0-9]+)+)(?: .*)?", version)
+    if (
+        parsed_version is None
+        or parsed_version.group("version")
+        != str(_REVIEWED_UV_ARTIFACT_AVAILABILITY_VERSION)
+        or not closed
+    ):
+        return None
+    lines = _stable_uv_diagnostic(diagnostic).splitlines()
+    if len(lines) < _MIN_UNSATISFIABLE_LINES or lines[0] != _UV_NO_SOLUTION_HEADER:
+        return None
+    hint = lines[-1] if lines[-1].startswith("hint: ") else None
+    proof_lines = lines[1:-1] if hint is not None else lines[1:]
+    if not proof_lines or any(line.startswith("hint: ") for line in proof_lines):
+        return None
+    proof = " ".join(proof_lines)
+    if any(term in proof.casefold() for term in _UV_NON_SOLVER_TERMS):
+        return None
+    return proof, hint
+
+
+def _closed_artifact_proof(
+    proof: str,
+    closed: Sequence[_ClosedArtifactUnavailability],
+) -> tuple[str, _ClosedArtifactUnavailability] | None:
+    """Bind one exact reviewed proof to an independently absent exact pin."""
+    match = _UV_MISSING_PACKAGE_PROOF.fullmatch(proof)
+    if match is not None:
+        selected = _closed_requirement_matches(match.group("requirement"), closed)
+        if selected is not None and canonicalize_name(match.group("name")) == (
+            selected.canonical_name
+        ):
+            return "missing-package", selected
+        return None
+
+    for kind, pattern in (
+        ("missing-version", _UV_MISSING_VERSION_PROOF),
+        ("wrong-abi", _UV_WRONG_ABI_PROOF),
+        ("no-usable-wheels", _UV_NO_USABLE_WHEELS_PROOF),
+    ):
+        match = pattern.fullmatch(proof)
+        if match is None or not _same_exact_requirement(
+            match.group("proof"), match.group("requirement")
+        ):
+            continue
+        selected = _closed_requirement_matches(match.group("requirement"), closed)
+        if selected is not None:
+            return kind, selected
+    return None
+
+
+def _reviewed_artifact_hint_matches(
+    kind: str,
+    hint: str | None,
+    selected: _ClosedArtifactUnavailability,
+) -> bool:
+    if hint is None:
+        return True
+    if kind == "wrong-abi":
+        hint_match = _UV_WRONG_ABI_HINT.fullmatch(hint)
+    elif kind == "no-usable-wheels":
+        hint_match = _UV_NO_USABLE_WHEELS_HINT.fullmatch(hint)
+    else:
+        return False
+    if (
+        hint_match is None
+        or canonicalize_name(hint_match.group("name")) != selected.canonical_name
+    ):
+        return False
+    if kind != "wrong-abi":
+        return True
+    try:
+        return Version(hint_match.group("version")) == Version(selected.version)
+    except InvalidVersion:
+        return False
+
+
+def _uv_reports_artifact_unavailable(
+    diagnostic: str,
+    version: str,
+    closed: Sequence[_ClosedArtifactUnavailability],
+) -> _ClosedArtifactUnavailability | None:
+    """Recognize reviewed uv 0.11.21 closure grammar and nothing broader."""
+    retained = _reviewed_uv_artifact_diagnostic(diagnostic, version, closed)
+    if retained is None:
+        return None
+    proof, hint = retained
+    matched = _closed_artifact_proof(proof, closed)
+    if matched is None or not _reviewed_artifact_hint_matches(
+        matched[0], hint, matched[1]
+    ):
+        return None
+    return matched[1]
+
+
 def _stable_uv_diagnostic(diagnostic: str) -> str:
     """Remove uv's host-Python fallback warning from retained evidence."""
     lines = [line.strip() for line in diagnostic.splitlines() if line.strip()]
@@ -5439,19 +5858,28 @@ def _uv_reports_constraint_conflict(
     diagnostic: str,
     version: str,
     requirements: Sequence[str],
-) -> bool:
+) -> tuple[str, ...]:
     """Accept reviewed solver grammar only with an independent contradiction."""
     if not _uv_reports_unsatisfiable(diagnostic, version):
-        return False
+        return ()
     normalized = diagnostic.casefold()
     if any(term in normalized for term in _UV_ARTIFACT_AVAILABILITY_TERMS):
-        return False
+        return ()
     groups = _resolver_requirement_groups(requirements)
+    matched: list[str] = []
     for name in _conflicting_requirement_names(requirements):
-        constraints = {str(requirement).casefold() for requirement in groups[name]}
-        if constraints and all(constraint in normalized for constraint in constraints):
-            return True
-    return False
+        constraints = tuple(str(requirement).casefold() for requirement in groups[name])
+        if constraints and all(
+            re.search(
+                rf"(?<![A-Za-z0-9._-]){re.escape(constraint)}"
+                r"(?![A-Za-z0-9._+!<>=~*-])",
+                normalized,
+            )
+            is not None
+            for constraint in constraints
+        ):
+            matched.append(name)
+    return tuple(matched)
 
 
 def _read_resolver_result(path: Path) -> str:
@@ -5493,28 +5921,68 @@ def _interpret_resolver_process(
     context: _ResolverInterpretationContext,
 ) -> ResolverResult:
     if process.returncode != 0:
-        diagnostic = process.stderr or process.stdout
+        stderr_has_evidence = bool(process.stderr.strip())
+        diagnostic = process.stderr
         stable_diagnostic = _stable_uv_diagnostic(diagnostic)
         detail = _safe_process_text(
             stable_diagnostic,
             context.workspace.directory,
         )
-        failed = process.returncode > 0 and _uv_reports_constraint_conflict(
-            diagnostic,
-            context.version,
-            context.requirements,
+        reviewed_failure = bool(
+            process.returncode == _UV_RESOLUTION_FAILURE_EXIT
+            and process.stdout == ""
+            and stderr_has_evidence
         )
-        return ResolverResult(
+        artifact_unavailable = (
+            _uv_reports_artifact_unavailable(
+                diagnostic,
+                context.version,
+                context.closed_artifact_unavailability,
+            )
+            if reviewed_failure and context.closed_artifact_unavailability
+            else None
+        )
+        failed_names = (
+            _uv_reports_constraint_conflict(
+                diagnostic,
+                context.version,
+                context.requirements,
+            )
+            if reviewed_failure
+            else ()
+        )
+        complete = artifact_unavailable is not None or bool(failed_names)
+        reason = (
+            "completed offline resolution found no usable wheel in the closed "
+            "artifact set for: " + artifact_unavailable.description
+            if artifact_unavailable is not None
+            else detail or f"resolver exited with status {process.returncode}"
+        )
+        verified_failure_names = (
+            (artifact_unavailable.canonical_name,)
+            if artifact_unavailable is not None
+            else failed_names
+        )
+        return _UvResolverResult(
             status=(
-                ResolutionStatus.RESOLUTION_FAILED
-                if failed
+                ResolutionStatus.ARTIFACT_UNAVAILABLE
+                if artifact_unavailable is not None
+                else ResolutionStatus.RESOLUTION_FAILED
+                if failed_names
                 else ResolutionStatus.UNVERIFIED
             ),
-            complete=failed,
+            complete=complete,
             resolver="uv",
             resolver_version=context.version,
             packages=(),
-            reason=detail or f"resolver exited with status {process.returncode}",
+            reason=reason,
+            verified_failure_names=verified_failure_names,
+            verified_failure_requirements=_failure_requirement_identities(
+                context.requirements,
+                frozenset(verified_failure_names),
+            ),
+            verified_artifact_snapshots=_metadata_artifact_snapshots(context.artifacts),
+            verified_target_snapshot=_target_snapshot(context.target),
         )
     try:
         output = _read_resolver_result(context.workspace.output)
@@ -5616,32 +6084,23 @@ def _resolve_in_workspace(
         )
         version = (
             _resolver_version(version_process.stdout, "uv")
-            if version_process.returncode == 0
+            if version_process.returncode == 0 and not version_process.stderr
             else None
         )
         if version is None:
             return _resolver_unverified(
                 "unable to identify the exact uv resolver version"
             )
-        if not configuration.network:
-            unavailable = _offline_artifact_unavailability(
+        closed_artifact_unavailability = (
+            _offline_artifact_unavailability(
                 active_requirements,
                 artifacts,
                 target,
                 configuration.project_kind,
             )
-            if unavailable:
-                return ResolverResult(
-                    status=ResolutionStatus.ARTIFACT_UNAVAILABLE,
-                    complete=True,
-                    resolver="uv",
-                    resolver_version=version,
-                    packages=(),
-                    reason=(
-                        "the complete offline artifact set has no usable wheel "
-                        "for: " + ", ".join(unavailable)
-                    ),
-                )
+            if not configuration.network
+            else ()
+        )
         command = _resolver_command(
             workspace,
             configuration,
@@ -5685,6 +6144,8 @@ def _resolve_in_workspace(
             workspace=workspace,
             artifacts=artifacts,
             requirements=active_requirements,
+            target=target,
+            closed_artifact_unavailability=closed_artifact_unavailability,
         ),
     )
 
@@ -5798,7 +6259,12 @@ def collect_dependency_report(
         target_count=len(configuration.targets),
         label="dependency collection",
     )
-    adapter = resolver or UvResolverAdapter()
+    if resolver is None:
+        adapter: ResolverAdapter = UvResolverAdapter()
+        built_in_uv_evidence = True
+    else:
+        adapter = resolver
+        built_in_uv_evidence = False
     targets: list[TargetDependencyResult] = []
     for target in configuration.targets:
         _ensure_target_coherence(target, label="dependency target")
@@ -5838,6 +6304,7 @@ def collect_dependency_report(
                 configuration=configuration,
                 target=target,
                 expected_resolver=expected_resolver,
+                built_in_uv_evidence=built_in_uv_evidence,
             ),
         )
         evidence_resolution = resolution
@@ -5855,16 +6322,16 @@ def collect_dependency_report(
                 target=target,
                 extras=configuration.extras,
             )
-            if configuration.project_kind is DependencyProjectKind.LIBRARY:
-                assessments = tuple(
-                    _unverify_library_artifact_sample(assessment)
-                    for assessment in assessments
-                )
         resolution = _validated_resolver_closure(
             resolution,
             assessments,
             artifacts,
         )
+        if resolution is not evidence_resolution:
+            assessments = tuple(
+                _assessment_with_closure(assessment, closure_proven=False)
+                for assessment in assessments
+            )
         selected_evidence = _target_semantic_artifacts(
             _resolution_evidence_artifacts(
                 artifacts,
@@ -5928,8 +6395,344 @@ def _target_document(target: EnvironmentTarget) -> dict[str, JsonValue]:
     }
 
 
+def _target_snapshot(target: EnvironmentTarget) -> str:
+    """Bind uv evidence to every target field emitted in machine reports."""
+    encoded = json.dumps(
+        _target_document(target),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class _NegativeReportContext:
+    active_requirements: tuple[str, ...]
+    verified_names: frozenset[str]
+    carried_names: frozenset[str]
+
+
+def _declared_evidence_projection(
+    rows: Sequence[EvaluatedRequirement],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            item.requirement,
+            item.applies,
+            item.matching_extras,
+            item.matching_metadata,
+            item.resolved_versions,
+            item.verified,
+        )
+        for item in rows
+    )
+
+
+def _transitive_evidence_projection(
+    rows: Sequence[TransitiveRequirementEvidence],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            item.requirement,
+            item.required_by,
+            item.locked_versions,
+            item.matching_metadata,
+            item.resolved_versions,
+            item.verified,
+        )
+        for item in rows
+    )
+
+
+def _assessment_evidence_projection(
+    rows: Sequence[DependencyAssessment],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            item.package,
+            item.version,
+            item.status,
+            item.requires_python_status,
+            item.artifact_availability,
+            item.source_build_possible,
+            item.metadata_used,
+            item.applicable_requirements,
+        )
+        for item in rows
+    )
+
+
+def _validated_negative_provenance(
+    report: DependencyReport,
+    result: TargetDependencyResult,
+    active_requirements: Sequence[str],
+) -> frozenset[str]:
+    """Validate private uv inputs before recomputing a complete negative."""
+    carried_names = _verified_failure_names(result.resolution)
+    carried_requirements = _verified_failure_requirements(result.resolution)
+    carried_artifact_snapshots = _verified_failure_artifact_snapshots(result.resolution)
+    carried_target_snapshot = _verified_failure_target_snapshot(result.resolution)
+    if (
+        not carried_names
+        or not carried_requirements
+        or carried_artifact_snapshots is None
+        or carried_target_snapshot is None
+    ):
+        _error(
+            "dependency report",
+            "complete negative lacks internal reviewed uv evidence",
+        )
+    if carried_target_snapshot != _target_snapshot(result.target):
+        _error(
+            "dependency report",
+            "complete negative target changed after uv review",
+        )
+    if carried_requirements != frozenset(
+        _failure_requirement_identities(active_requirements, carried_names)
+    ):
+        _error(
+            "dependency report",
+            "complete negative requirement identity changed after uv review",
+        )
+    carried_artifact_ids = tuple(item[0] for item in carried_artifact_snapshots)
+    report_artifact_ids = tuple(sorted(item.artifact_id for item in report.metadata))
+    if carried_artifact_ids != report_artifact_ids:
+        _error(
+            "dependency report",
+            "complete negative artifact inventory changed after uv review",
+        )
+    if carried_artifact_snapshots != _metadata_artifact_snapshots(report.metadata):
+        _error(
+            "dependency report",
+            "complete negative artifact snapshot changed after uv review",
+        )
+    return carried_names
+
+
+def _negative_report_context(
+    report: DependencyReport,
+    result: TargetDependencyResult,
+) -> _NegativeReportContext:
+    if tuple(item.requirement for item in result.declared_requirements) != (
+        report.requirements
+    ):
+        _error(
+            "dependency report",
+            "declared requirement rows do not match the configured roots",
+        )
+    evaluated = tuple(
+        _evaluate_requirement(value, result.target, report.extras)
+        for value in report.requirements
+    )
+    active_requirements = tuple(item.requirement for item in evaluated if item.applies)
+    carried_names = _validated_negative_provenance(
+        report,
+        result,
+        active_requirements,
+    )
+    configuration = DependencyConfiguration(
+        project_kind=report.project_kind,
+        requirements=report.requirements,
+        extras=report.extras,
+        metadata_paths=tuple(Path(item.path) for item in report.metadata),
+        targets=(result.target,),
+        resolve=report.resolve,
+        network=report.network,
+        timeout_seconds=report.timeout_seconds,
+        resolver=report.resolver,
+        index_url=report.index_url,
+    )
+    recomputed_assessments = _assess_declared_dependency_metadata(
+        report.metadata,
+        target=result.target,
+        configuration=configuration,
+        declared=evaluated,
+        resolution=result.resolution,
+    )
+    if _assessment_evidence_projection(
+        result.assessments
+    ) != _assessment_evidence_projection(recomputed_assessments):
+        _error(
+            "dependency report",
+            "complete negative contains contradictory assessment evidence",
+        )
+    closed_resolution = _validated_resolver_closure(
+        result.resolution,
+        recomputed_assessments,
+        report.metadata,
+    )
+    if (
+        closed_resolution.status is not result.resolution.status
+        or closed_resolution.complete is not result.resolution.complete
+    ):
+        _error(
+            "dependency report",
+            "complete negative contradicts the recomputed artifact closure",
+        )
+    selected_evidence = _target_semantic_artifacts(
+        _resolution_evidence_artifacts(report.metadata, result.resolution),
+        result.target,
+    )
+    recomputed = _correlate_declared_requirements(
+        evaluated,
+        selected_evidence,
+        result.resolution,
+        report.project_kind,
+    )
+    if _declared_evidence_projection(
+        result.declared_requirements
+    ) != _declared_evidence_projection(recomputed):
+        _error(
+            "dependency report",
+            "complete negative contains contradictory declared evidence",
+        )
+    recomputed_transitive = _transitive_requirement_evidence(
+        report.project_kind,
+        recomputed_assessments,
+        recomputed,
+        selected_evidence,
+        result.resolution,
+    )
+    if _transitive_evidence_projection(
+        result.transitive_requirements
+    ) != _transitive_evidence_projection(recomputed_transitive):
+        _error(
+            "dependency report",
+            "complete negative contains contradictory transitive evidence",
+        )
+    active_rows = tuple(item for item in recomputed if item.applies)
+    return _NegativeReportContext(
+        active_requirements=tuple(item.requirement for item in active_rows),
+        verified_names=frozenset(
+            canonicalize_name(Requirement(item.requirement).name)
+            for item in active_rows
+            if item.verified
+        ),
+        carried_names=carried_names,
+    )
+
+
+def _validate_resolution_failed_report(
+    report: DependencyReport,
+    context: _NegativeReportContext,
+) -> None:
+    conflicting_names = frozenset(
+        _conflicting_requirement_names(context.active_requirements)
+    )
+    if (
+        not report.resolve
+        or not context.carried_names.issubset(conflicting_names)
+        or not context.carried_names.issubset(context.verified_names)
+    ):
+        _error(
+            "dependency report",
+            "resolution-failed lacks a verified contradictory root",
+        )
+
+
+def _artifact_assessment_is_bound(
+    assessment: DependencyAssessment,
+    *,
+    closures: Mapping[str, _ClosedArtifactUnavailability],
+    artifacts: Mapping[str, MetadataArtifact],
+) -> bool:
+    closure = closures.get(canonicalize_name(assessment.package))
+    try:
+        return bool(
+            closure is not None
+            and all(
+                _requirement_accepts_version(
+                    Requirement(requirement), assessment.version
+                )
+                for requirement in closure.requirements
+            )
+            and assessment.metadata_used
+            and all(
+                (artifact := artifacts.get(artifact_id)) is not None
+                and artifact.canonical_name == canonicalize_name(assessment.package)
+                and Version(artifact.version) == Version(assessment.version)
+                for artifact_id in assessment.metadata_used
+            )
+        )
+    except InvalidVersion:
+        return False
+
+
+def _validate_artifact_unavailable_report(
+    report: DependencyReport,
+    result: TargetDependencyResult,
+    context: _NegativeReportContext,
+) -> None:
+    closures = {
+        item.canonical_name: item
+        for item in _offline_artifact_unavailability(
+            context.active_requirements,
+            report.metadata,
+            result.target,
+            report.project_kind,
+        )
+    }
+    negative_assessments = tuple(
+        item
+        for item in result.assessments
+        if item.status is DependencyCompatibilityStatus.ARTIFACT_UNAVAILABLE
+    )
+    artifacts_by_id = {item.artifact_id: item for item in report.metadata}
+    if (
+        not report.resolve
+        or report.network
+        or report.project_kind is not DependencyProjectKind.APPLICATION
+        or not context.carried_names.issubset(closures)
+        or not context.carried_names.issubset(context.verified_names)
+        or not {
+            canonicalize_name(item.package) for item in negative_assessments
+        }.issubset(context.carried_names)
+        or not all(
+            _artifact_assessment_is_bound(
+                item,
+                closures=closures,
+                artifacts=artifacts_by_id,
+            )
+            for item in negative_assessments
+        )
+        or any(
+            item.status is DependencyCompatibilityStatus.COMPATIBLE
+            for item in result.assessments
+        )
+    ):
+        _error(
+            "dependency report",
+            "artifact-unavailable lacks one bound closed-inventory root",
+        )
+
+
+def _validate_dependency_report_semantics(report: DependencyReport) -> None:
+    """Reject forged complete-negative models before machine serialization.
+
+    JSON Schema closes the document shape, but it cannot compare package names
+    across arrays or evaluate PEP 440 constraint intersections.  Keep those
+    semantic checks at the trusted model-to-document boundary.
+    """
+    _validate_metadata_artifacts(report.metadata)
+    _parse_requirements(report.requirements, report.project_kind)
+    for result in report.targets:
+        status = result.resolution.status
+        if status not in {
+            ResolutionStatus.ARTIFACT_UNAVAILABLE,
+            ResolutionStatus.RESOLUTION_FAILED,
+        }:
+            continue
+        context = _negative_report_context(report, result)
+        if status is ResolutionStatus.RESOLUTION_FAILED:
+            _validate_resolution_failed_report(report, context)
+        else:
+            _validate_artifact_unavailable_report(report, result, context)
+
+
 def dependency_report_document(report: DependencyReport) -> dict[str, JsonValue]:
     """Return the closed deterministic JSON representation of an M8 report."""
+    _validate_dependency_report_semantics(report)
     return {
         "controls": {
             "index_url": report.index_url,
@@ -5939,25 +6742,7 @@ def dependency_report_document(report: DependencyReport) -> dict[str, JsonValue]
             "timeout_seconds": report.timeout_seconds,
         },
         "extras": list(report.extras),
-        "metadata": [
-            {
-                "artifact_id": item.artifact_id,
-                "canonical_name": item.canonical_name,
-                "dynamic": list(item.dynamic),
-                "kind": item.kind.value,
-                "metadata_path": item.metadata_path,
-                "metadata_version": item.metadata_version,
-                "name": item.name,
-                "path": item.path.as_posix(),
-                "provides_extra": list(item.provides_extra),
-                "requires_dist": list(item.requires_dist),
-                "requires_python": item.requires_python,
-                "sha256": item.sha256,
-                "version": item.version,
-                "wheel_tags": list(item.wheel_tags),
-            }
-            for item in report.metadata
-        ],
+        "metadata": [_metadata_artifact_document(item) for item in report.metadata],
         "metadata_issues": [
             {"incomplete": True, "message": item.message, "path": item.path.as_posix()}
             for item in report.metadata_issues

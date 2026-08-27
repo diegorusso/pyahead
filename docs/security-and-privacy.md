@@ -149,12 +149,16 @@ failure, or malformed output is incomplete evidence, never a compatibility
 failure. Stored diagnostics remove control characters and isolated-workspace
 paths, as well as host-interpreter fallback warnings that are not target
 evidence.
-Only when offline resolution is requested for exact application pins can the
-closed wheelhouse prove that a package, requested version, or target-compatible
-wheel is unavailable. Metadata-only gaps and library artifact gaps remain
-unverified because the configured sample may not be a complete platform
-inventory. A library `==` pin without an explicit local segment also admits
-unseen local versions and cannot make one sampled exclusion definitive.
+`artifact_availability` describes only the supplied sample: a matching wheel may
+be `available`, a wrong-target wheel `unavailable`, and an sdist
+`source-build-possible`. Direct application and library samples remain
+compatibility `unverified`, including positive matching samples, unless complete
+resolution closes the inventory; an exact, final `Requires-Python` exclusion
+instead remains `declared-incompatible`. Only a completed, recognized offline
+resolution over exact application pins can prove that a package, requested
+version, or target-compatible wheel is unavailable. A library `==` pin without
+an explicit local segment also admits unseen local versions and cannot make one
+sampled exclusion definitive.
 Resolver-selected packages prove requested extras only when the exact inspected
 metadata declares them. Online index lookup failures also remain unverified. A
 successful result must contain exactly the package closure reachable from the
@@ -167,6 +171,18 @@ from a recognized exact `uv` version after availability and Python-version
 diagnostics are excluded. It must corroborate independently contradictory exact
 or simple bounded active constraints. Uncorroborated transitive solver text and
 generic "no solution" text are insufficient.
+A recognized negative is also bound to the reviewed process shape: the version
+probe must succeed with only its canonical stdout line, and resolution must exit
+1 with empty stdout and the diagnostic on stderr. Injected resolver adapters and
+other stream or exit-code shapes remain unverified evidence.
+A corroborated negative result verifies only the affected root group. Unrelated
+root and transitive evidence remains independently fail closed, including exit
+code 3 precedence when it is incomplete.
+The dependency-report schema closes structure and status shapes, while the JSON
+emitter separately recomputes cross-row package identity and PEP 440 constraint
+satisfiability. Portable JSON Schema cannot express those comparisons; therefore
+schema validation of an unowned or modified document is not proof that its
+negative compatibility claim was produced by PyAhead.
 
 Resolver execution reads third-party wheel metadata as part of solving but
 cannot build source distributions. When network use is enabled, it may contact

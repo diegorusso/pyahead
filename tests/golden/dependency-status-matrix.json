@@ -1,0 +1,173 @@
+{
+  "scenarios": [
+    {
+      "artifact_availability": "available",
+      "assessment_status": "compatible",
+      "exit_code": 0,
+      "name": "closed-exact-pin-inventory",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "compatible",
+      "resolution_complete": true,
+      "resolution_status": "succeeded"
+    },
+    {
+      "artifact_availability": null,
+      "assessment_status": null,
+      "exit_code": 1,
+      "name": "closed-missing-package",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "missing==1.0",
+      "requires_python_status": null,
+      "resolution_complete": true,
+      "resolution_status": "artifact-unavailable"
+    },
+    {
+      "artifact_availability": null,
+      "assessment_status": null,
+      "exit_code": 1,
+      "name": "closed-missing-version",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "demo==2.0",
+      "requires_python_status": null,
+      "resolution_complete": true,
+      "resolution_status": "artifact-unavailable"
+    },
+    {
+      "artifact_availability": "unavailable",
+      "assessment_status": "artifact-unavailable",
+      "exit_code": 1,
+      "name": "closed-wrong-target-wheel",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "compatible",
+      "resolution_complete": true,
+      "resolution_status": "artifact-unavailable"
+    },
+    {
+      "artifact_availability": "available",
+      "assessment_status": "unverified",
+      "exit_code": 3,
+      "name": "direct-application-matching-wheel",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "compatible",
+      "resolution_complete": true,
+      "resolution_status": "not-requested"
+    },
+    {
+      "artifact_availability": "source-build-possible",
+      "assessment_status": "unverified",
+      "exit_code": 3,
+      "name": "direct-application-sdist-only",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "compatible",
+      "resolution_complete": true,
+      "resolution_status": "not-requested"
+    },
+    {
+      "artifact_availability": "unavailable",
+      "assessment_status": "unverified",
+      "exit_code": 3,
+      "name": "direct-application-wrong-target-wheel",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "compatible",
+      "resolution_complete": true,
+      "resolution_status": "not-requested"
+    },
+    {
+      "artifact_availability": "available",
+      "assessment_status": "declared-incompatible",
+      "exit_code": 1,
+      "name": "direct-final-requires-python-exclusion",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "incompatible",
+      "resolution_complete": true,
+      "resolution_status": "not-requested"
+    },
+    {
+      "artifact_availability": null,
+      "assessment_status": null,
+      "exit_code": 1,
+      "name": "genuine-constraint-contradiction",
+      "network": true,
+      "project_kind": "library",
+      "requirement": "demo<1,>=2",
+      "requires_python_status": null,
+      "resolution_complete": true,
+      "resolution_status": "resolution-failed"
+    },
+    {
+      "artifact_availability": "available",
+      "assessment_status": "unverified",
+      "exit_code": 3,
+      "name": "library-sample",
+      "network": false,
+      "project_kind": "library",
+      "requirement": "demo>=1",
+      "requires_python_status": "compatible",
+      "resolution_complete": true,
+      "resolution_status": "not-requested"
+    },
+    {
+      "artifact_availability": "available",
+      "assessment_status": "unverified",
+      "exit_code": 3,
+      "name": "online-index-failure",
+      "network": true,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "compatible",
+      "resolution_complete": false,
+      "resolution_status": "unverified"
+    },
+    {
+      "artifact_availability": "available",
+      "assessment_status": "unverified",
+      "exit_code": 3,
+      "name": "resolver-timeout",
+      "network": false,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "compatible",
+      "resolution_complete": false,
+      "resolution_status": "timed-out"
+    },
+    {
+      "artifact_availability": "available",
+      "assessment_status": "compatible",
+      "exit_code": 0,
+      "name": "successful-alternative-selection",
+      "network": false,
+      "project_kind": "library",
+      "requirement": "demo>=1",
+      "requires_python_status": "compatible",
+      "resolution_complete": true,
+      "resolution_status": "succeeded"
+    },
+    {
+      "artifact_availability": "available",
+      "assessment_status": "unverified",
+      "exit_code": 3,
+      "name": "unknown-uv-diagnostic-grammar",
+      "network": true,
+      "project_kind": "application",
+      "requirement": "demo==1.0",
+      "requires_python_status": "compatible",
+      "resolution_complete": false,
+      "resolution_status": "unverified"
+    }
+  ],
+  "schema_version": 1
+}
