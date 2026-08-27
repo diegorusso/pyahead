@@ -32,6 +32,14 @@ code, dependency, secret, filesystem, and network authority. This execution is
 not performed by `pyahead check` or by a hosted PyAhead scanner. Use the plugin
 only in a CI environment already trusted to run that test suite.
 
+Pytest, conftests, plugins, and tests share one process and the same authority.
+Repository-owner code can therefore alter or forge an artifact; the plugin is
+not an anti-tamper attestation against hostile in-process code. Its completeness
+claim covers the ordinary, configured, user-filtered pytest warning stream when
+the exact built-in warning plugin remains registered at the checked lifecycle
+boundaries. It does not claim resistance to transient removal and restoration by
+another in-process plugin.
+
 The plugin records deprecation-warning category and message, repository-relative
 location when available, pytest node ID, phase, occurrence count, concrete
 Python environment, pytest version, test count, exit code, collection

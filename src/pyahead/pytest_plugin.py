@@ -6,11 +6,13 @@ import os
 import platform
 import sys
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 import pytest
+from _pytest import warnings as _pytest_warnings
 
 from pyahead import __version__
 from pyahead.evidence import (
@@ -31,6 +33,14 @@ _MAX_TEXT_LENGTH = 4_096
 _MAX_COLLECTED_WARNING_RECORDS = 10_000
 _MAX_COLLECTED_WARNING_TEXT_BYTES = 8 * 1024 * 1024
 _PLUGIN_NAME = "pyahead-pytest-warning-collector"
+_CAPTURE_ERROR = (
+    "--pyahead-evidence requires pytest's warnings capture plugin; "
+    "remove -p no:warnings"
+)
+_XDIST_ERROR = (
+    "--pyahead-evidence does not support pytest-xdist execution; "
+    "run without xdist until evidence aggregation is supported"
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -44,6 +54,14 @@ class _CapturedWarning:
     path: PurePosixPath | None
     line: int
     test_node: str | None
+
+
+@dataclass(frozen=True)
+class _WarningLimits:
+    """Bounds applied before warning records reach serialization."""
+
+    records: int = _MAX_COLLECTED_WARNING_RECORDS
+    text_bytes: int = _MAX_COLLECTED_WARNING_TEXT_BYTES
 
 
 def _one_line(value: object, *, limit: int, empty: str) -> str:
@@ -109,6 +127,96 @@ def _output_path(value: str, root: Path) -> Path:
     return logical
 
 
+def _module_registered(
+    pluginmanager: pytest.PytestPluginManager,
+    module_name: str,
+) -> object | None:
+    """Return an exact loaded module only while that object is registered."""
+    module = sys.modules.get(module_name)
+    if module is None:
+        return None
+    if any(candidate is module for candidate in pluginmanager.get_plugins()):
+        return module
+    return None
+
+
+def _warnings_capture_active(config: pytest.Config) -> bool:
+    """Check exact built-in warning-plugin identity, not a registration name."""
+    return any(
+        candidate is _pytest_warnings
+        for candidate in config.pluginmanager.get_plugins()
+    )
+
+
+def _xdist_worker_active(config: pytest.Config, provider: object | None) -> bool:
+    """Recognize xdist's documented worker mapping only with its real provider."""
+    if provider is None:
+        return False
+    workerinput = getattr(config, "workerinput", None)
+    if not isinstance(workerinput, Mapping):
+        return False
+    worker_id = workerinput.get("workerid")
+    worker_count = workerinput.get("workercount")
+    return type(worker_id) is str and type(worker_count) is int and worker_count > 0
+
+
+def _nonzero_numprocesses(value: object) -> bool:
+    """Interpret xdist's integer and automatic worker-count forms."""
+    if type(value) is int:
+        return value > 0
+    return type(value) is str and value in {"auto", "logical"}
+
+
+def _xdist_execution_active(config: pytest.Config) -> bool:
+    """Detect active, exactly identified xdist execution without importing it."""
+    pluginmanager = config.pluginmanager
+    main_provider = _module_registered(pluginmanager, "xdist.plugin")
+    options = config.option
+
+    if _xdist_looponfail_active(config):
+        return True
+    if _xdist_worker_active(config, main_provider):
+        return True
+    if main_provider is None or bool(getattr(options, "collectonly", False)):
+        return False
+
+    if _nonzero_numprocesses(getattr(options, "numprocesses", None)):
+        return True
+    transports = getattr(options, "tx", ())
+    distribution = getattr(options, "dist", "no")
+    return bool(transports) and distribution != "no"
+
+
+def _xdist_looponfail_active(config: pytest.Config) -> bool:
+    """Return whether the exact loop-on-fail provider will replace the session."""
+    provider = _module_registered(config.pluginmanager, "xdist.looponfail")
+    return provider is not None and bool(getattr(config.option, "looponfail", False))
+
+
+def _rooted_output(config: pytest.Config, value: str) -> tuple[Path, Path]:
+    root = Path(str(config.rootpath)).resolve(strict=True)
+    return root, _output_path(value, root)
+
+
+def _write_tombstone(root: Path, output: Path) -> None:
+    """Atomically replace stale evidence with an empty incomplete marker."""
+    try:
+        write_text_atomic(output, "", root=root)
+    except (ConfigurationError, OutputError) as error:
+        message = f"pyahead could not invalidate warning evidence: {error}"
+        raise pytest.UsageError(message) from error
+
+
+def _selected_output(config: pytest.Config) -> tuple[Path, Path] | None:
+    output_value = config.getoption("pyahead_evidence")
+    if output_value is None:
+        return None
+    try:
+        return _rooted_output(config, str(output_value))
+    except (ConfigurationError, OSError, RuntimeError) as error:
+        raise pytest.UsageError(str(error)) from error
+
+
 class _WarningCollector:
     """Collect only deprecation warnings captured by pytest itself."""
 
@@ -118,18 +226,20 @@ class _WarningCollector:
         output: Path,
         source_commit: str,
         *,
-        warning_record_limit: int = _MAX_COLLECTED_WARNING_RECORDS,
-        warning_text_byte_limit: int = _MAX_COLLECTED_WARNING_TEXT_BYTES,
+        capture_proven: bool = True,
+        limits: _WarningLimits | None = None,
     ) -> None:
+        selected_limits = limits or _WarningLimits()
         self._root = root
         self._output = output
         self._source_commit = source_commit
+        self._capture_proven = capture_proven
         self._warnings: Counter[_CapturedWarning] = Counter()
         self._warning_record_limit = min(
-            warning_record_limit,
+            selected_limits.records,
             MAX_EVIDENCE_WARNINGS,
         )
-        self._warning_text_byte_limit = warning_text_byte_limit
+        self._warning_text_byte_limit = selected_limits.text_bytes
         self._retained_warning_text_bytes = 0
         self._warnings_dropped = 0
 
@@ -241,13 +351,27 @@ class _WarningCollector:
                 "framework": "pytest",
                 "framework_version": pytest.__version__,
                 "tests_collected": session.testscollected,
-                "warnings_complete": self._warnings_dropped == 0,
+                "warnings_complete": (
+                    self._capture_proven and self._warnings_dropped == 0
+                ),
                 "warnings_dropped": self._warnings_dropped,
             },
             "schema_version": 1,
             "source": {"commit": self._source_commit},
             "warnings": warning_documents,
         }
+
+    def _require_capture(self, config: pytest.Config) -> None:
+        if _warnings_capture_active(config):
+            return
+        self._capture_proven = False
+        _write_tombstone(self._root, self._output)
+        raise pytest.UsageError(_CAPTURE_ERROR)
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_sessionstart(self, session: pytest.Session) -> None:
+        """Fail closed if warning capture was removed after configuration."""
+        self._require_capture(session.config)
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_sessionfinish(
@@ -258,6 +382,7 @@ class _WarningCollector:
         """Write after pytest's warning and terminal wrappers have finalized."""
         del exitstatus
         yield
+        self._require_capture(session.config)
         try:
             rendered = render_evidence_document(
                 self._document(session, int(session.exitstatus))
@@ -285,8 +410,26 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_cmdline_main(config: pytest.Config) -> Generator[None, object, object]:
+    """Refuse loop-on-fail before xdist can replace the parent session."""
+    output_value = config.getoption("pyahead_evidence")
+    commit_value = config.getoption("pyahead_source_commit")
+    if output_value is None and commit_value is not None:
+        message = "--pyahead-source-commit requires --pyahead-evidence"
+        raise pytest.UsageError(message)
+    if output_value is not None and _xdist_looponfail_active(config):
+        prepared = _selected_output(config)
+        if prepared is not None:
+            _write_tombstone(*prepared)
+        raise pytest.UsageError(_XDIST_ERROR)
+    result = yield
+    return result
+
+
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Activate the collector only when an artifact destination is explicit."""
+    """Tombstone stale output, validate capture, and activate collection."""
     output_value = config.getoption("pyahead_evidence")
     commit_value = config.getoption("pyahead_source_commit")
     if output_value is None:
@@ -294,13 +437,32 @@ def pytest_configure(config: pytest.Config) -> None:
             message = "--pyahead-source-commit requires --pyahead-evidence"
             raise pytest.UsageError(message)
         return
+
+    prepared = _selected_output(config)
+    if prepared is None:  # pragma: no cover - guarded by output_value above.
+        return
+    root, output = prepared
+    _write_tombstone(root, output)
+
+    if _xdist_execution_active(config):
+        raise pytest.UsageError(_XDIST_ERROR)
+    if not _warnings_capture_active(config):
+        raise pytest.UsageError(_CAPTURE_ERROR)
     try:
-        root = Path(str(config.rootpath)).resolve(strict=True)
-        output = _output_path(str(output_value), root)
         source_commit = resolve_source_commit(commit_value)
-    except (ConfigurationError, OSError, RuntimeError) as error:
+    except ConfigurationError as error:
         raise pytest.UsageError(str(error)) from error
-    collector = _WarningCollector(root, output, source_commit)
+
+    collector = _WarningCollector(
+        root,
+        output,
+        source_commit,
+        capture_proven=True,
+        limits=_WarningLimits(
+            records=_MAX_COLLECTED_WARNING_RECORDS,
+            text_bytes=_MAX_COLLECTED_WARNING_TEXT_BYTES,
+        ),
+    )
     config.pluginmanager.register(collector, _PLUGIN_NAME)
 
 

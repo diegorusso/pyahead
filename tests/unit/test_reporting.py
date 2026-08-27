@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from pyahead.analysis import ScanRequest, scan
@@ -11,6 +11,9 @@ from pyahead.model import (
     AutomationTool,
     Diagnostic,
     DiagnosticCategory,
+    EvidenceArtifact,
+    EvidenceEnvironment,
+    EvidenceFreshness,
     Remediation,
 )
 from pyahead.reporting import render_json, render_text
@@ -116,3 +119,48 @@ def test_remediation_links_and_automation_are_inert_report_metadata(
         "documentation_url": "https://example.com/remediation",
         "summary": "Use the supported replacement.",
     }
+
+
+def test_text_report_distinguishes_unproven_capture_from_dropped_warnings(
+    tmp_path: Path,
+) -> None:
+    """Zero known drops do not falsely explain why capture is incomplete."""
+    (tmp_path / "clean.py").write_text("VALUE = 1\n", encoding="utf-8")
+    report = scan(
+        ScanRequest(
+            root=tmp_path,
+            baseline_python="3.11",
+            horizon_python="3.13",
+        )
+    )
+    source_commit = "a" * 40
+    artifact = EvidenceArtifact(
+        artifact_id="b" * 64,
+        path=PurePosixPath("warnings.json"),
+        provider="pytest-warnings",
+        provider_version="0.1.0a2",
+        source_commit=source_commit,
+        freshness=EvidenceFreshness.CURRENT,
+        environment=EvidenceEnvironment(
+            implementation="cpython",
+            python_version="3.11.9",
+            platform="linux",
+        ),
+        framework="pytest",
+        framework_version="9.1.1",
+        tests_collected=1,
+        exit_code=0,
+        warning_count=0,
+        warnings_complete=False,
+        warnings_dropped=0,
+    )
+    rendered = render_text(
+        replace(
+            report,
+            source_commit=source_commit,
+            evidence_artifacts=(artifact,),
+        )
+    )
+
+    assert "warnings incomplete; capture completeness unproven" in rendered
+    assert "0 occurrences omitted" not in rendered

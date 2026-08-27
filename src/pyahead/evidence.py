@@ -465,10 +465,10 @@ def parse_evidence_document(value: object) -> EvidenceDocument:
         run["warnings_dropped"],
         "evidence run.warnings_dropped",
     )
-    if warnings_complete != (warnings_dropped == 0):
+    if warnings_complete and warnings_dropped != 0:
         _raise_error(
             "evidence run",
-            "warnings_complete must be true exactly when warnings_dropped is zero",
+            "warnings_complete may be true only when warnings_dropped is zero",
         )
 
     return EvidenceDocument(
@@ -611,7 +611,6 @@ def evidence_json_schema() -> dict[str, JsonValue]:
                     {
                         "properties": {
                             "warnings_complete": {"const": False},
-                            "warnings_dropped": {"minimum": 1},
                         }
                     },
                 ],

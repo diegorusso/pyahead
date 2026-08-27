@@ -68,9 +68,6 @@
           "properties": {
             "warnings_complete": {
               "const": false
-            },
-            "warnings_dropped": {
-              "minimum": 1
             }
           }
         }

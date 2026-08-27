@@ -87,11 +87,14 @@ def _artifact_line(artifact: EvidenceArtifact, *, source_commit: str) -> str:
         if artifact.freshness.value == "stale"
         else "current commit"
     )
-    completeness = (
-        "warnings complete"
-        if artifact.warnings_complete
-        else f"warnings incomplete; {artifact.warnings_dropped} occurrences omitted"
-    )
+    if artifact.warnings_complete:
+        completeness = "warnings complete"
+    elif artifact.warnings_dropped:
+        completeness = (
+            f"warnings incomplete; {artifact.warnings_dropped} occurrences omitted"
+        )
+    else:
+        completeness = "warnings incomplete; capture completeness unproven"
     return (
         f"  {_artifact_text(artifact.path.as_posix())}: "
         f"{_artifact_text(artifact.provider)} "

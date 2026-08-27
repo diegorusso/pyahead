@@ -2303,7 +2303,9 @@ Deliverables:
 - active pytest-xdist controller or worker execution is refused until a
   deliberate aggregation protocol exists; and
 - `warnings_complete` is derived from proven capture and retention state, not
-  merely from a zero dropped-record count.
+  merely from a zero dropped-record count. Pytest, conftests, plugins, and tests
+  share one trusted process; the evidence artifact is not an anti-tamper
+  attestation against repository-owner code running in that process.
 
 Acceptance:
 

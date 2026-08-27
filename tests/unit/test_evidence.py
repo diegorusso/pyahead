@@ -152,24 +152,31 @@ def test_optional_warning_fields_reject_null_but_accept_omission(
     assert getattr(parsed.warnings[0], field) is None
 
 
-@pytest.mark.parametrize(
-    "run_values",
-    [(True, 1), (False, 0)],
-)
-def test_schema_and_runtime_enforce_warning_completeness_parity(
-    run_values: tuple[bool, int],
-) -> None:
-    """Both contracts reject each inconsistent completeness combination."""
-    warnings_complete, warnings_dropped = run_values
+def test_schema_and_runtime_reject_complete_evidence_with_dropped_warnings() -> None:
+    """Both contracts reject completeness when retained records were dropped."""
     document = _document()
     run = cast("dict[str, object]", document["run"])
-    run["warnings_complete"] = warnings_complete
-    run["warnings_dropped"] = warnings_dropped
+    run["warnings_complete"] = True
+    run["warnings_dropped"] = 1
 
     with pytest.raises(ValidationError):
         Draft202012Validator(evidence_json_schema()).validate(document)
-    with pytest.raises(ConfigurationError, match="warnings_complete must be true"):
+    with pytest.raises(ConfigurationError, match="warnings_complete may be true"):
         parse_evidence_document(document)
+
+
+def test_schema_and_runtime_allow_unproven_capture_without_dropped_records() -> None:
+    """False completeness can describe capture that was never proven complete."""
+    document = _document()
+    run = cast("dict[str, object]", document["run"])
+    run["warnings_complete"] = False
+    run["warnings_dropped"] = 0
+
+    Draft202012Validator(evidence_json_schema()).validate(document)
+    parsed = parse_evidence_document(document)
+
+    assert parsed.warnings_complete is False
+    assert parsed.warnings_dropped == 0
 
 
 @pytest.mark.parametrize(

@@ -247,6 +247,21 @@ capped at 16 MiB. If the deterministic warning list cannot fit, the serializer
 measures it incrementally, retains the largest fitting prefix, and records
 `warnings_complete: false` plus the omitted occurrence count in
 `warnings_dropped`; ingestion applies the same byte cap.
+The evidence contract also permits `warnings_complete: false` with zero dropped
+records when a provider cannot prove that warning capture itself was complete.
+PyAhead's pytest plugin fails with a usage error instead of writing an artifact
+when pytest warning capture is unavailable or when pytest-xdist is active; xdist
+aggregation is not yet supported. `--disable-warnings` only hides pytest's
+terminal summary and remains compatible with evidence capture.
+User-configured warning filters remain user policy: completeness describes the
+filtered warning stream that pytest was configured to capture.
+During `pytest_configure`, the plugin atomically empties the single effective,
+root-bounded output before it validates capture and xdist policy. Loop-on-fail
+bypasses pytest's ordinary configure path, so its refusal performs the same
+rooted tombstone immediately before the loop controller can start. Ordinary
+successful and test-failing sessions replace that tombstone with a schema-valid
+artifact at session finish. Failures before either boundary do not run PyAhead's
+rooted invalidation step and cannot create a new artifact.
 One scan accepts at most 64 evidence paths, 64 MiB combined, and 100,000
 warning records across all selected artifacts. Relationship evaluation is
 indexed by repository path and source interval, with explicit aggregate caps
