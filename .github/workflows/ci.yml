@@ -190,11 +190,25 @@ jobs:
           enable-cache: true
           version: "0.11.21" # Reviewed M8 dependency-resolver grammar.
 
+      - name: Create empty installer cache
+        env:
+          PYAHEAD_INSTALLER_CACHE: ${{ runner.temp }}/pyahead-install-cache
+        run: python -c "import os,pathlib; pathlib.Path(os.environ['PYAHEAD_INSTALLER_CACHE']).mkdir()"
+
+      - name: Sync locked smoke runner
+        run: uv sync --frozen --cache-dir "${{ runner.temp }}/pyahead-install-cache"
+
       - name: Build distributions
-        run: uv build
+        run: uv build --offline --cache-dir "${{ runner.temp }}/pyahead-install-cache"
 
-      - name: Install and scan from wheel
-        run: uv run python scripts/install_smoke.py --dist-dir dist --kind wheel
+      - name: Install and scan online from wheel; prepare installer cache
+        run: uv run --frozen --offline --cache-dir "${{ runner.temp }}/pyahead-install-cache" python scripts/install_smoke.py --dist-dir dist --kind wheel --installer-cache "${{ runner.temp }}/pyahead-install-cache"
 
-      - name: Install and scan from sdist
-        run: uv run python scripts/install_smoke.py --dist-dir dist --kind sdist
+      - name: Install and scan online from sdist; prepare installer cache
+        run: uv run --frozen --offline --cache-dir "${{ runner.temp }}/pyahead-install-cache" python scripts/install_smoke.py --dist-dir dist --kind sdist --installer-cache "${{ runner.temp }}/pyahead-install-cache"
+
+      - name: Install and scan offline from wheel
+        run: uv run --frozen --offline --cache-dir "${{ runner.temp }}/pyahead-install-cache" python scripts/install_smoke.py --dist-dir dist --kind wheel --offline --installer-cache "${{ runner.temp }}/pyahead-install-cache"
+
+      - name: Install and scan offline from sdist
+        run: uv run --frozen --offline --cache-dir "${{ runner.temp }}/pyahead-install-cache" python scripts/install_smoke.py --dist-dir dist --kind sdist --offline --installer-cache "${{ runner.temp }}/pyahead-install-cache"

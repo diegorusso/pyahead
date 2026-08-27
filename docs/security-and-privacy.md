@@ -207,13 +207,37 @@ network use is enabled. The index option is not an egress allowlist. Direct
 metadata inspection and offline dependency resolution do not access an index or
 follow metadata direct URLs.
 
-`scripts/install_smoke.py --offline` sets supported installer offline controls,
-inherits only the caller's already locked runtime dependencies, installs the
-candidate itself with dependency resolution disabled, and fails if its isolated
-build requirements are absent from local caches. Normal hosted smoke jobs use a
-clean environment and resolve every dependency. The corpus runner never clones,
-fetches, or updates repositories; acquisition is a separate, visible operator
-step.
+`scripts/install_smoke.py` gives every child process a new run-local home,
+profile, configuration, data, and temporary directory. It inherits only
+`PATH`, locale variables, and the Windows variables required to start native
+processes. Ambient pip/uv indexes, extra indexes, configuration, caches, Python
+environments, certificate overrides, proxies, credential helpers, and secrets
+are not inherited. A normal online installation disables config, caches,
+keyrings, and Python downloads in both the environment and installer arguments.
+When `--installer-cache` is supplied online, that explicit operator-authorized
+directory is the only cache and is read and populated for a later offline
+replay. Both online modes bind resolution explicitly to
+`https://pypi.org/simple`; this source selection is not an attestation of the
+provenance of arbitrary pre-existing cache contents. No ambient proxy policy is
+supported.
+
+`scripts/install_smoke.py --offline` requires `--installer-cache` naming an
+explicit, operator-authorized uv cache. The child uv process receives that cache
+path on its command line, runs with `--offline`, uses the public PyPI cache
+namespace, and performs ordinary isolated build and dependency installation. It
+does not expose the parent interpreter's packages or consult an ambient cache;
+offline mode is refused when uv or the explicit cache is absent. This boundary
+proves the selected source and absence of network access, not the provenance of
+arbitrary pre-existing cache contents. The CI and release procedures therefore
+create a fresh empty cache, sync the locked smoke runner, populate installer
+data through online public-PyPI wheel and sdist smokes, and then repeat both
+smokes offline.
+The candidate's import must resolve inside the temporary installation. Wheel
+and sdist jobs exercise both modes on every supported hosted operating system.
+Retained installer failures redact URL user-info, authorization values, common
+token forms, named secret values, and undecodable bytes before bounding
+diagnostic text. The corpus runner never clones, fetches, or updates
+repositories; acquisition is a separate, visible operator step.
 
 ## Reports and private repositories
 

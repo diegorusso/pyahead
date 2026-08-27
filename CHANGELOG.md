@@ -62,6 +62,11 @@ stabilizing.
   no longer produce high-confidence post-removal blockers.
 - Corpus scan and read-only Git verification subprocesses have separate,
   configurable finite timeouts.
+- Release install smoke tests now use one explicit run-local child environment,
+  resolve online only from public PyPI, and exercise wheel and sdist installation
+  from an explicit operator-selected uv cache on every supported hosted
+  operating system. CI creates a fresh cache, populates it through the online
+  public-PyPI smokes, and then reuses it for offline evidence.
 
 ### Security
 
@@ -71,6 +76,9 @@ stabilizing.
   non-reparse directory handles and fails closed if those APIs are unavailable.
 - Corpus review worksheets carry and verify the exact result digest so a
   partially published pair cannot be mistaken for matching Gate C evidence.
+- Release smoke children no longer inherit ambient installer configuration,
+  caches, proxies, Python environments, or credentials, and retained failure
+  diagnostics redact common credential forms before truncation.
 
 Release headings, dates, and comparison links are added only after their
 immutable tags exist.

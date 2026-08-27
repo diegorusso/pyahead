@@ -6,19 +6,65 @@ import argparse
 import ast
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-import sysconfig
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _MAX_ERROR_DETAIL = 2_000
+_MAX_CREDENTIAL_LITERAL_PREFIX = 2
+_PUBLIC_INDEX = "https://pypi.org/simple"
+_REDACTED = "[REDACTED]"
+_INHERITED_ENVIRONMENT = (
+    "COMSPEC",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "WINDIR",
+)
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*:(?:\\*/){2})([^/\\\s?#]+)@")
+_CREDENTIAL_NAME = re.compile(
+    r"(?<![a-z0-9_-])"
+    r"(?P<name>authorization|proxy-authorization|"
+    r"[a-z0-9_-]*(?:password|passwd|token|"
+    r"secret(?:[_-]?(?:access[_-]?key|key))?|auth|"
+    r"access[_-]?key|api[_-]?key|client[_-]?secret|credential))"
+    r"(?![a-z0-9_-])",
+    flags=re.IGNORECASE,
+)
+_SECRET_QUERY = re.compile(
+    r"(?i)([?&](?:access_token|api[_-]?key|apikey|auth|credential|key|password|"
+    r"secret|token)=)[^&#\s\"'\\]*"
+)
+_TOKEN = re.compile(
+    r"\b(?:github_pat_[A-Za-z0-9_]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|"
+    r"pypi-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16})\b"
+)
 
 
 class InstallSmokeError(RuntimeError):
     """Raised when an installed distribution does not satisfy the smoke contract."""
+
+
+class _SanitizedInstallSmokeError(InstallSmokeError):
+    """Raised only for child-process details sanitized by ``_run``."""
+
+
+@dataclass(frozen=True)
+class _InstallerPolicy:
+    offline: bool
+    cache: Path | None
 
 
 def _project_version(repository: Path) -> str:
@@ -66,15 +112,267 @@ def _venv_launcher(environment: Path) -> Path:
     return environment / "bin" / "pyahead"
 
 
-def _clean_environment(*, offline: bool) -> dict[str, str]:
-    environment = os.environ.copy()
-    for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
-        environment.pop(name, None)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    if offline:
+def _clean_environment(
+    *,
+    root: Path,
+    policy: _InstallerPolicy,
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Create the complete, isolated environment used by every smoke child."""
+    ambient = os.environ if source is None else source
+    environment = {
+        name: ambient[name] for name in _INHERITED_ENVIRONMENT if ambient.get(name)
+    }
+    directories = {
+        "APPDATA": root / "appdata",
+        "HOME": root / "home",
+        "LOCALAPPDATA": root / "local-appdata",
+        "TEMP": root / "tmp",
+        "TMP": root / "tmp",
+        "TMPDIR": root / "tmp",
+        "USERPROFILE": root / "home",
+        "XDG_CACHE_HOME": root / "cache",
+        "XDG_CONFIG_HOME": root / "config",
+        "XDG_DATA_HOME": root / "data",
+    }
+    for directory in set(directories.values()):
+        directory.mkdir(parents=True, exist_ok=True)
+    environment.update({name: str(path) for name, path in directories.items()})
+    environment.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_KEYRING_PROVIDER": "disabled",
+            "PIP_NO_CACHE_DIR": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONUTF8": "1",
+            "UV_KEYRING_PROVIDER": "disabled",
+            "UV_NO_CONFIG": "1",
+            "UV_NO_PROGRESS": "1",
+            "UV_PYTHON_DOWNLOADS": "never",
+        }
+    )
+    if policy.offline:
         environment["UV_OFFLINE"] = "1"
         environment["PIP_NO_INDEX"] = "1"
+    if policy.cache is None:
+        environment["UV_NO_CACHE"] = "1"
     return environment
+
+
+def _redact_credentials(text: str) -> str:
+    """Remove common credential forms before retaining diagnostic text."""
+    redacted = _URL_USERINFO.sub(rf"\1{_REDACTED}@", text)
+    redacted = _SECRET_QUERY.sub(rf"\1{_REDACTED}", redacted)
+    redacted = _redact_named_credentials(redacted)
+    return _TOKEN.sub(_REDACTED, redacted)
+
+
+def _redact_named_credentials(text: str) -> str:
+    """Redact assignment and mapping values without parsing untrusted syntax."""
+    parts: list[str] = []
+    cursor = 0
+    while match := _CREDENTIAL_NAME.search(text, cursor):
+        assignment = _credential_assignment(text, match.start(), match.end())
+        if assignment is None:
+            parts.append(text[cursor : match.end()])
+            cursor = match.end()
+            continue
+        key_start, separator, value_start = assignment
+        redacted_end = _existing_query_redaction_end(
+            text,
+            key_start=key_start,
+            separator=separator,
+            value_start=value_start,
+        )
+        if redacted_end is not None:
+            parts.append(text[cursor:redacted_end])
+            cursor = redacted_end
+            continue
+        parts.append(text[cursor:key_start])
+        name = match.group("name")
+        parts.append(f"{name}{separator}{_REDACTED}")
+        untrusted_marker = text.startswith(_REDACTED, value_start)
+        cursor = _credential_value_end(
+            text,
+            value_start + len(_REDACTED) if untrusted_marker else value_start,
+            include_whitespace=(
+                name.casefold().endswith(("auth", "authorization")) or untrusted_marker
+            ),
+        )
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def _existing_query_redaction_end(
+    text: str,
+    *,
+    key_start: int,
+    separator: str,
+    value_start: int,
+) -> int | None:
+    """Keep a complete marker only in a demonstrable URL-query assignment."""
+    if separator != "=" or key_start == 0 or text[key_start - 1] not in "?&":
+        return None
+    marker_end = value_start + len(_REDACTED)
+    if text[value_start:marker_end] != _REDACTED:
+        return None
+    if marker_end == len(text) or text[marker_end] in " \t,;}]&#\\\"'\r\n":
+        return marker_end
+    return None
+
+
+def _credential_assignment(
+    text: str,
+    name_start: int,
+    name_end: int,
+) -> tuple[int, str, int] | None:
+    """Locate a credential key's syntax without scanning at every backslash."""
+    key_start = name_start
+    after_key = name_end
+    closing_slashes = 0
+    while after_key < len(text) and text[after_key] == "\\":
+        closing_slashes += 1
+        after_key += 1
+    if after_key < len(text) and text[after_key] in "\"'":
+        quoted_key_start = _quoted_credential_key_start(
+            text,
+            name_start=name_start,
+            quote=text[after_key],
+            closing_slashes=closing_slashes,
+        )
+        if quoted_key_start is None:
+            return None
+        key_start = quoted_key_start
+        after_key += 1
+
+    while after_key < len(text) and text[after_key].isspace():
+        after_key += 1
+    if after_key >= len(text) or text[after_key] not in "=:,":
+        return None
+    separator = text[after_key]
+    value_start = after_key + 1
+    while value_start < len(text) and text[value_start].isspace():
+        value_start += 1
+    return key_start, separator, value_start
+
+
+def _quoted_credential_key_start(
+    text: str,
+    *,
+    name_start: int,
+    quote: str,
+    closing_slashes: int,
+) -> int | None:
+    """Validate a quoted key and return the start of its optional prefix."""
+    open_quote = name_start - 1
+    if open_quote < 0 or text[open_quote] != quote:
+        return None
+    opening_start = open_quote
+    while opening_start > 0 and text[opening_start - 1] == "\\":
+        opening_start -= 1
+    if open_quote - opening_start != closing_slashes:
+        return None
+    prefix_start = opening_start
+    while (
+        prefix_start > 0
+        and opening_start - prefix_start < _MAX_CREDENTIAL_LITERAL_PREFIX
+        and text[prefix_start - 1] in "bBrRuU"
+    ):
+        prefix_start -= 1
+    if prefix_start > 0 and _is_credential_name_character(text[prefix_start - 1]):
+        return None
+    return prefix_start
+
+
+def _is_credential_name_character(character: str) -> bool:
+    """Return whether a character can be part of a recognized credential key."""
+    return character.isascii() and (character.isalnum() or character in "_-")
+
+
+def _credential_value_end(text: str, start: int, *, include_whitespace: bool) -> int:
+    """Return the end of one credential value, including diagnostic wrappers."""
+    cursor = start
+    prefix_end = cursor
+    while (
+        prefix_end < len(text)
+        and prefix_end - cursor < _MAX_CREDENTIAL_LITERAL_PREFIX
+        and text[prefix_end] in "bBrRuU"
+    ):
+        prefix_end += 1
+
+    wrapper_start = prefix_end
+    while wrapper_start < len(text) and text[wrapper_start] == "\\":
+        wrapper_start += 1
+    if wrapper_start < len(text) and text[wrapper_start] in "\"'":
+        quoted_end = _quoted_credential_end(
+            text,
+            content_start=wrapper_start + 1,
+            quote=text[wrapper_start],
+            wrapper_backslashes=wrapper_start - prefix_end,
+        )
+        if quoted_end is not None:
+            return quoted_end
+        cursor = start
+        while cursor < len(text) and text[cursor] not in "\r\n":
+            cursor += 1
+        return cursor
+
+    boundaries = ",;}]\r\n" if include_whitespace else " \t,;}]\r\n"
+    cursor = start
+    while cursor < len(text) and text[cursor] not in boundaries:
+        cursor += 1
+    return cursor
+
+
+def _quoted_credential_end(
+    text: str,
+    *,
+    content_start: int,
+    quote: str,
+    wrapper_backslashes: int,
+) -> int | None:
+    """Find a matching diagnostic quote while skipping encoded inner quotes.
+
+    Each diagnostic-serialization layer doubles content backslashes and adds one
+    before a delimiter.  A closing delimiter therefore has ``wrapper_backslashes``
+    plus an even number of encoded content-backslash groups before its quote.
+    """
+    cursor = content_start
+    encoded_group = wrapper_backslashes + 1
+    closing_period = 2 * encoded_group
+    while cursor < len(text):
+        if text[cursor] == "\\":
+            run_start = cursor
+            while cursor < len(text) and text[cursor] == "\\":
+                cursor += 1
+            if cursor < len(text) and text[cursor] == quote:
+                run_length = cursor - run_start
+                if (
+                    run_length >= wrapper_backslashes
+                    and (run_length - wrapper_backslashes) % closing_period == 0
+                ):
+                    return cursor + 1
+                cursor += 1
+            continue
+        if text[cursor] == quote and wrapper_backslashes == 0:
+            return cursor + 1
+        cursor += 1
+    return None
+
+
+def _error_detail(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    text = (
+        value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+    )
+    detail = _redact_credentials(text).strip()
+    if len(detail) > _MAX_ERROR_DETAIL:
+        return f"{detail[:_MAX_ERROR_DETAIL]}..."
+    return detail
 
 
 def _run(
@@ -84,24 +382,65 @@ def _run(
     environment: dict[str, str],
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(  # noqa: S603 - argv is constructed without a shell.
-        command,
-        cwd=cwd,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        if len(detail) > _MAX_ERROR_DETAIL:
-            detail = f"{detail[:_MAX_ERROR_DETAIL]}..."
-        message = f"{Path(command[0]).name} failed with exit code {result.returncode}"
+    executable = Path(command[0]).name
+    failure_message: str | None = None
+    try:
+        result = subprocess.run(  # noqa: S603 - argv is constructed without a shell.
+            command,
+            cwd=cwd,
+            env=environment,
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        detail = _error_detail(error.stderr or error.stdout)
+        message = f"{executable} timed out after {timeout:g} seconds"
         if detail:
             message = f"{message}: {detail}"
-        raise InstallSmokeError(message)
+        failure_message = message
+    except OSError as error:
+        detail = _error_detail(str(error))
+        message = f"unable to run {executable}"
+        if detail:
+            message = f"{message}: {detail}"
+        failure_message = message
+    if failure_message is not None:
+        raise _SanitizedInstallSmokeError(failure_message)
+    if result.returncode != 0:
+        returncode = result.returncode
+        detail = _error_detail(result.stderr or result.stdout)
+        del result
+        message = f"{executable} failed with exit code {returncode}"
+        if detail:
+            message = f"{message}: {detail}"
+        raise _SanitizedInstallSmokeError(message)
     return result
+
+
+def _uv_prefix(
+    uv: str,
+    *,
+    policy: _InstallerPolicy,
+) -> list[str]:
+    command = [
+        uv,
+        "--no-config",
+        "--no-progress",
+        "--no-python-downloads",
+        "--color",
+        "never",
+    ]
+    if policy.cache is None:
+        command.append("--no-cache")
+    else:
+        command.extend(("--cache-dir", str(policy.cache)))
+    if policy.offline:
+        command.append("--offline")
+    return command
 
 
 def _install(
@@ -110,30 +449,44 @@ def _install(
     *,
     environment: dict[str, str],
     timeout: float,
-    offline: bool,
+    policy: _InstallerPolicy,
 ) -> None:
     cwd = environment_dir.parent
-    uv = shutil.which("uv")
+    uv = shutil.which("uv", path=environment.get("PATH", ""))
     if uv is not None:
-        venv_command = [uv, "venv", "--python", sys.executable]
-        venv_command.append(str(environment_dir))
+        uv = str(Path(uv).resolve())
+        venv_command = [
+            *_uv_prefix(
+                uv,
+                policy=policy,
+            ),
+            "venv",
+            "--no-project",
+            "--python",
+            sys.executable,
+            str(environment_dir),
+        ]
         _run(
             venv_command,
             cwd=cwd,
             environment=environment,
             timeout=timeout,
         )
-        if offline:
-            _inherit_locked_dependencies(environment_dir)
         command = [
-            uv,
+            *_uv_prefix(
+                uv,
+                policy=policy,
+            ),
             "pip",
             "install",
             "--python",
             str(_venv_python(environment_dir)),
+            "--keyring-provider",
+            "disabled",
+            "--no-sources",
+            "--default-index",
+            _PUBLIC_INDEX,
         ]
-        if offline:
-            command.extend(("--offline", "--no-deps"))
         command.append(str(artifact))
         _run(
             command,
@@ -143,19 +496,31 @@ def _install(
         )
         return
 
-    venv_command = [sys.executable, "-m", "venv"]
-    venv_command.append(str(environment_dir))
+    if policy.cache is not None:
+        message = "installer cache requires uv"
+        raise InstallSmokeError(message)
+    venv_command = [sys.executable, "-I", "-m", "venv", str(environment_dir)]
     _run(
         venv_command,
         cwd=cwd,
         environment=environment,
         timeout=timeout,
     )
-    if offline:
-        _inherit_locked_dependencies(environment_dir)
-    command = [str(_venv_python(environment_dir)), "-m", "pip", "install"]
-    if offline:
-        command.extend(("--no-index", "--no-deps"))
+    command = [
+        str(_venv_python(environment_dir)),
+        "-I",
+        "-m",
+        "pip",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--keyring-provider",
+        "disabled",
+        "--no-color",
+        "install",
+        "--no-cache-dir",
+    ]
+    command.extend(("--index-url", _PUBLIC_INDEX))
     command.append(str(artifact))
     _run(
         command,
@@ -165,52 +530,26 @@ def _install(
     )
 
 
-def _inherit_locked_dependencies(environment_dir: Path) -> None:
-    """Expose the caller's locked site packages without reusing its PyAhead."""
-    parent_site = Path(sysconfig.get_path("purelib")).resolve()
-    python = _venv_python(environment_dir)
-    result = subprocess.run(  # noqa: S603 - fixed child interpreter argv.
-        [
-            str(python),
-            "-c",
-            "import sysconfig; print(sysconfig.get_path('purelib'))",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        message = "unable to locate isolated site packages"
-        raise InstallSmokeError(message)
-    child_site = Path(result.stdout.strip())
-    child_site.mkdir(parents=True, exist_ok=True)
-    (child_site / "pyahead-smoke-locked-dependencies.pth").write_text(
-        f"{parent_site}\n",
-        encoding="utf-8",
-    )
-
-
-def _validate_installed_origin(environment_dir: Path, *, timeout: float) -> None:
-    result = subprocess.run(  # noqa: S603 - fixed child interpreter argv.
+def _validate_installed_origin(
+    environment_dir: Path,
+    *,
+    environment: dict[str, str],
+    timeout: float,
+) -> None:
+    result = _run(
         [
             str(_venv_python(environment_dir)),
+            "-I",
             "-c",
             "import pathlib,pyahead; print(pathlib.Path(pyahead.__file__).resolve())",
         ],
-        check=False,
-        capture_output=True,
-        text=True,
+        cwd=environment_dir.parent,
+        environment=environment,
         timeout=timeout,
     )
-    if result.returncode != 0:
-        message = "unable to import the installed candidate"
-        raise InstallSmokeError(message)
-    try:
-        Path(result.stdout.strip()).relative_to(environment_dir.resolve())
-    except ValueError as error:
+    if not Path(result.stdout.strip()).is_relative_to(environment_dir.resolve()):
         message = "smoke environment imported PyAhead outside the candidate install"
-        raise InstallSmokeError(message) from error
+        raise InstallSmokeError(message)
 
 
 def _write_sample_project(project: Path) -> None:
@@ -256,16 +595,30 @@ def _validate_scan(document: object) -> None:
         raise InstallSmokeError(message)
 
 
+def _decode_scan(stdout: str) -> object:
+    """Decode child JSON without retaining attacker-controlled decoder context."""
+    invalid_json = False
+    try:
+        document: object = json.loads(stdout)
+    except json.JSONDecodeError:
+        invalid_json = True
+        document = None
+    if invalid_json:
+        message = "installed sample scan returned invalid JSON"
+        raise InstallSmokeError(message)
+    return document
+
+
 def _smoke(
     artifact: Path,
     *,
     version: str,
     timeout: float,
-    offline: bool,
+    policy: _InstallerPolicy,
 ) -> None:
-    environment = _clean_environment(offline=offline)
     with tempfile.TemporaryDirectory(prefix="pyahead-install-smoke-") as temporary:
         root = Path(temporary)
+        environment = _clean_environment(root=root, policy=policy)
         environment_dir = root / "environment"
         project = root / "project"
         _install(
@@ -273,9 +626,13 @@ def _smoke(
             environment_dir,
             environment=environment,
             timeout=timeout,
-            offline=offline,
+            policy=policy,
         )
-        _validate_installed_origin(environment_dir, timeout=timeout)
+        _validate_installed_origin(
+            environment_dir,
+            environment=environment,
+            timeout=timeout,
+        )
         launcher = _venv_launcher(environment_dir)
         if not launcher.is_file():
             message = "installed distribution did not create the pyahead launcher"
@@ -323,12 +680,7 @@ def _smoke(
             environment=environment,
             timeout=timeout,
         )
-        try:
-            document: Any = json.loads(scan_result.stdout)
-        except json.JSONDecodeError as error:
-            message = "installed sample scan returned invalid JSON"
-            raise InstallSmokeError(message) from error
-        _validate_scan(document)
+        _validate_scan(_decode_scan(scan_result.stdout))
 
 
 def _positive_timeout(value: str) -> float:
@@ -351,11 +703,39 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--kind", choices=("wheel", "sdist"), required=True)
     parser.add_argument("--timeout", type=_positive_timeout, default=300.0)
     parser.add_argument(
+        "--installer-cache",
+        type=Path,
+        help=(
+            "operator-authorized uv cache; optional for online preparation and "
+            "required with --offline"
+        ),
+    )
+    parser.add_argument(
         "--offline",
         action="store_true",
-        help="forbid dependency downloads and use only installer caches",
+        help=(
+            "forbid network and configuration; install only from the local "
+            "candidate and --installer-cache"
+        ),
     )
     return parser
+
+
+def _validated_installer_policy(
+    value: Path | None,
+    *,
+    offline: bool,
+) -> _InstallerPolicy:
+    if value is not None:
+        installer_cache = value.resolve()
+        if not installer_cache.is_dir():
+            message = "--installer-cache must name an existing directory"
+            raise InstallSmokeError(message)
+        return _InstallerPolicy(offline=offline, cache=installer_cache)
+    if offline:
+        message = "--offline requires --installer-cache"
+        raise InstallSmokeError(message)
+    return _InstallerPolicy(offline=False, cache=None)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -369,14 +749,21 @@ def main(argv: list[str] | None = None) -> int:
             arguments.kind,
             version,
         )
+        policy = _validated_installer_policy(
+            arguments.installer_cache,
+            offline=arguments.offline,
+        )
         _smoke(
             artifact,
             version=version,
             timeout=arguments.timeout,
-            offline=arguments.offline,
+            policy=policy,
         )
-    except (InstallSmokeError, OSError, subprocess.SubprocessError) as error:
+    except _SanitizedInstallSmokeError as error:
         sys.stderr.write(f"install smoke failed: {error}\n")
+        return 1
+    except (InstallSmokeError, OSError, subprocess.SubprocessError) as error:
+        sys.stderr.write(f"install smoke failed: {_error_detail(str(error))}\n")
         return 1
     sys.stdout.write(f"{arguments.kind} install smoke passed for pyahead {version}\n")
     return 0

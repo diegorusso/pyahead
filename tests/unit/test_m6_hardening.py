@@ -141,7 +141,11 @@ def test_install_smoke_accepts_a_resolved_environment_alias(
         lambda *_args, **_kwargs: result,
     )
 
-    install_smoke._validate_installed_origin(alias, timeout=1.0)
+    install_smoke._validate_installed_origin(
+        alias,
+        environment={"PATH": ""},
+        timeout=1.0,
+    )
 
 
 def test_performance_targets_and_regression_ceilings_are_versioned() -> None:
@@ -431,6 +435,50 @@ def test_ci_declares_exact_host_and_artifact_job_matrix() -> None:
         (host, python)
         for host in ("ubuntu-latest", "macos-latest", "windows-latest")
         for python in ("3.11", "3.14")
+    }
+    install_steps = cast("list[dict[str, object]]", jobs["install"]["steps"])
+    install_commands = [
+        cast("str", step["run"]) for step in install_steps if "run" in step
+    ]
+    assert install_commands == [
+        (
+            'python -c "import os,pathlib; pathlib.Path(os.environ'
+            "['PYAHEAD_INSTALLER_CACHE']).mkdir()\""
+        ),
+        ('uv sync --frozen --cache-dir "${{ runner.temp }}/pyahead-install-cache"'),
+        ('uv build --offline --cache-dir "${{ runner.temp }}/pyahead-install-cache"'),
+        (
+            'uv run --frozen --offline --cache-dir "${{ runner.temp }}/'
+            'pyahead-install-cache" python scripts/install_smoke.py --dist-dir '
+            "dist --kind wheel --installer-cache "
+            '"${{ runner.temp }}/pyahead-install-cache"'
+        ),
+        (
+            'uv run --frozen --offline --cache-dir "${{ runner.temp }}/'
+            'pyahead-install-cache" python scripts/install_smoke.py --dist-dir '
+            "dist --kind sdist --installer-cache "
+            '"${{ runner.temp }}/pyahead-install-cache"'
+        ),
+        (
+            'uv run --frozen --offline --cache-dir "${{ runner.temp }}/'
+            'pyahead-install-cache" python scripts/install_smoke.py --dist-dir '
+            "dist --kind wheel --offline --installer-cache "
+            '"${{ runner.temp }}/pyahead-install-cache"'
+        ),
+        (
+            'uv run --frozen --offline --cache-dir "${{ runner.temp }}/'
+            'pyahead-install-cache" python scripts/install_smoke.py --dist-dir '
+            "dist --kind sdist --offline --installer-cache "
+            '"${{ runner.temp }}/pyahead-install-cache"'
+        ),
+    ]
+    cache_step = next(
+        step
+        for step in install_steps
+        if step.get("name") == "Create empty installer cache"
+    )
+    assert cache_step["env"] == {
+        "PYAHEAD_INSTALLER_CACHE": "${{ runner.temp }}/pyahead-install-cache"
     }
 
 

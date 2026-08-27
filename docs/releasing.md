@@ -19,19 +19,26 @@ maintainer checks before the first publication.
 
 ## 2. Verify locally
 
-Use the locked environment and a clean distribution directory:
+Use the locked environment, a clean distribution directory, and a newly created
+installer cache. The commands below use a POSIX shell. In PowerShell, create a
+unique empty directory under `[System.IO.Path]::GetTempPath()`, assign it to
+`$env:PYAHEAD_INSTALLER_CACHE`, and replace each
+`$PYAHEAD_INSTALLER_CACHE` below with that expression.
 
 ```console
-uv sync --frozen
+PYAHEAD_INSTALLER_CACHE=$(mktemp -d /tmp/pyahead-release-uv-cache.XXXXXX)
+uv sync --frozen --cache-dir "$PYAHEAD_INSTALLER_CACHE"
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 uv run pytest
 uv run pyahead registry validate
 uv run pyahead registry coverage
-uv build --clear
-uv run python scripts/install_smoke.py --dist-dir dist --kind wheel
-uv run python scripts/install_smoke.py --dist-dir dist --kind sdist
+uv build --clear --offline --cache-dir "$PYAHEAD_INSTALLER_CACHE"
+uv run --frozen --offline --cache-dir "$PYAHEAD_INSTALLER_CACHE" python scripts/install_smoke.py --dist-dir dist --kind wheel --installer-cache "$PYAHEAD_INSTALLER_CACHE"
+uv run --frozen --offline --cache-dir "$PYAHEAD_INSTALLER_CACHE" python scripts/install_smoke.py --dist-dir dist --kind sdist --installer-cache "$PYAHEAD_INSTALLER_CACHE"
+uv run --frozen --offline --cache-dir "$PYAHEAD_INSTALLER_CACHE" python scripts/install_smoke.py --dist-dir dist --kind wheel --offline --installer-cache "$PYAHEAD_INSTALLER_CACHE"
+uv run --frozen --offline --cache-dir "$PYAHEAD_INSTALLER_CACHE" python scripts/install_smoke.py --dist-dir dist --kind sdist --offline --installer-cache "$PYAHEAD_INSTALLER_CACHE"
 uv run python scripts/benchmark.py --repeat 3 --output benchmark-results.json
 git diff --check
 ```
