@@ -2,12 +2,9 @@
 
 import hashlib
 import io
-import os
-import stat
 import tokenize
 from collections import defaultdict
 from collections.abc import Mapping
-from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -29,6 +26,7 @@ from libcst.metadata import (
 from libcst.metadata.scope_provider import Scope
 
 from pyahead import __version__
+from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.analysis.discovery import (
     DiscoveredFile,
     DiscoveryError,
@@ -82,8 +80,8 @@ from pyahead.analysis.suppressions import (
 from pyahead.baseline import load_baseline
 from pyahead.config import (
     ConfigurationOverrides,
-    load_project_configuration,
-    resolve_configuration,
+    _load_project_configuration_snapshot,
+    _resolve_snapshot_configuration,
 )
 from pyahead.model import (
     AnalysisInference,
@@ -149,6 +147,7 @@ class ScanRequest:
 
 @dataclass(frozen=True)
 class _FileAnalysisContext:
+    root: Path
     matcher_index: MatcherIndex
     project_modules: dict[str, tuple[PurePosixPath, ...]]
     target_versions: frozenset[PythonMinor]
@@ -1077,7 +1076,11 @@ def _parse_file_with_context(
     InlineSuppressionIndex,
     tuple[Diagnostic, ...],
 ]:
-    source, read_diagnostic = _read_source(path, context.max_file_size_bytes)
+    source, read_diagnostic = _read_source(
+        context.root,
+        path,
+        context.max_file_size_bytes,
+    )
     if read_diagnostic is not None:
         return (), (), (), index_inline_suppressions(()), (read_diagnostic,)
     if source is None:  # pragma: no cover - guarded by the diagnostic result.
@@ -1194,6 +1197,7 @@ def _parse_file(
         _parse_file_with_context(
             path,
             _FileAnalysisContext(
+                root=path.absolute_path.parents[len(path.relative_path.parts) - 1],
                 matcher_index=matcher_index,
                 project_modules=project_modules,
                 target_versions=target_versions,
@@ -1230,64 +1234,47 @@ def _read_failure(
 
 
 def _read_source(
+    root: Path,
     path: DiscoveredFile,
     max_file_size_bytes: int,
 ) -> tuple[str | None, Diagnostic | None]:
-    """Open without following links and read at most the configured byte limit."""
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_BINARY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-    )
-    file_descriptor = -1
+    """Read one stable source through its logical root-relative path."""
     try:
-        file_descriptor = os.open(path.absolute_path, flags)
-        file_status = os.fstat(file_descriptor)
-        if not stat.S_ISREG(file_status.st_mode):
-            return _read_failure(
-                path,
-                "PYA1004",
-                DiagnosticCategory.DISCOVERY,
-                "source entry is not a regular file",
-            )
-        if file_status.st_size > max_file_size_bytes:
-            return _read_failure(
-                path,
-                "PYA1005",
-                DiagnosticCategory.DISCOVERY,
-                f"source file exceeds the {max_file_size_bytes}-byte analysis limit",
-            )
-
-        data = bytearray()
-        while len(data) <= max_file_size_bytes:
-            remaining = max_file_size_bytes + 1 - len(data)
-            chunk = os.read(file_descriptor, min(64 * 1024, remaining))
-            if not chunk:
-                break
-            data.extend(chunk)
-        if len(data) > max_file_size_bytes:
-            return _read_failure(
-                path,
-                "PYA1005",
-                DiagnosticCategory.DISCOVERY,
-                f"source file exceeds the {max_file_size_bytes}-byte analysis limit",
-            )
-    except OSError as error:
+        data = read_rooted_bytes(
+            root,
+            Path(path.relative_path.as_posix()),
+            max_file_size_bytes,
+        )
+    except RootedReadTooLargeError:
         return _read_failure(
             path,
-            "PYA1002",
-            DiagnosticCategory.ENCODING,
-            f"unable to read Python source ({type(error).__name__})",
+            "PYA1005",
+            DiagnosticCategory.DISCOVERY,
+            f"source file exceeds the {max_file_size_bytes}-byte analysis limit",
         )
-    finally:
-        if file_descriptor >= 0:
-            with suppress(OSError):
-                os.close(file_descriptor)
+    except OSError as error:
+        detail = str(error)
+        unsafe_entry = any(
+            marker in detail
+            for marker in ("changed while", "real directories", "regular file")
+        )
+        return _read_failure(
+            path,
+            "PYA1004" if unsafe_entry else "PYA1002",
+            (
+                DiagnosticCategory.DISCOVERY
+                if unsafe_entry
+                else DiagnosticCategory.ENCODING
+            ),
+            (
+                "source entry is not a stable regular file beneath real directories"
+                if unsafe_entry
+                else f"unable to read Python source ({type(error).__name__})"
+            ),
+        )
 
     try:
-        source_bytes = io.BytesIO(bytes(data))
+        source_bytes = io.BytesIO(data)
         encoding, _ = tokenize.detect_encoding(source_bytes.readline)
         source_bytes.seek(0)
         with io.TextIOWrapper(source_bytes, encoding=encoding) as source_file:
@@ -1635,11 +1622,11 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         message = "scan root must be a directory"
         raise DiscoveryError(message)
     registry = load_registry(request.registry_source)
-    project_configuration = load_project_configuration(root, request.config_path)
-    resolved = resolve_configuration(
+    project_snapshot = _load_project_configuration_snapshot(root, request.config_path)
+    resolved = _resolve_snapshot_configuration(
         root,
         registry,
-        project_configuration,
+        project_snapshot,
         ConfigurationOverrides(
             baseline_python=request.baseline_python,
             horizon_python=request.horizon_python,
@@ -1760,6 +1747,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
     dynamic_modules = dynamic_path_module_paths(module_discovery.files)
     matcher_index = build_matcher_index(registry)
     file_context = _FileAnalysisContext(
+        root=root,
         matcher_index=matcher_index,
         project_modules=project_modules,
         target_versions=policy.target_versions,

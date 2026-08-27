@@ -610,6 +610,58 @@ def test_oversized_source_is_incomplete_without_being_read(tmp_path: Path) -> No
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
+def test_configured_source_byte_limit_is_exact(tmp_path: Path) -> None:
+    """A source at the configured cap is parsed and cap plus one is incomplete."""
+    source = tmp_path / "legacy.py"
+    raw = b"import cgi\n"
+    source.write_bytes(raw)
+
+    exact = scan(
+        ScanRequest(
+            root=tmp_path,
+            baseline_python="3.11",
+            horizon_python="3.13",
+            max_file_size_bytes=len(raw),
+        )
+    )
+    assert len(exact.findings) == 1
+    assert exact.counts.files_analyzed == 1
+
+    source.write_bytes(raw + b"#")
+    oversized = scan(
+        ScanRequest(
+            root=tmp_path,
+            baseline_python="3.11",
+            horizon_python="3.13",
+            max_file_size_bytes=len(raw),
+        )
+    )
+    assert oversized.findings == ()
+    assert [diagnostic.code for diagnostic in oversized.diagnostics] == ["PYA1005"]
+
+
+def test_stable_source_file_symlink_is_incomplete_and_never_analyzed(
+    tmp_path: Path,
+) -> None:
+    """Discovery may retain an alias, but source bytes never traverse it."""
+    target = tmp_path / "payload.txt"
+    target.write_text("import cgi\n", encoding="utf-8")
+    alias = tmp_path / "alias.py"
+    try:
+        alias.symlink_to(target)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable")
+
+    report = _scan(tmp_path)
+
+    assert report.findings == ()
+    assert report.counts.files_discovered == 1
+    assert report.counts.files_analyzed == 0
+    assert report.counts.files_incomplete == 1
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["PYA1004"]
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
 def test_source_entry_limit_fails_closed_before_parsing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

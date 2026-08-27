@@ -10,13 +10,13 @@ from pathlib import Path, PurePosixPath
 from pathspec import GitIgnoreSpec, PathSpec
 from pathspec.pattern import Pattern
 
+from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
+
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_SOURCE_ENTRIES = 100_000
 MIN_DYNAMIC_PATH_PARTS = 2
 
 _MAX_GITIGNORE_BYTES = MAX_SOURCE_BYTES
-_READ_CHUNK_BYTES = 64 * 1024
-
 _EXCLUDED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -242,59 +242,19 @@ def _gitignore_limit_error(relative_path: str) -> DiscoveryIncompleteError:
     return DiscoveryIncompleteError(message)
 
 
-def _read_validated_gitignore_bytes(
-    descriptor: int,
-    entry_status: os.stat_result,
-    relative_path: str,
-) -> bytes:
-    opened_status = os.fstat(descriptor)
-    if not stat.S_ISREG(opened_status.st_mode) or not os.path.samestat(
-        opened_status,
-        entry_status,
-    ):
-        message = f"{relative_path} changed while it was being read"
-        raise DiscoveryIncompleteError(message)
-    if opened_status.st_size > _MAX_GITIGNORE_BYTES:
-        raise _gitignore_limit_error(relative_path)
-    data = bytearray()
-    while len(data) <= _MAX_GITIGNORE_BYTES:
-        chunk = os.read(
-            descriptor,
-            min(_READ_CHUNK_BYTES, _MAX_GITIGNORE_BYTES + 1 - len(data)),
-        )
-        if not chunk:
-            break
-        data.extend(chunk)
-    if len(data) > _MAX_GITIGNORE_BYTES:
-        raise _gitignore_limit_error(relative_path)
-    return bytes(data)
-
-
 def _read_gitignore_lines(
+    root: Path,
     path: Path,
-    entry_status: os.stat_result,
     relative_path: str,
 ) -> list[str]:
     """Read one bounded, unchanged regular ignore entry without following it."""
-    descriptor = -1
     try:
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-        for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
-            flags |= getattr(os, name, 0)
-        descriptor = os.open(path, flags)
-        data = _read_validated_gitignore_bytes(
-            descriptor,
-            entry_status,
-            relative_path,
-        )
-    except DiscoveryIncompleteError:
-        raise
+        data = read_rooted_bytes(root, path, _MAX_GITIGNORE_BYTES)
+    except RootedReadTooLargeError:
+        raise _gitignore_limit_error(relative_path) from None
     except (OSError, RuntimeError) as error:
         message = f"unable to read {relative_path}"
         raise DiscoveryIncompleteError(message) from error
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
     try:
         return data.decode("utf-8").splitlines()
     except UnicodeError as error:
@@ -325,7 +285,7 @@ def _read_gitignore(
         raise DiscoveryError(message)
     if entry_status.st_size > _MAX_GITIGNORE_BYTES:
         raise _gitignore_limit_error(relative_path)
-    lines = _read_gitignore_lines(path, entry_status, relative_path)
+    lines = _read_gitignore_lines(root, path, relative_path)
     try:
         return GitIgnoreSpec.from_lines(lines)
     except (TypeError, ValueError) as error:

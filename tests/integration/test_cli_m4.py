@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 
+import pyahead.baseline as baseline_module
+import pyahead.config as config_module
 from pyahead.cli import main
 from pyahead.model import ExitCode
 
@@ -316,6 +318,60 @@ def test_unknown_config_key_leaves_machine_stdout_empty(
 
     assert captured.out == ""
     assert "unknown [tool.pyahead] key" in captured.err
+
+
+@pytest.mark.parametrize("output_format", ["json", "sarif"])
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["default-config", "explicit-config", "baseline-bytes", "baseline-count"],
+)
+def test_oversized_repository_input_leaves_machine_stdout_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output_format: str,
+    failure_kind: str,
+) -> None:
+    """Bounded config and baseline failures never emit partial machine documents."""
+    arguments = _explicit_check(output_format)
+    if failure_kind in {"default-config", "explicit-config"}:
+        monkeypatch.setattr(config_module, "MAX_PYPROJECT_BYTES", 64)
+        name = "pyproject.toml" if failure_kind == "default-config" else "custom.toml"
+        (tmp_path / name).write_bytes(b"#" * 65)
+        if failure_kind == "explicit-config":
+            arguments.extend(["--config", name])
+    else:
+        document = {
+            "schema_version": 1,
+            "created_by": "pyahead",
+            "registry_revision": "revision",
+            "findings": [],
+        }
+        baseline = tmp_path / "baseline.json"
+        if failure_kind == "baseline-bytes":
+            monkeypatch.setattr(baseline_module, "MAX_BASELINE_BYTES", 64)
+            baseline.write_bytes(b" " * 65)
+        else:
+            monkeypatch.setattr(baseline_module, "MAX_BASELINE_FINDINGS", 1)
+            finding = {
+                "fingerprint": "a" * 64,
+                "path": "legacy.py",
+                "rule_id": "CPY0001",
+                "subject": "cgi",
+            }
+            document["findings"] = [
+                finding,
+                {**finding, "fingerprint": "b" * 64},
+            ]
+            baseline.write_text(json.dumps(document), encoding="utf-8")
+        arguments.extend(["--baseline-file", baseline.name])
+    monkeypatch.chdir(tmp_path)
+
+    assert main(arguments) == int(ExitCode.INVALID_INPUT)
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert "exceed" in captured.err
 
 
 def test_sarif_output_file_is_atomic_and_verbose_stays_on_stderr(

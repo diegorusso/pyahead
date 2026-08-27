@@ -24,6 +24,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from packaging.requirements import Requirement
 
+import pyahead._rooted_reader as rooted_reader_module
 import pyahead._windows_output as windows_output_module
 import pyahead.dependencies as dependency_module
 from pyahead.config import load_project_configuration
@@ -3747,14 +3748,14 @@ def test_metadata_input_replacement_during_open_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The opened descriptor must identify the regular file that was checked."""
-    if not dependency_module._supports_rooted_descriptor_reads():  # noqa: SLF001
+    if not rooted_reader_module.supports_rooted_descriptor_reads():
         pytest.skip("requires POSIX directory-relative descriptor reads")
     selected = tmp_path / "demo.metadata"
     replacement = tmp_path / "replacement.metadata"
     selected.write_bytes(_metadata())
     replacement.write_bytes(_metadata(identity=("replacement", "2.0")))
     selected_resolved = selected.resolve()
-    real_open = dependency_module.os.open
+    real_open = rooted_reader_module.os.open
 
     def replace_before_open(
         path: str | Path,
@@ -3771,9 +3772,9 @@ def test_metadata_input_replacement_during_open_fails_closed(
             replacement.replace(selected)
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(dependency_module.os, "open", replace_before_open)
+    monkeypatch.setattr(rooted_reader_module.os, "open", replace_before_open)
     monkeypatch.setattr(
-        dependency_module, "_supports_rooted_descriptor_reads", lambda: True
+        rooted_reader_module, "supports_rooted_descriptor_reads", lambda: True
     )
 
     with pytest.raises(ConfigurationError, match="changed while being read"):
@@ -3785,11 +3786,11 @@ def test_metadata_input_mutation_during_read_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One report cannot combine bytes from two in-place file states."""
-    if not dependency_module._supports_rooted_descriptor_reads():  # noqa: SLF001
+    if not rooted_reader_module.supports_rooted_descriptor_reads():
         pytest.skip("secure directory-relative reads are unavailable")
     selected = tmp_path / "demo.metadata"
     selected.write_bytes(b"A" * 70_000)
-    original_read = dependency_module.os.read
+    original_read = rooted_reader_module.os.read
     mutated = False
 
     def mutate_after_first_chunk(descriptor: int, size: int) -> bytes:
@@ -3800,7 +3801,7 @@ def test_metadata_input_mutation_during_read_fails_closed(
             selected.write_bytes(b"B" * 70_000)
         return payload
 
-    monkeypatch.setattr(dependency_module.os, "read", mutate_after_first_chunk)
+    monkeypatch.setattr(rooted_reader_module.os, "read", mutate_after_first_chunk)
 
     with pytest.raises(ConfigurationError, match="changed while being read"):
         inspect_dependency_metadata((selected,), root=tmp_path)
@@ -3813,7 +3814,7 @@ def test_metadata_input_ancestor_swap_cannot_escape_pinned_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every repository ancestor is opened relative to the pinned root."""
-    if not dependency_module._supports_rooted_descriptor_reads():  # noqa: SLF001
+    if not rooted_reader_module.supports_rooted_descriptor_reads():
         pytest.skip("secure directory-relative reads are unavailable")
     project = tmp_path / "project"
     selected_parent = project / "sub"
@@ -3831,7 +3832,7 @@ def test_metadata_input_ancestor_swap_cannot_escape_pinned_root(
     except OSError:
         pytest.skip("the platform does not permit directory symlinks")
     probe.unlink()
-    real_open = dependency_module.os.open
+    real_open = rooted_reader_module.os.open
     swapped = False
 
     def swap_parent_before_open(
@@ -3848,9 +3849,9 @@ def test_metadata_input_ancestor_swap_cannot_escape_pinned_root(
             swapped = True
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(dependency_module.os, "open", swap_parent_before_open)
+    monkeypatch.setattr(rooted_reader_module.os, "open", swap_parent_before_open)
     monkeypatch.setattr(
-        dependency_module, "_supports_rooted_descriptor_reads", lambda: True
+        rooted_reader_module, "supports_rooted_descriptor_reads", lambda: True
     )
 
     with pytest.raises(ConfigurationError, match="unable to read metadata input"):
@@ -3867,7 +3868,7 @@ def test_dependency_configuration_ancestor_swap_cannot_escape_pinned_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Dependency TOML uses the same descriptor-anchored repository reader."""
-    if not dependency_module._supports_rooted_descriptor_reads():  # noqa: SLF001
+    if not rooted_reader_module.supports_rooted_descriptor_reads():
         pytest.skip("secure directory-relative reads are unavailable")
     project = tmp_path / "project"
     selected_parent = project / "config"
@@ -3888,7 +3889,7 @@ def test_dependency_configuration_ancestor_swap_cannot_escape_pinned_root(
     except OSError:
         pytest.skip("the platform does not permit directory symlinks")
     probe.unlink()
-    real_open = dependency_module.os.open
+    real_open = rooted_reader_module.os.open
     swapped = False
 
     def swap_parent_before_open(
@@ -3905,9 +3906,9 @@ def test_dependency_configuration_ancestor_swap_cannot_escape_pinned_root(
             swapped = True
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(dependency_module.os, "open", swap_parent_before_open)
+    monkeypatch.setattr(rooted_reader_module.os, "open", swap_parent_before_open)
     monkeypatch.setattr(
-        dependency_module, "_supports_rooted_descriptor_reads", lambda: True
+        rooted_reader_module, "supports_rooted_descriptor_reads", lambda: True
     )
 
     with pytest.raises(ConfigurationError, match="unable to read configuration"):
@@ -4812,7 +4813,7 @@ def test_dependency_configuration_rejects_an_input_changed_during_read(
         message = "input file changed while being read"
         raise OSError(message)
 
-    monkeypatch.setattr(dependency_module, "_read_rooted_file", changed_input)
+    monkeypatch.setattr(dependency_module, "read_rooted_bytes", changed_input)
 
     with pytest.raises(ConfigurationError, match="changed while being read"):
         load_dependency_configuration(tmp_path)
@@ -5958,10 +5959,10 @@ def test_metadata_open_failure_does_not_reflect_untrusted_path(
     assert selected.name not in message
 
 
-def test_resolved_metadata_path_controls_are_rejected(
+def test_metadata_symlink_is_rejected_without_reading_its_control_named_target(
     tmp_path: Path,
 ) -> None:
-    """A safe symlink label cannot smuggle its target path into text output."""
+    """A stable input symlink is opaque even when its target stays in the root."""
     target = tmp_path / "evil\nname.metadata"
     try:
         target.write_bytes(_metadata())
@@ -5973,7 +5974,7 @@ def test_resolved_metadata_path_controls_are_rejected(
     except (NotImplementedError, OSError):
         pytest.skip("symlinks are unavailable")
 
-    with pytest.raises(ConfigurationError, match="control characters"):
+    with pytest.raises(ConfigurationError, match="unable to read metadata input"):
         inspect_dependency_metadata((link,), root=tmp_path)
 
 

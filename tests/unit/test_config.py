@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import pyahead.config as config_module
+from pyahead.analysis import ScanRequest, scan
 from pyahead.config import (
     ConfigurationOverrides,
     infer_baseline,
@@ -56,6 +58,89 @@ def _write_project(root: Path, pyahead: str = "") -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _project_with_exact_size(size: int) -> bytes:
+    prefix = b'[project]\nname = "demo"\nversion = "0"\nrequires-python = ">=3.11"\n#'
+    assert len(prefix) <= size
+    return prefix + (b"x" * (size - len(prefix)))
+
+
+@pytest.mark.parametrize(
+    ("config_path", "name"),
+    [(None, "pyproject.toml"), (Path("pyahead.toml"), "pyahead.toml")],
+)
+def test_default_and_explicit_configuration_share_the_exact_byte_limit(
+    tmp_path: Path,
+    config_path: Path | None,
+    name: str,
+) -> None:
+    """Both selected configuration paths accept the cap and reject cap plus one."""
+    selected = tmp_path / name
+    selected.write_bytes(_project_with_exact_size(config_module.MAX_PYPROJECT_BYTES))
+
+    loaded = load_project_configuration(tmp_path, config_path)
+    assert loaded.label == name
+
+    selected.write_bytes(
+        _project_with_exact_size(config_module.MAX_PYPROJECT_BYTES + 1)
+    )
+    with pytest.raises(
+        ConfigurationError,
+        match=f"{config_module.MAX_PYPROJECT_BYTES} bytes",
+    ):
+        load_project_configuration(tmp_path, config_path)
+
+
+def test_default_pyproject_snapshot_is_parsed_once_and_reused_for_inference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One scan cannot combine configuration and policy from different bytes."""
+    project = tmp_path / "pyproject.toml"
+    project.write_text(
+        '[project]\nname = "demo"\nversion = "0"\nrequires-python = ">=3.11"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "clean.py").write_text("import pathlib\n", encoding="utf-8")
+    original_loads = config_module.tomllib.loads
+    parse_count = 0
+
+    def replace_after_parse(source: str) -> dict[str, object]:
+        nonlocal parse_count
+        parse_count += 1
+        document = original_loads(source)
+        if parse_count == 1:
+            project.write_text(
+                (
+                    '[project]\nname = "demo"\nversion = "0"\n'
+                    'requires-python = ">=3.13"\n'
+                ),
+                encoding="utf-8",
+            )
+        return document
+
+    monkeypatch.setattr(config_module.tomllib, "loads", replace_after_parse)
+
+    report = scan(ScanRequest(root=tmp_path, horizon_python="3.13"))
+
+    assert parse_count == 1
+    assert str(report.policy.baseline_python) == "3.11"
+    assert report.policy_provenance.requires_python == ">=3.11"
+
+
+def test_explicit_configuration_symlink_is_rejected(tmp_path: Path) -> None:
+    """A stable in-root alias is never followed to configuration bytes."""
+    target = tmp_path / "target.toml"
+    target.write_text('[tool.pyahead]\nbaseline-python = "3.11"\n', encoding="utf-8")
+    selected = tmp_path / "selected.toml"
+    try:
+        selected.symlink_to(target)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable")
+
+    with pytest.raises(ConfigurationError, match="not a regular file"):
+        load_project_configuration(tmp_path, selected)
 
 
 def test_every_cli_value_replaces_config_and_per_file_ignores_merge(

@@ -1,10 +1,12 @@
 """Tests for strict baseline creation and identity matching."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import pyahead.baseline as baseline_module
 from pyahead.analysis import ScanRequest, scan
 from pyahead.baseline import (
     load_baseline,
@@ -17,6 +19,8 @@ from pyahead.model import (
     MatchConfidence,
     ScanReport,
 )
+
+_EXPECTED_BASELINE_FINDINGS = 100_000
 
 
 def _scan(
@@ -35,6 +39,140 @@ def _scan(
             minimum_confidence=minimum_confidence,
         )
     )
+
+
+def _baseline_value() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "created_by": "pyahead",
+        "registry_revision": "revision",
+        "findings": [
+            {
+                "fingerprint": "a" * 64,
+                "rule_id": "CPY0001",
+                "path": "legacy.py",
+                "subject": "cgi",
+            }
+        ],
+    }
+
+
+def test_baseline_document_byte_limit_is_exact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rooted loader accepts exactly its cap and rejects one extra byte."""
+    assert baseline_module.MAX_BASELINE_BYTES == 32 * 1024 * 1024
+    raw = json.dumps(_baseline_value(), separators=(",", ":")).encode()
+    monkeypatch.setattr(baseline_module, "MAX_BASELINE_BYTES", len(raw))
+    baseline = tmp_path / "baseline.json"
+    baseline.write_bytes(raw)
+
+    assert load_baseline(baseline, tmp_path).fingerprints == frozenset({"a" * 64})
+
+    baseline.write_bytes(raw + b" ")
+    with pytest.raises(ConfigurationError, match="baseline exceeds"):
+        load_baseline(baseline, tmp_path)
+
+
+def test_baseline_finding_count_limit_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The finite finding bound accepts its cap and rejects cap plus one."""
+    assert baseline_module.MAX_BASELINE_FINDINGS == _EXPECTED_BASELINE_FINDINGS
+    document = _baseline_value()
+    first = document["findings"]
+    assert isinstance(first, list)
+    second = dict(first[0])
+    second["fingerprint"] = "b" * 64
+    monkeypatch.setattr(baseline_module, "MAX_BASELINE_FINDINGS", 1)
+
+    assert parse_baseline_document(document).fingerprints == frozenset({"a" * 64})
+    first.append(second)
+    with pytest.raises(ConfigurationError, match="1-finding limit"):
+        parse_baseline_document(document)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["created_by", "registry_revision", "rule_id", "path", "subject"],
+)
+def test_baseline_variable_text_limit_is_exact(field: str) -> None:
+    """Every caller-controlled baseline string has the same finite character cap."""
+    document = _baseline_value()
+    findings = document["findings"]
+    assert isinstance(findings, list)
+    finding = findings[0]
+    assert isinstance(finding, dict)
+    target = document if field in {"created_by", "registry_revision"} else finding
+    target[field] = "a" * baseline_module.MAX_BASELINE_TEXT_CHARACTERS
+
+    parse_baseline_document(document)
+
+    target[field] = "a" * (baseline_module.MAX_BASELINE_TEXT_CHARACTERS + 1)
+    with pytest.raises(ConfigurationError, match="character limit"):
+        parse_baseline_document(document)
+
+
+def test_baseline_producer_obeys_loader_count_text_and_byte_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Baseline creation cannot emit a document that its own loader rejects."""
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+    report = _scan(tmp_path)
+    finding = report.findings[0]
+
+    monkeypatch.setattr(baseline_module, "MAX_BASELINE_FINDINGS", 1)
+    with pytest.raises(ConfigurationError, match="finding limit"):
+        render_baseline(
+            replace(
+                report,
+                findings=(
+                    finding,
+                    replace(finding, fingerprint="b" * 64),
+                ),
+            )
+        )
+
+    monkeypatch.setattr(baseline_module, "MAX_BASELINE_FINDINGS", 100_000)
+    with pytest.raises(ConfigurationError, match="character limit"):
+        render_baseline(
+            replace(
+                report,
+                findings=(
+                    replace(
+                        finding,
+                        subject=(
+                            "x" * (baseline_module.MAX_BASELINE_TEXT_CHARACTERS + 1)
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    rendered = render_baseline(report)
+    monkeypatch.setattr(
+        baseline_module,
+        "MAX_BASELINE_BYTES",
+        len(rendered.encode()) - 1,
+    )
+    with pytest.raises(ConfigurationError, match="baseline exceeds"):
+        render_baseline(report)
+
+
+def test_baseline_symlink_is_rejected(tmp_path: Path) -> None:
+    """A stable in-root baseline alias is never followed."""
+    target = tmp_path / "target.json"
+    target.write_text(json.dumps(_baseline_value()), encoding="utf-8")
+    selected = tmp_path / "baseline.json"
+    try:
+        selected.symlink_to(target)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable")
+
+    with pytest.raises(ConfigurationError, match="not a regular file"):
+        load_baseline(selected, tmp_path)
 
 
 def test_baseline_round_trip_and_line_shift_preserve_existing_status(

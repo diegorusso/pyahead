@@ -11,9 +11,11 @@ build backends, run tests, access the network, or send telemetry. YAML is loaded
 with safe parsing and registry entries cannot name arbitrary executable matcher
 code.
 
-The scanner rejects root escapes, does not follow directory symlinks, rejects
-file-symlink escapes, bounds source file size and selected source entries, and
-reports eligible unreadable or unparseable files as incomplete. A source-entry
+The scanner rejects root escapes and never reads source through directory or
+file symlinks. A discovered file alias remains opaque, incomplete module
+evidence rather than a source of bytes. Source file size and selected source
+entries are bounded, and eligible unreadable or unparseable files are reported
+as incomplete. A source-entry
 overflow stops before parsing the truncated set. Machine output uses
 repository-relative POSIX paths and excludes timestamps, process IDs,
 environment variables, and absolute temporary or home paths.
@@ -43,6 +45,14 @@ also caps one scan at 64 paths, 64 MiB, and 100,000 warning records in total,
 then bounds relationship candidate checks and output records. Reports can still
 reveal test names, warning messages, and project structure, so protect them like
 other CI logs. Do not put secrets in warning messages or parameterized test IDs.
+
+Repository inputs use one private bounded reader. On POSIX it opens the root,
+every ancestor, and the regular leaf through pinned directory descriptors; on
+Windows it uses native handles and rejects reparse points and alternate data
+streams. Symlinks, mutable path bindings, and files changed in place during a
+read fail closed. `pyproject.toml` is capped at 2 MiB. Baselines are capped at
+32 MiB and 100,000 findings, with each variable text field capped at 4,096
+characters. Baseline creation enforces the same limits as baseline ingestion.
 
 Ingestion is offline and does not execute the artifact. A full commit must come
 from an explicit option or a documented CI environment variable; PyAhead does

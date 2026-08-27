@@ -21,7 +21,7 @@ import tomllib
 import unicodedata
 import zipfile
 import zlib
-from contextlib import ExitStack, suppress
+from contextlib import suppress
 from contextvars import ContextVar
 from ctypes import wintypes
 from dataclasses import dataclass, replace
@@ -58,7 +58,11 @@ from packaging.utils import (
 )
 from packaging.version import InvalidVersion, Version
 
-from pyahead._windows_output import read_windows_rooted_file
+from pyahead._rooted_reader import (
+    RootedReadTooLargeError,
+    read_rooted_bytes,
+    repository_relative_path,
+)
 from pyahead.model import ConfigurationError, ExitCode
 
 if TYPE_CHECKING:
@@ -1031,179 +1035,20 @@ def _index_url(value: object) -> str | None:
     return url
 
 
-def _rooted_directory_flags() -> int:
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
-        flags |= getattr(os, name, 0)
-    return flags
-
-
-def _rooted_file_flags() -> int:
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
-        flags |= getattr(os, name, 0)
-    return flags
-
-
-def _supports_rooted_descriptor_reads() -> bool:
-    return bool(
-        os.open in os.supports_dir_fd
-        and os.stat in os.supports_dir_fd
-        and os.stat in os.supports_follow_symlinks
-        and hasattr(os, "O_DIRECTORY")
-        and hasattr(os, "O_NOFOLLOW")
-    )
-
-
-def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
-    return os.path.samestat(left, right)
-
-
-def _same_stable_file(left: os.stat_result, right: os.stat_result) -> bool:
-    """Compare identity and mutation-sensitive regular-file attributes."""
-    return _same_file(left, right) and all(
-        getattr(left, field) == getattr(right, field)
-        for field in ("st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
-    )
-
-
-@dataclass(frozen=True)
-class _RootedReadChain:
-    root: Path
-    descriptors: tuple[int, ...]
-    statuses: tuple[os.stat_result, ...]
-    names: tuple[str, ...]
-
-    def validate(
-        self,
-        leaf_name: str,
-        leaf_status: os.stat_result,
-        leaf_descriptor: int,
-    ) -> None:
-        """Reject any path binding changed while its descriptors were pinned."""
-        current_root = self.root.lstat()
-        if not stat.S_ISDIR(current_root.st_mode) or not _same_file(
-            current_root, self.statuses[0]
-        ):
-            message = "input root changed while being read"
-            raise OSError(message)
-        for index, name in enumerate(self.names, start=1):
-            current = os.stat(
-                name,
-                dir_fd=self.descriptors[index - 1],
-                follow_symlinks=False,
-            )
-            if not stat.S_ISDIR(current.st_mode) or not _same_file(
-                current, self.statuses[index]
-            ):
-                message = "input parent changed while being read"
-                raise OSError(message)
-        current_leaf = os.stat(
-            leaf_name,
-            dir_fd=self.descriptors[-1],
-            follow_symlinks=False,
-        )
-        opened_leaf = os.fstat(leaf_descriptor)
-        if not stat.S_ISREG(current_leaf.st_mode) or not (
-            _same_stable_file(current_leaf, leaf_status)
-            and _same_stable_file(opened_leaf, leaf_status)
-        ):
-            message = "input file changed while being read"
-            raise OSError(message)
-
-
-def _read_posix_rooted_file(root: Path, relative: Path, limit: int) -> bytes:
-    if not _supports_rooted_descriptor_reads():
-        message = "secure root-bounded input APIs are unavailable"
-        raise OSError(message)
-    with ExitStack() as cleanup:
-        descriptors: list[int] = []
-        statuses: list[os.stat_result] = []
-        names: list[str] = []
-        expected_root = root.lstat()
-        root_descriptor = os.open(root, _rooted_directory_flags())
-        cleanup.callback(os.close, root_descriptor)
-        descriptors.append(root_descriptor)
-        opened_root = os.fstat(root_descriptor)
-        if not stat.S_ISDIR(opened_root.st_mode) or not _same_file(
-            expected_root, opened_root
-        ):
-            message = "input root changed while being opened"
-            raise OSError(message)
-        statuses.append(opened_root)
-        for name in relative.parent.parts:
-            descriptor = os.open(
-                name,
-                _rooted_directory_flags(),
-                dir_fd=descriptors[-1],
-            )
-            cleanup.callback(os.close, descriptor)
-            opened = os.fstat(descriptor)
-            if not stat.S_ISDIR(opened.st_mode):
-                message = "input parents must be real directories"
-                raise OSError(message)
-            descriptors.append(descriptor)
-            statuses.append(opened)
-            names.append(name)
-        expected_leaf = os.stat(
-            relative.name,
-            dir_fd=descriptors[-1],
-            follow_symlinks=False,
-        )
-        if not stat.S_ISREG(expected_leaf.st_mode):
-            message = "input must be a real regular file"
-            raise OSError(message)
-        descriptor = os.open(
-            relative.name,
-            _rooted_file_flags(),
-            dir_fd=descriptors[-1],
-        )
-        cleanup.callback(os.close, descriptor)
-        opened_leaf = os.fstat(descriptor)
-        if not stat.S_ISREG(opened_leaf.st_mode) or not _same_file(
-            expected_leaf, opened_leaf
-        ):
-            message = "input file changed while being opened"
-            raise OSError(message)
-        remaining = limit + 1
-        chunks: list[bytes] = []
-        while remaining:
-            chunk = os.read(descriptor, min(_TAR_READ_CHUNK_BYTES, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        chain = _RootedReadChain(
-            root=root,
-            descriptors=tuple(descriptors),
-            statuses=tuple(statuses),
-            names=tuple(names),
-        )
-        chain.validate(relative.name, opened_leaf, descriptor)
-        return b"".join(chunks)
-
-
-def _read_rooted_file(root: Path, relative: Path, limit: int) -> bytes:
-    if relative.is_absolute() or relative == Path() or not relative.name:
-        message = "input must name a file beneath the trusted root"
-        raise OSError(message)
-    if ".." in relative.parts:
-        message = "input must remain beneath the trusted root"
-        raise OSError(message)
-    if _supports_rooted_descriptor_reads():
-        return _read_posix_rooted_file(root, relative, limit)
-    if os.name == "nt":
-        return read_windows_rooted_file(root, relative, limit)
-    message = "secure root-bounded input APIs are unavailable"
-    raise OSError(message)
-
-
 def _read_dependency_document(
     root: Path, relative: Path, label: str
 ) -> dict[str, object]:
     """Read one stable regular TOML file through a root-anchored descriptor."""
     try:
-        raw_document = _read_rooted_file(root, relative, _MAX_CONFIGURATION_BYTES)
+        raw_document = read_rooted_bytes(root, relative, _MAX_CONFIGURATION_BYTES)
+    except FileNotFoundError as error:
+        raise _configuration_error(
+            label, "configuration file does not exist"
+        ) from error
+    except RootedReadTooLargeError as error:
+        raise _configuration_error(
+            label, "configuration exceeds the size limit"
+        ) from error
     except (OSError, RuntimeError, ValueError) as error:
         detail = str(error)
         if "regular file" in detail:
@@ -1244,17 +1089,14 @@ def _read_dependency_table(
     if not selected.is_absolute():
         selected = resolved_root / selected
     try:
-        resolved = selected.resolve(strict=True)
-        resolved.relative_to(resolved_root)
-    except FileNotFoundError as error:
-        raise _configuration_error(label, "file does not exist") from error
+        relative = repository_relative_path(resolved_root, selected)
     except (OSError, RuntimeError, ValueError) as error:
         raise _configuration_error(
             label, "unable to read configuration beneath the root"
         ) from error
     document = _read_dependency_document(
         resolved_root,
-        resolved.relative_to(resolved_root),
+        relative,
         label,
     )
 
@@ -1457,22 +1299,29 @@ def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
     label = "metadata input"
     selected = path if path.is_absolute() else root / path
     try:
-        resolved = selected.resolve(strict=True)
-        rooted_relative = resolved.relative_to(root)
+        rooted_relative = repository_relative_path(root, selected)
         relative_text = rooted_relative.as_posix()
-        _string(relative_text, "resolved metadata input path")
+        _string(relative_text, label)
         relative = PurePosixPath(relative_text)
         if rooted_relative == Path() or not rooted_relative.name:
             _error(label, "is not a regular file")
-        raw = _read_rooted_file(root, rooted_relative, _MAX_ARTIFACT_BYTES)
+        raw = read_rooted_bytes(root, rooted_relative, _MAX_ARTIFACT_BYTES)
     except FileNotFoundError as error:
         raise _configuration_error(label, "does not exist") from error
+    except RootedReadTooLargeError as error:
+        raise _configuration_error(
+            label,
+            f"exceeds {_MAX_ARTIFACT_BYTES} bytes",
+        ) from error
     except ValueError as error:
         if isinstance(error, ConfigurationError):
             raise
-        raise _configuration_error(
-            label, "must remain beneath the project root"
-        ) from error
+        message = (
+            "is not a regular file"
+            if "name a file" in str(error)
+            else "must remain beneath the project root"
+        )
+        raise _configuration_error(label, message) from error
     except (OSError, RuntimeError) as error:
         message = (
             "metadata input changed while being read"

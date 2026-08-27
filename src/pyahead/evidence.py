@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import stat
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -15,6 +14,11 @@ from typing import TYPE_CHECKING, NoReturn, TypeAlias
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+from pyahead._rooted_reader import (
+    RootedReadTooLargeError,
+    read_rooted_bytes,
+    repository_relative_path,
+)
 from pyahead.model import (
     ConfigurationError,
     EvidenceArtifact,
@@ -771,40 +775,38 @@ def _load_evidence(path: Path, root: Path) -> _LoadedEvidence:
     label = path.name
     selected = path if path.is_absolute() else root / path
     try:
-        resolved = selected.resolve(strict=True)
-        relative = PurePosixPath(resolved.relative_to(root).as_posix())
-        flags = os.O_RDONLY
-        flags |= getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        flags |= getattr(os, "O_NONBLOCK", 0)
-        descriptor = os.open(resolved, flags)
-        try:
-            status = os.fstat(descriptor)
-            if not stat.S_ISREG(status.st_mode):
-                _raise_error(label, "evidence is not a regular file")
-            with os.fdopen(descriptor, "rb", closefd=True) as stream:
-                descriptor = -1
-                raw = stream.read(MAX_EVIDENCE_BYTES + 1)
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        if len(raw) > MAX_EVIDENCE_BYTES:
-            message = f"evidence exceeds {MAX_EVIDENCE_BYTES} bytes"
-            _raise_error(label, message)
-        value = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=_unique_object,
-        )
+        relative_path = repository_relative_path(root, selected)
+        relative = PurePosixPath(relative_path.as_posix())
+        raw = read_rooted_bytes(root, relative_path, MAX_EVIDENCE_BYTES)
+    except RootedReadTooLargeError:
+        message = f"evidence exceeds {MAX_EVIDENCE_BYTES} bytes"
+        _raise_error(label, message)
     except FileNotFoundError:
         _raise_error(label, "evidence file does not exist")
-    except json.JSONDecodeError:
-        _raise_error(label, "evidence is not valid JSON")
     except ValueError as error:
         if isinstance(error, ConfigurationError):
             raise
         _raise_error(label, "evidence must remain beneath the project root")
-    except (OSError, RuntimeError, UnicodeError):
-        _raise_error(label, "unable to read evidence")
+    except (OSError, RuntimeError) as error:
+        message = (
+            "evidence is not a regular file"
+            if "regular file" in str(error)
+            else "unable to read evidence"
+        )
+        _raise_error(label, message)
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_unique_object,
+        )
+    except (json.JSONDecodeError, RecursionError):
+        _raise_error(label, "evidence is not valid JSON")
+    except ValueError as error:
+        if isinstance(error, ConfigurationError):
+            raise
+        _raise_error(label, "evidence is not valid JSON")
+    except UnicodeError:
+        _raise_error(label, "evidence is not valid UTF-8 JSON")
     document = parse_evidence_document(value)
     return _LoadedEvidence(
         path=relative,

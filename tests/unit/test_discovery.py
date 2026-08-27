@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+import pyahead._rooted_reader as rooted_reader_module
 import pyahead.analysis.discovery as discovery_module
 from pyahead.analysis.discovery import (
     MAX_SOURCE_BYTES,
@@ -526,7 +527,7 @@ def test_gitignore_entry_replacement_fails_closed_without_blocking(
     ) -> int:
         nonlocal observed_flags, replaced
         rendered = os.fspath(path)
-        if not replaced and isinstance(rendered, str) and Path(rendered) == ignore:
+        if not replaced and rendered == ".gitignore" and dir_fd is not None:
             observed_flags = flags
             if replacement_kind == "regular":
                 replacement.replace(ignore)
@@ -540,6 +541,11 @@ def test_gitignore_entry_replacement_fails_closed_without_blocking(
         return original_open(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "open", replace_before_open)
+    monkeypatch.setattr(
+        rooted_reader_module,
+        "supports_rooted_descriptor_reads",
+        lambda: True,
+    )
 
     with pytest.raises(DiscoveryIncompleteError, match=r"\.gitignore"):
         discover_python_files(tmp_path, ())

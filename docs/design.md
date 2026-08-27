@@ -2253,6 +2253,194 @@ Acceptance:
 - environment markers are evaluated against the declared target;
 - results name the exact package versions and metadata used.
 
+### M8.5 — 0.2 release hardening
+
+This maintenance milestone implements the release-blocking findings from the
+post-M8 architecture and maintainability review. It is deliberately split into
+seven ordered, independently reviewed submilestones. Each submilestone receives
+one intentional commit only after its targeted tests, the complete repository
+suite, build and install checks, and a fresh read-only review pass. M8.5 does
+not add another evidence provider or begin hosted-service work.
+
+#### M8.5a — Rooted and bounded repository input
+
+Deliverables:
+
+- one private low-level rooted reader, extracted from the proven M8 dependency
+  input implementation, for source, pytest evidence, configuration, baseline,
+  and dependency inputs;
+- POSIX reads anchored to a pinned root directory descriptor, with every
+  ancestor opened relative to its predecessor, symlinks and non-regular leaves
+  rejected, root/ancestor/leaf identities checked before and after reading,
+  in-place mutation detection, and byte limits applied while reading;
+- equivalent native Windows containment using pinned directory/file handles,
+  reparse-point and alternate-data-stream rejection, and native swap tests;
+- explicit documented byte limits for `pyproject.toml` and baseline documents,
+  plus finite baseline finding-count and variable-text limits; and
+- one selected `pyproject.toml` byte snapshot parsed once per scan and reused
+  for both configuration and `Requires-Python` inference.
+
+Acceptance:
+
+- ancestor swaps, leaf replacement, in-place mutation, stable symlinks, and
+  outside-root paths fail closed for every migrated reader;
+- native Windows tests cover ancestor and reparse swaps without replacing the
+  implementation with POSIX mocks;
+- an input at each byte limit succeeds and limit plus one fails;
+- oversized default and explicit configuration and oversized or over-count
+  baselines fail concisely with no partial JSON or SARIF document; and
+- dependency input retains all existing containment, mutation, size, relative
+  path, deterministic-output, and exit-status behavior.
+
+#### M8.5b — Pytest evidence completeness
+
+Deliverables:
+
+- `--pyahead-evidence` raises a clear `pytest.UsageError` when pytest warning
+  capture is disabled or unavailable;
+- ordinary `--disable-warnings` behavior and user warning-filter policy remain
+  intact while complete capture is active;
+- active pytest-xdist controller or worker execution is refused until a
+  deliberate aggregation protocol exists; and
+- `warnings_complete` is derived from proven capture and retention state, not
+  merely from a zero dropped-record count.
+
+Acceptance:
+
+- integration tests cover `-p no:warnings` with a real warning,
+  `--disable-warnings`, successful and failing sessions, record and byte
+  truncation, warning-bearing xdist execution, and root-bounded atomic output;
+- ordinary successful and failing non-xdist sessions still produce artifacts;
+  and
+- no incomplete warning observation is reported as complete.
+
+#### M8.5c — Dependency compatibility semantics
+
+Deliverables:
+
+- `artifact_availability` describes only the supplied artifact sample: a
+  wrong-target wheel may be `unavailable` and an sdist may be
+  `source-build-possible` without proving repository-wide compatibility;
+- partial direct application and library samples remain compatibility
+  `unverified` unless inventory closure is independently established;
+- complete `artifact-unavailable` is limited to a closed offline application
+  wheelhouse proven by completed resolution over exact application pins; and
+- schemas, documentation, golden data, and tests use the same status contract.
+
+Acceptance:
+
+- the scenario matrix covers direct wrong-target wheels, direct sdist-only
+  samples, library samples, closed exact-pin inventories, a successful
+  resolution selecting another artifact, missing package and version in a
+  closed inventory, online index failure, timeout, and genuine constraint
+  contradiction;
+- exact final `Requires-Python` exclusions remain `declared-incompatible`;
+- `resolution-failed` still requires reviewed resolver grammar plus an
+  independently demonstrated active constraint contradiction;
+- timeouts, unsupported resolver evidence, unknown diagnostic grammar, and
+  incomplete evidence remain incomplete and take exit-status precedence; and
+- a real offline unsatisfiable-constraint regression runs against an explicitly
+  controlled, reviewed `uv` series in CI.
+
+#### M8.5d — Release smoke isolation
+
+Deliverables:
+
+- a documented explicit child-installer environment policy for
+  `scripts/install_smoke.py`;
+- ambient pip/uv indexes, extra indexes, configuration, caches, Python
+  environments, and credential-bearing settings are removed; only deliberate
+  platform execution variables and documented proxy policy are retained;
+- online smoke uses its intended public source, while offline smoke installs
+  only from allowed local artifacts and caches; and
+- URL user-info and other credential-bearing material is redacted from child
+  output, exceptions, and retained diagnostics.
+
+Acceptance:
+
+- sentinel pip/uv index, extra-index, and configuration values never reach the
+  child installer;
+- synthetic credential-bearing failures are redacted without inspecting real
+  credentials; and
+- online and offline wheel and sdist smoke retains Linux, macOS, and Windows
+  launcher/path behavior.
+
+#### M8.5e — Safe human output
+
+Deliverables:
+
+- one explicit terminal/log text-sanitization boundary applied to all untrusted
+  human-readable source, evidence, diagnostic, inference, match, remediation,
+  source, registry, quiet-mode, baseline, and dependency values;
+- embedded newlines, terminal escapes, carriage returns, and dangerous Unicode
+  control/separator categories are escaped while normal printable Unicode and
+  renderer-owned structural newlines are preserved; and
+- JSON and SARIF bytes remain unchanged unless their documented data contract
+  itself requires a change.
+
+Acceptance:
+
+- negative fixtures cover filenames, registry text, and diagnostic data with
+  newline, escape, carriage-return, and Unicode control/separator characters;
+- no untrusted control data reaches human terminal or log output; and
+- all machine-format golden and determinism tests remain byte stable.
+
+#### M8.5f — Public machine and typing contracts
+
+Deliverables:
+
+- strict `docs/schema/report-v1.json` coverage for ordinary and empty reports,
+  incomplete diagnostics, suppressions/baselines, analysis inferences, and
+  optional M7 evidence enrichment;
+- one deterministic source of truth with checked-in schema parity and
+  representative/golden document validation;
+- a packaged `py.typed` marker and documented narrow alpha import surface for
+  the already named scan request/result and registry types, without exposing
+  LibCST, parser, resolver, process, or automation internals;
+- documented 0.x compatibility expectations and an installed-wheel consumer
+  mypy test proving supported return types are not `Any`; and
+- package Documentation metadata points to the user-facing usage guide.
+
+Acceptance:
+
+- required properties and `additionalProperties: false` close every report
+  schema object except a specifically documented extensibility point;
+- generated and checked-in schemas are identical and every representative and
+  golden report validates;
+- wheel and sdist contain the intended schema/typing artifacts, and a clean
+  installed-wheel consumer passes strict mypy; and
+- compatibility exports such as `render_evidence_schema`,
+  `project_module_names`, and existing accessors remain until a separate public
+  API decision proves removal safe.
+
+#### M8.5g — Small behavior-preserving cleanup
+
+Deliverables:
+
+- quiet rendering computes the final result line directly while preserving its
+  exact bytes;
+- identical evidence artifacts retain the lexicographically smallest
+  repository-relative representative independent of argument order;
+- canonical strict mypy checks cover `src` and `scripts`, without lowering or
+  repurposing the 90% product coverage threshold or inventing an unmeasured
+  script threshold;
+- contributor setup uses `uv sync --frozen`; and
+- this design's repository map, actual runtime dependencies, provider-specific
+  evidence architecture, and separate `DependencyReport` boundary describe the
+  implementation that exists.
+
+Acceptance:
+
+- quiet output is byte-identical and does not render discarded detail;
+- evidence representative selection passes argument-permutation tests;
+- the complete strict `mypy src scripts` check passes before CI is changed;
+- benchmark regression JSON reports `passed=true`, while unmet design targets
+  remain separately visible; and
+- no impact-order change, speculative optimization, large-module split, broad
+  test reorganization, unused compatibility-symbol removal, generic provider or
+  dependency-injection framework, parallel scan, M9 service code, or M10 work is
+  included.
+
 ### M9 — Hosted GitHub private beta
 
 Create a separate private service repository for this milestone. The core `diegorusso/pyahead` repository remains the open CLI and registry.

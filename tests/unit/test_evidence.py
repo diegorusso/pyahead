@@ -469,6 +469,26 @@ def test_evidence_paths_and_duplicate_artifacts_fail_closed(tmp_path: Path) -> N
     assert len(merged.observed_warnings) == 1
 
 
+def test_evidence_symlink_is_rejected(tmp_path: Path) -> None:
+    """A stable in-root evidence alias is never followed."""
+    report = _static_report(tmp_path)
+    target = tmp_path / "target.json"
+    _write_artifact(target, _document())
+    selected = tmp_path / "warnings.json"
+    try:
+        selected.symlink_to(target)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable")
+
+    with pytest.raises(ConfigurationError, match="not a regular file"):
+        merge_evidence(
+            report,
+            (selected,),
+            root=tmp_path,
+            source_commit=CURRENT_COMMIT,
+        )
+
+
 def _raw_evidence(document: dict[str, object]) -> bytes:
     return (
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"

@@ -73,16 +73,22 @@ inference; it does not fall back to conventional root and `src` layouts.
 
 By default PyAhead discovers `.py` and `.pyi` files, applies built-in
 exclusions, respects hierarchical `.gitignore` rules, then applies configured
-includes and excludes. Excludes win. Directory symlinks are not followed, file
-symlinks may not escape the selected root, and only regular files within the
-configured size limit are parsed. Discovery stops safely at 100,000 selected
+includes and excludes. Excludes win. Directory symlinks are not followed and
+source-file symlinks are retained only as opaque incomplete module evidence;
+their bytes are never parsed. Only regular files within the configured size
+limit are parsed. Discovery stops safely at 100,000 selected
 source entries. Exceeding that fixed public-alpha bound produces `PYA1006`,
 returns an incomplete scan, and analyzes none of the truncated set so an unseen
 project module cannot create false high-confidence resolution evidence.
 
 Relative report-output, baseline-input, baseline-creation, and configuration
 paths are resolved beneath the selected root. Logical `..` escapes and symlink
-escapes are rejected. Persistent output uses repository-relative POSIX paths.
+escapes are rejected. Source, `.gitignore`, configuration, baseline, pytest
+evidence, and dependency inputs are read through pinned root-relative
+descriptors or native Windows handles. A selected `pyproject.toml` is capped at
+2 MiB and its one parsed byte snapshot supplies both `[tool.pyahead]` and
+`project.requires-python` for the scan. Persistent output uses
+repository-relative POSIX paths.
 
 ## Findings and confidence
 
@@ -136,7 +142,9 @@ pyahead check --baseline-file .pyahead-baseline.json --fail-new-only
 
 Fingerprints survive unrelated line insertion. File moves, containing-scope
 renames, and inserting a preceding same-rule occurrence in the same scope can
-change a fingerprint.
+change a fingerprint. Baseline documents are capped at 32 MiB and 100,000
+findings. Each variable created-by, registry-revision, rule-ID, path, or subject
+field is capped at 4,096 characters. Creation and ingestion use the same limits.
 
 Suppress one logical statement with an exact rule ID:
 

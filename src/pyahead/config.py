@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import stat
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -11,6 +10,11 @@ from typing import TypeVar
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from pyahead._rooted_reader import (
+    RootedReadTooLargeError,
+    read_rooted_bytes,
+    repository_relative_path,
+)
 from pyahead.model import (
     ConfigurationError,
     EffectiveConfiguration,
@@ -46,6 +50,7 @@ _CONVENTIONAL_SOURCE_ROOTS_PROVENANCE = "inferred:conventional-root-and-src-layo
 _MINOR_RELEASE_COMPONENTS = 2
 _PATCH_RELEASE_COMPONENTS = 3
 _PYPROJECT_LABEL = "pyproject.toml"
+MAX_PYPROJECT_BYTES = 2 * 1024 * 1024
 _ACTIVE_RELEASE_STATUSES = frozenset({ReleaseStatus.STABLE, ReleaseStatus.PRERELEASE})
 _ConfigurationEnum = TypeVar("_ConfigurationEnum", FailOn, MatchConfidence)
 
@@ -66,6 +71,13 @@ class ProjectConfiguration:
     max_file_size_bytes: int | None = None
     per_file_ignores: tuple[PerFileIgnore, ...] = ()
     label: str = "pyproject.toml"
+
+
+@dataclass(frozen=True)
+class _ProjectConfigurationSnapshot:
+    project: ProjectConfiguration
+    pyproject_document: dict[str, object] | None
+    selected_is_pyproject: bool
 
 
 @dataclass(frozen=True)
@@ -102,29 +114,50 @@ def _configuration_error(label: str, message: str) -> ConfigurationError:
     return ConfigurationError(f"{label}: {message}")
 
 
-def _read_toml(path: Path, root: Path, label: str) -> dict[str, object]:
+def _read_toml(
+    path: Path,
+    root: Path,
+    label: str,
+    *,
+    missing_ok: bool = False,
+) -> dict[str, object] | None:
     try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(root)
-        status = resolved.stat()
-        if not stat.S_ISREG(status.st_mode):
-            raise _configuration_error(label, "configuration is not a regular file")
-        with resolved.open("rb") as stream:
-            document = tomllib.load(stream)
+        raw = read_rooted_bytes(root, path, MAX_PYPROJECT_BYTES)
     except FileNotFoundError as error:
+        if missing_ok:
+            return None
         raise _configuration_error(
             label, "configuration file does not exist"
         ) from error
-    except tomllib.TOMLDecodeError as error:
-        raise _configuration_error(label, "configuration is not valid TOML") from error
+    except RootedReadTooLargeError as error:
+        raise _configuration_error(
+            label,
+            f"configuration exceeds {MAX_PYPROJECT_BYTES} bytes",
+        ) from error
     except ValueError as error:
-        if isinstance(error, ConfigurationError):
-            raise
         raise _configuration_error(
             label, "configuration must remain beneath the project root"
         ) from error
     except (OSError, RuntimeError) as error:
-        raise _configuration_error(label, "unable to read configuration") from error
+        detail = str(error)
+        message = (
+            "configuration is not a regular file"
+            if "regular file" in detail
+            else "unable to read configuration"
+        )
+        raise _configuration_error(label, message) from error
+    try:
+        document = tomllib.loads(raw.decode("utf-8", errors="strict"))
+    except RecursionError as error:
+        raise _configuration_error(
+            label, "configuration nesting is too deep"
+        ) from error
+    except UnicodeError as error:
+        raise _configuration_error(
+            label, "configuration is not valid UTF-8 TOML"
+        ) from error
+    except tomllib.TOMLDecodeError as error:
+        raise _configuration_error(label, "configuration is not valid TOML") from error
     return document
 
 
@@ -311,27 +344,47 @@ def _parse_project_configuration(
     )
 
 
-def load_project_configuration(
+def _load_project_configuration_snapshot(
     root: Path, config_path: Path | None
-) -> ProjectConfiguration:
-    """Load only the selected root's strict ``[tool.pyahead]`` table."""
+) -> _ProjectConfigurationSnapshot:
+    """Load one selected configuration snapshot for an internal scan."""
     resolved_root = root.resolve(strict=True)
     selected = config_path or (resolved_root / "pyproject.toml")
     if not selected.is_absolute():
         selected = resolved_root / selected
-    if config_path is None and not selected.exists():
-        return ProjectConfiguration()
     label = selected.name
-    return _parse_project_configuration(
-        _read_toml(selected, resolved_root, label), label
+    document = _read_toml(
+        selected,
+        resolved_root,
+        label,
+        missing_ok=config_path is None,
+    )
+    selected_is_pyproject = repository_relative_path(resolved_root, selected) == Path(
+        "pyproject.toml"
+    )
+    if document is None:
+        return _ProjectConfigurationSnapshot(
+            project=ProjectConfiguration(),
+            pyproject_document=None,
+            selected_is_pyproject=selected_is_pyproject,
+        )
+    configuration = _parse_project_configuration(document, label)
+    return _ProjectConfigurationSnapshot(
+        project=configuration,
+        pyproject_document=document if selected_is_pyproject else None,
+        selected_is_pyproject=selected_is_pyproject,
     )
 
 
-def _project_requires_python(root: Path) -> str | None:
-    path = root / "pyproject.toml"
-    if not path.exists():
-        return None
-    document = _read_toml(path, root, _PYPROJECT_LABEL)
+def load_project_configuration(
+    root: Path, config_path: Path | None
+) -> ProjectConfiguration:
+    """Load only the selected root's strict ``[tool.pyahead]`` table."""
+    return _load_project_configuration_snapshot(root, config_path).project
+
+
+def _document_requires_python(document: dict[str, object]) -> str | None:
+    """Extract ``project.requires-python`` from one already-parsed snapshot."""
     project_value = document.get("project")
     if project_value is None:
         return None
@@ -345,6 +398,14 @@ def _project_requires_python(root: Path) -> str | None:
             "project.requires-python must be a non-empty string",
         )
     return requires_python
+
+
+def _project_requires_python(root: Path) -> str | None:
+    path = root / "pyproject.toml"
+    document = _read_toml(path, root, _PYPROJECT_LABEL, missing_ok=True)
+    if document is None:
+        return None
+    return _document_requires_python(document)
 
 
 def _registry_versions(registry: Registry) -> tuple[PythonMinor, ...]:
@@ -497,11 +558,12 @@ def _resolve_source_roots(
     return configured, provenance, False
 
 
-def resolve_configuration(
+def _resolve_configuration(
     root: Path,
     registry: Registry,
     project: ProjectConfiguration,
     overrides: ConfigurationOverrides,
+    snapshot: _ProjectConfigurationSnapshot | None,
 ) -> ResolvedConfiguration:
     """Apply CLI/config/default precedence and infer missing policy values."""
     supported_versions = _registry_versions(registry)
@@ -522,7 +584,11 @@ def resolve_configuration(
         )
         baseline_source = f"{project.label}:tool.pyahead.baseline-python"
     else:
-        requires_python = _project_requires_python(root)
+        requires_python = (
+            _document_requires_python(snapshot.pyproject_document or {})
+            if snapshot is not None and snapshot.selected_is_pyproject
+            else _project_requires_python(root)
+        )
         if requires_python is None:
             message = (
                 "baseline Python is required; pass --baseline-python, configure "
@@ -626,6 +692,38 @@ def resolve_configuration(
         ),
         scan=scan,
         source_roots_inferred=source_roots_inferred,
+    )
+
+
+def resolve_configuration(
+    root: Path,
+    registry: Registry,
+    project: ProjectConfiguration,
+    overrides: ConfigurationOverrides,
+) -> ResolvedConfiguration:
+    """Apply CLI/config/default precedence and infer missing policy values."""
+    return _resolve_configuration(
+        root,
+        registry,
+        project,
+        overrides,
+        None,
+    )
+
+
+def _resolve_snapshot_configuration(
+    root: Path,
+    registry: Registry,
+    snapshot: _ProjectConfigurationSnapshot,
+    overrides: ConfigurationOverrides,
+) -> ResolvedConfiguration:
+    """Resolve a scan from its one already-parsed selected pyproject snapshot."""
+    return _resolve_configuration(
+        root,
+        registry,
+        snapshot.project,
+        overrides,
+        snapshot,
     )
 
 
