@@ -389,21 +389,14 @@ def test_corpus_worksheet_identity_rejects_a_different_result(
 
 
 def test_ci_declares_exact_host_and_artifact_job_matrix() -> None:
-    """Hosted candidate evidence can bind every frozen required job name."""
+    """CI declares every frozen required job name and host matrix."""
     workflow_path = Path(__file__).parents[2] / ".github" / "workflows" / "ci.yml"
     document = cast(
         "dict[str, object]",
         yaml.safe_load(workflow_path.read_text(encoding="utf-8")),
     )
     assert document["name"] == "CI"
-    assert document["run-name"] == (
-        "PyAhead autopilot ${{ inputs.pyahead_autopilot_token }}"
-    )
     assert document["env"] == {"PYO3_USE_ABI3_FORWARD_COMPATIBILITY": "1"}
-    triggers = cast("dict[str, object]", document[True])
-    dispatch = cast("dict[str, object]", triggers["workflow_dispatch"])
-    inputs = cast("dict[str, object]", dispatch["inputs"])
-    assert set(inputs) == {"pyahead_autopilot_token"}
 
     jobs = cast("dict[str, dict[str, object]]", document["jobs"])
     assert jobs["quality"]["name"] == "Quality and Gate B / Linux / Python 3.11"

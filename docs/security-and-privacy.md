@@ -257,15 +257,6 @@ evidence artifacts, corpus results, and benchmark results retain their defined
 machine representation. Redirect a machine format when downstream tooling needs
 the original structured value; do not parse human output as evidence.
 
-The bare-standard-library autopilot cannot safely import mutable product code
-during a resumable run. It therefore carries a small controller-native boundary
-with conformance tests against the product policy. Its human forensic logs
-visibly encode every child-supplied control, including CR, LF, and tab. Exact
-redacted streams needed for resumable Git and HTTP parsing live separately in a
-bounded base64 JSON sidecar whose hash and corresponding human-log hashes are
-bound by the completed-process receipt. Human status/errors are escaped, and
-explicit JSON status remains a machine representation.
-
 ## Reports and private repositories
 
 Reports contain repository-relative paths and regions, rule IDs, matched

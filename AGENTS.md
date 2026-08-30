@@ -11,40 +11,18 @@
   used by the current milestone.
 - One passing milestone gets one intentional commit; never combine milestones.
 
-The M1.5 controller is documented in `docs/autopilot.md`. During a child run
-(`PYAHEAD_AUTOPILOT_CHILD=1`), do not invoke it, stage or commit, change branches
-or Git metadata, publish, or edit `automation/`, `scripts/autopilot.py`,
-`docs/design.md`, `AGENTS.md`, the frozen contract, or quality thresholds. Treat
-CI and build-backend configuration as protected unless the frozen milestone
-explicitly requires changing them. The parent controller alone verifies,
-reviews, commits, and publishes. M2-M5 may be local-only; M6 requires `--push`,
-an immutable exact-SHA candidate, configured Linux/macOS/Windows evidence, and
-final review before the range branch advances. Never rewrite a candidate ref or
-substitute evidence from another SHA. Publication is bound to the configured
-origin fetch/push identity. The controller may push only the unique object-upload
-ref, disable ambient tag/submodule publication, and require one durable completed
-new-ref porcelain update rather than accepting an exact-SHA no-op or indeterminate
-upload; it creates the final candidate ref atomically through the repository-bound
-GitHub API and requires durable process plus commit-typed HTTP evidence. M6 CI
-must accept the `pyahead_autopilot_token` dispatch input and use it in the exact
-`PyAhead autopilot <token>` run title. Stop at Gate C before M7-M8; Gate C needs
-recorded corpus-precision evidence and accountable human approval. Refuse M9
-here and M10 without its design.
+Treat `docs/design.md`, `AGENTS.md`, and `.github/workflows` as protected: change
+them only when the requested milestone explicitly requires it. The `tool.ruff`,
+`tool.mypy`, `tool.pytest.ini_options`, `tool.coverage.run`, and
+`tool.coverage.report` tables in `pyproject.toml` are quality policy; never
+weaken a threshold to make a change pass.
 
-Hosted failure logs must be non-empty: fall back from `gh run view` to the
-repository-bound job-log API, and stop resumably if neither interface supplies
-evidence. `resume` may retry a failed child only in a fresh uniquely logged
-session while preserving its worktree, logical repair count, and original
-semantic repair evidence.
+Stop at Gate C before M7-M8; Gate C needs recorded corpus-precision evidence and
+accountable human approval, and no agent may approve its own precision evidence.
+Refuse M9 here — the hosted service belongs in a separate private repository —
+and refuse M10 until `docs/c-api-design.md` exists.
 
 ```console
-python scripts/autopilot.py doctor
-python scripts/autopilot.py plan --from M2 --through M6
-python scripts/autopilot.py run --from M2 --through M6 --dry-run
-python scripts/autopilot.py run --from M6 --through M6 --push --draft-pr
-python scripts/autopilot.py status
-python scripts/autopilot.py resume
-
 uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .

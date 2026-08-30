@@ -1,5 +1,4 @@
 .coverage
-.autopilot/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/

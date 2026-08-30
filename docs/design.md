@@ -325,10 +325,6 @@ The empty repository should begin as one Python package and one in-tree registry
 ```text
 pyahead/
 ├── AGENTS.md                       # concise Codex working contract
-├── automation/                     # M1.5 development policy (not product code)
-│   ├── milestones.toml
-│   ├── prompts/
-│   └── schemas/
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
 │   ├── pull_request_template.md
@@ -336,7 +332,6 @@ pyahead/
 │       ├── ci.yml
 │       └── release.yml              # added only when publishing starts
 ├── docs/
-│   ├── autopilot.md                # milestone-controller operations and safety
 │   ├── design.md                    # this document
 │   ├── registry-authoring.md
 │   └── contributing.md
@@ -380,14 +375,15 @@ pyahead/
 │               └── coverage/
 │                   └── *.yaml
 ├── tests/
-│   ├── automation/                 # offline fake-service controller tests
 │   ├── unit/
 │   ├── integration/
 │   ├── golden/
 │   └── fixtures/
 │       └── rules/
 ├── scripts/
-│   └── autopilot.py                # M1.5 parent-owned controller
+│   ├── benchmark.py                 # performance-budget harness
+│   ├── corpus.py                    # Gate C corpus acquisition
+│   └── install_smoke.py             # wheel/sdist install verification
 ├── CHANGELOG.md
 ├── LICENSE
 ├── README.md
@@ -1969,160 +1965,6 @@ criterion. M1 cannot demonstrate call-binding shadowing without implementing the
 M2 matcher framework, so its negative criterion is limited to the import syntax
 that its matcher can emit.
 
-### M1.5 — Autonomous milestone orchestrator
-
-This is development infrastructure, not a product-capability milestone. It
-automates the implement, independently verify, review, repair, commit, and
-optional publication cycle without adding any M2 analyser or registry work.
-
-Deliverables:
-
-- a standard-library orchestrator at `scripts/autopilot.py` with `doctor`,
-  `plan`, `run`, `status`, `resume`, and evidence-backed Gate C commands;
-- repository-owned milestone policy, prompt templates, and strict result schemas
-  under `automation/`;
-- one fresh ephemeral Codex context for each implementation, review, and repair
-  role, with read-only review and bounded workspace-write implementation/repair;
-- independent parent-owned verification and one intentional Git commit per
-  passing milestone;
-- atomic ignored state, complete separated logs, interruption recovery, and
-  publication-only retry;
-- protected governance, harness, quality-policy, CI, frozen-contract, external
-  gate-record, and Git metadata boundaries;
-- deterministic offline tests using fake Codex, Git, and GitHub executables;
-- operator and security documentation in `docs/autopilot.md`.
-
-Acceptance:
-
-- `doctor` proves that the installed Codex CLI exposes the required ephemeral,
-  sandbox, approval-policy, schema-output, last-message, and working-directory
-  controls without invoking the service;
-- ranges, exact contract extraction, rendered prompts, closed-world result
-  parsing, role isolation, repair limits, Gate C, M9/M10 refusals, and every
-  durable resume boundary have deterministic offline tests;
-- parent verification is authoritative, the range branch cannot advance before
-  all configured evidence passes and an independent reviewer returns `pass`,
-  and a recovered commit cannot be duplicated; a hosted-evidence milestone may
-  create an unaccepted immutable commit object without attaching it to the
-  range branch;
-- protected-file, quality-policy, and Git-metadata changes stop with work
-  preserved rather than being reverted or committed;
-- `run --dry-run` prints the branch, stages, argv, rendered prompts,
-  verification, commit, publication, gate, and protected-file plan while making
-  no state, Git, Codex, or remote mutation;
-- a failed push preserves local commits and resumes only publication;
-- M2–M6 may run unattended, execution stops after M6 in `awaiting_gate_C`, M7–M8
-  require recorded evidence and accountable approval, M9 is refused in this
-  repository, and M10 is refused until its design exists;
-- the full repository quality and build suite passes without a real M2 run.
-
-### M1.5.1 — Exact-candidate hosted evidence
-
-This controller-hardening milestone resolves the evidence gap discovered during
-the first M6 attempt. It changes development automation only; it does not add
-or modify M6 product functionality.
-
-Deliverables:
-
-- M6-specific parent verification for clean wheel and sdist installs, installed
-  console/sample scans, and the complete benchmark measurement;
-- a publication-required M6 path that creates an immutable candidate commit
-  with a controller-owned temporary index while leaving the range branch and
-  live worktree unchanged;
-- a unique expected-absent object-upload ref whose porcelain result proves a new
-  ref rather than an exact-SHA no-op, atomic API-created final candidate refs
-  with machine-readable HTTP evidence, and an explicit GitHub Actions
-  `workflow_dispatch` tied to the final ref,
-  a controller-supplied
-  `pyahead_autopilot_token` input, and the exact
-  `PyAhead autopilot <token>` run title;
-- hosted commands and returned repository, pull-request, run, and job URLs bound
-  to the sole configured origin fetch/push repository identity;
-- exact-SHA Linux, macOS, Windows, build, and artifact-install job evidence
-  persisted with URLs and supplied to the final read-only reviewer;
-- complete redacted logs for every completed unsuccessful hosted job persisted
-  under the ignored run directory and supplied to a network-restricted fixer by
-  safe repository-relative paths;
-- resumable candidate creation, publication, dispatch, polling, review, and
-  attachment phases, including safe adoption when attachment outlives a state
-  write;
-- durable command-start and completed-result receipts that distinguish a saved
-  publication intent from an actually launched parent process; M1.5.1 uses
-  state schema 2 and does not reinterpret active schema-1 state;
-- per-session result schemas that constrain `milestone` to the exact bare
-  identifier expected by the parent parser;
-- deterministic offline tests for candidate failures, repairs, immutable refs,
-  hosted identity, one-time dispatch attribution, transition-specific Git
-  metadata recovery, every new resume phase, and duplicate-commit prevention.
-
-Acceptance:
-
-- a non-dry-run range containing M6 is refused before mutation without
-  `--push`;
-- local wheel, sdist, installed-launcher/sample-scan, and full benchmark commands
-  pass before a candidate can be published;
-- hosted evidence is accepted only when exactly one post-baseline run carries the
-  one-time dispatch title and that run and all configured required jobs completed
-  successfully for the exact candidate SHA in the configured origin repository;
-  run enumeration uses a larger bounded window and fails closed if that window
-  is saturated rather than assuming uniqueness from truncated output;
-- CI failure, missing jobs, or contradictory SHA evidence enters the bounded
-  fresh-fixer cycle and any replacement uses a distinct immutable ref; a fixer
-  is not started and no repair cycle is consumed until the controller has
-  retrieved the available failed-job logs, while a retrieval failure remains a
-  resumable publication stop;
-- the reviewer receives local and hosted evidence, and only a passing review can
-  attach the already-proven commit to the range branch;
-- interruption at every candidate phase resumes without force-pushing,
-  duplicating a milestone commit, resetting, or discarding the live worktree;
-- candidate creation uses transition-specific metadata guards plus full Git
-  object-integrity validation; publication uses an expected-absent upload lease
-  and requires a durable completed result containing exactly one strict new-ref
-  porcelain update, followed by GitHub's atomic create-ref API with included HTTP
-  status and a commit-typed response; every push disables ambient tag following
-  and recursive submodule publication. It never adopts a pre-existing/no-op,
-  start-only, timed-out, interrupted, or otherwise indeterminate upload, a
-  saved-but-unlaunched API intent, malformed API success evidence, or a definitely
-  rejected final ref even at the exact SHA, and dispatch uncertainty never causes
-  an automatic redispatch;
-- the complete M0–M5 repository suite and all controller tests pass without
-  starting a real M6 implementation session.
-
-### M1.5.2 — Hosted diagnostics and agent recovery
-
-This controller-hardening milestone addresses two failures observed during the
-first exact-candidate M6 hosted run. It changes development automation only and
-does not add or modify M6 product functionality.
-
-Deliverables:
-
-- repository-bound GitHub API fallback when `gh run view --job --log` fails or
-  returns an empty successful response;
-- non-empty failed-job evidence as a precondition for launching a fixer;
-- resumable fresh-process retries for failed implementation, review, and repair
-  sessions, with unique prompt, result, and log paths;
-- preservation of the logical repair count and all edits when a repair process
-  fails before returning a structured result;
-- immutable semantic repair evidence across fixer-process retries, with each
-  process failure recorded under a distinct attempt/retry identity;
-- deterministic offline tests and updated operator documentation.
-
-Acceptance:
-
-- an empty successful `gh run view` response is never recorded as complete
-  hosted evidence;
-- the fallback endpoint is derived from the configured origin repository and
-  exact job ID, and its complete redacted output is supplied to the fixer;
-- failure or empty output from both log interfaces leaves the run in the hosted
-  check phase with repair count unchanged;
-- `resume` starts a fresh context after an implementation, reviewer, or fixer
-  process failure without overwriting the previous process evidence;
-- retrying a failed fixer preserves its edits and does not consume an additional
-  semantic repair cycle or replace the verification/review/hosted evidence that
-  initiated it;
-- the full repository quality and build suite passes without starting a real
-  product-milestone run.
-
 ### M2 — Registry and matcher framework
 
 Deliverables:
@@ -2605,9 +2447,8 @@ These do not block M0–M4 unless stated.
 
 ## 26. Codex implementation protocol
 
-PyAhead is built one milestone at a time. M1.5 replaces repeated operator
-prompting with a repository-owned, resumable controller; it does not relax
-milestone boundaries, independent evidence, or human product gates. A single
+PyAhead is built one milestone at a time. Milestone boundaries, independent
+evidence, and human product gates are not relaxed for convenience. A single
 agent context that implements and approves multiple milestones creates too much
 opportunity for unverified assumptions and architectural drift.
 
@@ -2626,122 +2467,38 @@ Each implementation, review, or repair role must, as applicable:
 9. Update documentation when behaviour or a design decision changes.
 10. Stop and explain if an acceptance criterion requires a product decision not covered here.
 
-### 26.2 Default automated cycle
+### 26.2 Protected boundaries
 
-After M1.5 is merged and local `main` exactly matches `origin/main`, the normal
-unattended alpha sequence is:
+`docs/design.md`, `AGENTS.md`, and `.github/workflows` are protected: change them
+only when the requested milestone explicitly requires it, and record a justified
+design difference in the same change. The `tool.ruff`, `tool.mypy`,
+`tool.pytest.ini_options`, `tool.coverage.run`, and `tool.coverage.report` tables
+in `pyproject.toml` are quality policy; never weaken a threshold to make a change
+pass. Shared refs are never rewritten or force-pushed. When a check fails,
+preserve the work and explain; never silently reset or revert it.
 
-```console
-python scripts/autopilot.py doctor --push --draft-pr
-python scripts/autopilot.py plan --from M2 --through M6
-python scripts/autopilot.py run --from M2 --through M6 --push --draft-pr
-```
+### 26.3 Gates and repository boundaries
 
-Omit `--push --draft-pr` only for ranges ending before M6. M6 requires `--push`
-because its Linux, macOS, Windows, and installed-artifact claims need hosted
-evidence for the exact candidate; a dry run remains available without
-publication. `run --dry-run` must expose the complete planned branch, stages,
-argv, prompts, verification, commits, gate boundaries, publication, hosted
-checks, and protected files without calling Codex, writing state, changing Git,
-or touching a remote.
-
-The controller freezes the exact current milestone subsection and its SHA-256
-digest. It then performs this cycle:
-
-1. launch a fresh ephemeral workspace-write implementer with only the current
-   contract, repository rules, previous status, parent checks, and prohibitions;
-2. validate its closed-world structured result and compare its claimed paths to
-   the complete Git worktree;
-3. independently run every configured verification argv with a deadline and
-   separated logs;
-4. when the milestone has hosted acceptance, construct a parent-owned commit
-   with a temporary index, retain the live uncommitted diff, upload the object to
-   a unique expected-absent ref, atomically create the distinct immutable final
-   ref through GitHub's repository-bound API, dispatch the configured workflow,
-   and accept hosted jobs only for that exact SHA;
-5. launch a separate fresh ephemeral read-only reviewer over the contract, live
-   diff, tests, local evidence, and any exact-candidate hosted evidence;
-6. on failed verification or concrete `changes_requested`, launch a fresh
-   workspace-write fixer with only the contract, failed output, and findings;
-7. repeat independent verification, hosted checks when configured, and review,
-   permitting at most three repair
-   cycles;
-8. for an ordinary milestone, let the parent create one commit after review; for
-   a hosted-evidence milestone, stage the still-matching live tree and attach the
-   already-proven candidate commit to the range branch only after review;
-9. optionally push the accepted range checkpoint and create or update one draft pull request,
-   never merging it or pushing directly to `main`.
-
-No implementation context is resumed for review or repair. Agent claims about
-commands are informational; only controller-run verification is acceptance
-evidence.
-
-### 26.3 Ownership and protected boundaries
-
-Only the controller owns branch creation, temporary indexes, candidate and
-accepted refs, staging, commits, pushes, workflow dispatch, and draft pull
-requests. Candidate refs are unique per repair attempt and are never rewritten
-or force-pushed. Child roles may not invoke the controller recursively or modify
-Git metadata. The controller hashes the harness, governance files, frozen
-contract, protected CI, selected quality-policy tables, ignored Gate C
-record, stable Git control metadata, and the semantic index at the relevant
-boundaries. The semantic index covers staged objects, modes, paths, merge
-stages, and index flags; the volatile physical index stat cache is excluded
-because read-only Git commands may refresh it. A mismatch stops with work
-preserved; it is never silently reset or reverted.
-
-Runtime state and logs live under ignored `.autopilot/`. State is written
-atomically and records the run/branch/base identity, current phase, repair
-count, commits, prompt and contract hashes, exact accepted worktree, Git
-metadata digest, candidate SHA/tree/ref and hosted run/job URLs and conclusions,
-and publication progress. `resume` accepts only that recorded identity and work,
-detects history movement or divergence, recovers a trailer-authenticated parent
-commit or exact-candidate attachment once, and retries publication without
-re-running accepted Codex roles.
-
-### 26.4 Gates and repository boundaries
-
-M2 through M6 may run unattended, but M6 requires `--push`, exact-candidate
-hosted evidence, and a final independent review before its checkpoint can
-transition to `awaiting_gate_C`. Gate C is an early-stage engineering gate:
-continuous-use adoption is evaluated after public distribution rather than
-before M7 or M8. Codex output cannot approve its own precision evidence. An
+M6 requires exact-candidate hosted evidence and a final independent review before
+it can transition to `awaiting_gate_C`. Gate C is an early-stage engineering
+gate: continuous-use adoption is evaluated after public distribution rather than
+before M7 or M8. Agent output cannot approve its own precision evidence. An
 accountable product owner or release group must review the pinned corpus,
 precision calculation, false-positive regressions, incomplete diagnostics, and
-limitations. Record that approval only after a non-empty evidence document
-exists inside the repository:
-
-```console
-python scripts/autopilot.py gate approve C \
-  --evidence docs/evidence/gate-c.md \
-  --approved-by "release council"
-python scripts/autopilot.py gate status C
-```
-
-If an existing run selected work after M6, use `resume`; otherwise, after the M6
-branch is reviewed, merged, and local `main` again exactly matches
-`origin/main`, start the next range with:
-
-```console
-python scripts/autopilot.py run --from M7 --through M8 --push --draft-pr
-```
+limitations, and that approval is recorded only after a non-empty evidence
+document exists inside the repository at `docs/evidence/gate-c.md`.
 
 M9 is refused because the hosted service belongs in a separate private
-repository. M10 is refused until `docs/c-api-design.md` exists. Unknown or
-reverse ranges are rejected before state or Git mutation.
+repository. M10 is refused until `docs/c-api-design.md` exists.
 
-### 26.5 Interruption and operator review
+### 26.4 Operator review
 
-Interrupt with Ctrl-C, inspect `python scripts/autopilot.py status`, the live
-diff, and `.autopilot/runs/<run-id>/`, then use
-`python scripts/autopilot.py resume`. Never discard or reset incomplete work as
-part of automated recovery. Before merging, review each milestone commit,
-verification logs, structured review, protected-policy changes, and draft-PR
-body. “Autonomous” means no repeated prompting; it does not mean bypassing
-security boundaries, human merge review, or product gates. Full operational and
-security guidance is in `docs/autopilot.md`.
+Never discard or reset incomplete work as part of recovery. Before merging,
+review each milestone commit, its verification logs, the structured review, and
+any protected-policy change. Unattended implementation never means bypassing
+security boundaries, human merge review, or product gates.
 
-### 26.6 Historical initial prompt (manual fallback)
+### 26.5 Historical initial prompt
 
 Use this prompt against <https://github.com/diegorusso/pyahead>:
 
@@ -2773,7 +2530,7 @@ provided design document first. Do not weaken an acceptance criterion to make
 the checks pass; explain and fix the underlying problem.
 ```
 
-### 26.7 Subsequent milestone prompt template (manual fallback)
+### 26.6 Subsequent milestone prompt template
 
 ```text
 Implement milestone M<N> from docs/design.md in diegorusso/pyahead.
@@ -2798,7 +2555,7 @@ Finish with:
 - the recommended next milestone, without implementing it.
 ```
 
-### 26.8 Review prompt after each milestone (manual fallback)
+### 26.7 Review prompt after each milestone
 
 Run a separate review before merging:
 

@@ -185,7 +185,6 @@ may therefore fail only because it did not cover the whole package; use
 `--no-cov` for isolated iteration, then run the complete suite.
 
 Read [the contribution guide](docs/contributing.md) before proposing a change.
-The separate milestone controller is documented in [docs/autopilot.md](docs/autopilot.md).
 
 ## License
 
