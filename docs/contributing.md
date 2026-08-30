@@ -28,6 +28,14 @@ single test file directly (for example `uv run pytest tests/test_cli.py`) can fa
 coverage even if the file itself passes. Use `uv run pytest <file> --no-cov` for
 isolated test runs.
 
+`src/pyahead/reporting/schema.py` is the single source of truth for the
+published report schema. After changing it, regenerate both checked-in copies,
+which the schema parity test compares against the generator:
+
+```console
+uv run python -c 'from pathlib import Path; from pyahead.reporting.schema import write_report_schema; write_report_schema(Path("docs/schema/report-v1.json"), Path("src/pyahead/data/schema/report-v1.json"))'
+```
+
 Before opening a pull request, also run `git diff --check` and inspect the diff
 for generated files, credentials, absolute paths, and unrelated changes. In the
 pull request, name the milestone, list the acceptance criteria demonstrated,

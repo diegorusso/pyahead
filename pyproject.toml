@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/diegorusso/pyahead/blob/main/docs/design.md"
+Documentation = "https://github.com/diegorusso/pyahead/blob/main/docs/usage.md"
 Issues = "https://github.com/diegorusso/pyahead/issues"
 Repository = "https://github.com/diegorusso/pyahead"
 

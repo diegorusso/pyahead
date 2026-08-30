@@ -153,6 +153,7 @@ pyahead explain CPY0001
 ## Documentation
 
 - [User guide](docs/usage.md)
+- [Static report JSON Schema](docs/schema/report-v1.json)
 - [Registry authoring](docs/registry-authoring.md)
 - [Security and privacy](docs/security-and-privacy.md)
 - [Performance budgets](docs/usage.md#performance)

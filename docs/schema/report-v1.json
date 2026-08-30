@@ -1,0 +1,1089 @@
+{
+  "$comment": "Matcher and inference evidence are intentionally extensible string-keyed maps whose values remain closed to strings or string arrays; every structural report object is closed.",
+  "$defs": {
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "environment": {
+          "$ref": "#/$defs/evidenceEnvironment"
+        },
+        "freshness": {
+          "enum": [
+            "current",
+            "stale"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/artifactProvider"
+        },
+        "run": {
+          "$ref": "#/$defs/artifactRun"
+        },
+        "source_commit": {
+          "type": "string"
+        },
+        "warning_count": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "environment",
+        "freshness",
+        "path",
+        "provider",
+        "run",
+        "source_commit",
+        "warning_count"
+      ],
+      "type": "object"
+    },
+    "artifactProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "artifactRun": {
+      "additionalProperties": false,
+      "properties": {
+        "exit_code": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "framework": {
+          "type": "string"
+        },
+        "framework_version": {
+          "type": "string"
+        },
+        "tests_collected": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warnings_complete": {
+          "type": "boolean"
+        },
+        "warnings_dropped": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "exit_code",
+        "framework",
+        "framework_version",
+        "tests_collected",
+        "warnings_complete",
+        "warnings_dropped"
+      ],
+      "type": "object"
+    },
+    "automation": {
+      "additionalProperties": false,
+      "properties": {
+        "rule": {
+          "type": "string"
+        },
+        "tool": {
+          "enum": [
+            "ruff",
+            "pyupgrade"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "tool"
+      ],
+      "type": "object"
+    },
+    "configuration": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_incomplete": {
+          "type": "boolean"
+        },
+        "exclude": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "fail_new_only": {
+          "type": "boolean"
+        },
+        "fail_on": {
+          "enum": [
+            "never",
+            "breaking",
+            "risk",
+            "deprecated",
+            "any"
+          ],
+          "type": "string"
+        },
+        "include": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_file_size_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minimum_confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        },
+        "per_file_ignores": {
+          "additionalProperties": false,
+          "description": "Project-defined path patterns. The project owns this key space, so the patterns are deliberately not enumerated and this object stays open; every value is the list of rule identifiers ignored for the matching files.",
+          "patternProperties": {
+            "^.*$": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "respect_gitignore": {
+          "type": "boolean"
+        },
+        "show_suppressed": {
+          "type": "boolean"
+        },
+        "show_unscheduled": {
+          "type": "boolean"
+        },
+        "source_roots": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_roots_provenance": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "allow_incomplete",
+        "exclude",
+        "fail_new_only",
+        "fail_on",
+        "include",
+        "max_file_size_bytes",
+        "minimum_confidence",
+        "per_file_ignores",
+        "respect_gitignore",
+        "show_suppressed",
+        "show_unscheduled",
+        "source_roots",
+        "source_roots_provenance"
+      ],
+      "type": "object"
+    },
+    "diagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "configuration",
+            "discovery",
+            "encoding",
+            "parse",
+            "registry",
+            "suppression",
+            "internal"
+          ],
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "fatal": {
+          "type": "boolean"
+        },
+        "incomplete": {
+          "type": "boolean"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/location"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "category",
+        "code",
+        "fatal",
+        "incomplete",
+        "location",
+        "message"
+      ],
+      "type": "object"
+    },
+    "evidenceEnvironment": {
+      "additionalProperties": false,
+      "properties": {
+        "implementation": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "python_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "implementation",
+        "platform",
+        "python_version"
+      ],
+      "type": "object"
+    },
+    "evidenceMap": {
+      "additionalProperties": false,
+      "description": "Matcher-defined evidence keys. Matchers own this key space, so the keys are deliberately not enumerated and this object stays open; every value is a string or an array of strings.",
+      "patternProperties": {
+        "^.*$": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ]
+        }
+      },
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "finding": {
+      "additionalProperties": false,
+      "properties": {
+        "action_version": {
+          "type": "string"
+        },
+        "baseline_status": {
+          "enum": [
+            "new",
+            "existing"
+          ],
+          "type": "string"
+        },
+        "enclosing_scope": {
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/findingEvidence"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "impact": {
+          "enum": [
+            "deprecated",
+            "risk",
+            "breaking",
+            "informational"
+          ],
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/location"
+        },
+        "match": {
+          "$ref": "#/$defs/match"
+        },
+        "reachable_versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "registry_revision": {
+          "type": "string"
+        },
+        "remediation": {
+          "$ref": "#/$defs/remediation"
+        },
+        "removal_unscheduled": {
+          "type": "boolean"
+        },
+        "rule_id": {
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/source"
+          },
+          "type": "array"
+        },
+        "states": {
+          "items": {
+            "$ref": "#/$defs/state"
+          },
+          "type": "array"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "suppressed": {
+          "type": "boolean"
+        },
+        "suppression": {
+          "$ref": "#/$defs/suppression"
+        },
+        "timeline": {
+          "items": {
+            "$ref": "#/$defs/timelineEvent"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "usage_contexts": {
+          "items": {
+            "enum": [
+              "runtime",
+              "typing"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action_version",
+        "baseline_status",
+        "enclosing_scope",
+        "fingerprint",
+        "impact",
+        "location",
+        "match",
+        "reachable_versions",
+        "registry_revision",
+        "remediation",
+        "removal_unscheduled",
+        "rule_id",
+        "sources",
+        "states",
+        "subject",
+        "suppressed",
+        "timeline",
+        "title",
+        "usage_contexts"
+      ],
+      "type": "object"
+    },
+    "findingEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "inferred": {
+          "$ref": "#/$defs/inferredEvidence"
+        },
+        "observed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "inferred",
+        "observed"
+      ],
+      "type": "object"
+    },
+    "gate": {
+      "additionalProperties": false,
+      "properties": {
+        "fail_on": {
+          "enum": [
+            "never",
+            "breaking",
+            "risk",
+            "deprecated",
+            "any"
+          ],
+          "type": "string"
+        },
+        "failed": {
+          "type": "boolean"
+        },
+        "new_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fail_on",
+        "failed",
+        "new_only"
+      ],
+      "type": "object"
+    },
+    "inference": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceMap"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/location"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "evidence",
+        "kind",
+        "location",
+        "message"
+      ],
+      "type": "object"
+    },
+    "inferredEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/evidenceMap"
+        },
+        "kind": {
+          "const": "static-match"
+        }
+      },
+      "required": [
+        "details",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "location": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "region": {
+          "$ref": "#/$defs/region"
+        }
+      },
+      "required": [
+        "path",
+        "region"
+      ],
+      "type": "object"
+    },
+    "match": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceMap"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "confidence",
+        "evidence",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "observation": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "environment": {
+          "$ref": "#/$defs/evidenceEnvironment"
+        },
+        "freshness": {
+          "enum": [
+            "current",
+            "stale"
+          ],
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "linked_fingerprints": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "location": {
+          "$ref": "#/$defs/observationLocation"
+        },
+        "message": {
+          "type": "string"
+        },
+        "observation_id": {
+          "type": "string"
+        },
+        "occurrences": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "relationships": {
+          "items": {
+            "$ref": "#/$defs/relationship"
+          },
+          "type": "array"
+        },
+        "source_commit": {
+          "type": "string"
+        },
+        "test_node": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "category",
+        "environment",
+        "freshness",
+        "kind",
+        "linked_fingerprints",
+        "message",
+        "observation_id",
+        "occurrences",
+        "phase",
+        "provider",
+        "relationships",
+        "source_commit"
+      ],
+      "type": "object"
+    },
+    "observationLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "line",
+        "path"
+      ],
+      "type": "object"
+    },
+    "policy": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_python": {
+          "type": "string"
+        },
+        "horizon_python": {
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "baseline_python",
+        "horizon_python",
+        "provenance",
+        "versions"
+      ],
+      "type": "object"
+    },
+    "position": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "column",
+        "line"
+      ],
+      "type": "object"
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_python": {
+          "type": "string"
+        },
+        "horizon_python": {
+          "type": "string"
+        },
+        "requires_python": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "baseline_python",
+        "horizon_python"
+      ],
+      "type": "object"
+    },
+    "region": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/position"
+        },
+        "start": {
+          "$ref": "#/$defs/position"
+        }
+      },
+      "required": [
+        "end",
+        "start"
+      ],
+      "type": "object"
+    },
+    "registry": {
+      "additionalProperties": false,
+      "properties": {
+        "release": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "release",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "relationship": {
+      "additionalProperties": false,
+      "properties": {
+        "finding_fingerprint": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "corroborates",
+            "conflicts",
+            "location-only"
+          ],
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rule_id": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "finding_fingerprint",
+        "kind",
+        "reasons",
+        "rule_id",
+        "subject"
+      ],
+      "type": "object"
+    },
+    "remediation": {
+      "additionalProperties": false,
+      "properties": {
+        "automation": {
+          "$ref": "#/$defs/automation"
+        },
+        "documentation_url": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "type": "object"
+    },
+    "reportEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/artifact"
+          },
+          "type": "array"
+        },
+        "observations": {
+          "items": {
+            "$ref": "#/$defs/observation"
+          },
+          "type": "array"
+        },
+        "source_commit": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifacts",
+        "observations",
+        "source_commit"
+      ],
+      "type": "object"
+    },
+    "scan": {
+      "additionalProperties": false,
+      "properties": {
+        "files_analyzed": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_discovered": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_incomplete": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "files_analyzed",
+        "files_discovered",
+        "files_incomplete",
+        "root"
+      ],
+      "type": "object"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "url"
+      ],
+      "type": "object"
+    },
+    "state": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "deprecated",
+            "risk",
+            "breaking",
+            "informational"
+          ],
+          "type": "string"
+        },
+        "through": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "state",
+        "through"
+      ],
+      "type": "object"
+    },
+    "summary": {
+      "additionalProperties": false,
+      "properties": {
+        "breaking": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deprecated": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "informational": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "new": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observed": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observed_stale": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observed_unmatched": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "risk": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "suppressed": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "breaking",
+        "deprecated",
+        "informational",
+        "new",
+        "risk",
+        "suppressed"
+      ],
+      "type": "object"
+    },
+    "suppression": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "inline",
+            "per-file"
+          ],
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "timelineEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "certainty": {
+          "enum": [
+            "released",
+            "scheduled",
+            "provisional"
+          ],
+          "type": "string"
+        },
+        "event": {
+          "enum": [
+            "deprecated",
+            "removed",
+            "signature_changed",
+            "behavior_changed",
+            "syntax_changed",
+            "support_dropped"
+          ],
+          "type": "string"
+        },
+        "python": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "certainty",
+        "event",
+        "python",
+        "source"
+      ],
+      "type": "object"
+    },
+    "tool": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "pyahead"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/diegorusso/pyahead/blob/main/docs/schema/report-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "configuration": {
+      "$ref": "#/$defs/configuration"
+    },
+    "diagnostics": {
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      },
+      "type": "array"
+    },
+    "evidence": {
+      "$ref": "#/$defs/reportEvidence"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/finding"
+      },
+      "type": "array"
+    },
+    "gate": {
+      "$ref": "#/$defs/gate"
+    },
+    "inferences": {
+      "items": {
+        "$ref": "#/$defs/inference"
+      },
+      "type": "array"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "registry": {
+      "$ref": "#/$defs/registry"
+    },
+    "scan": {
+      "$ref": "#/$defs/scan"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "summary": {
+      "$ref": "#/$defs/summary"
+    },
+    "tool": {
+      "$ref": "#/$defs/tool"
+    }
+  },
+  "required": [
+    "configuration",
+    "diagnostics",
+    "findings",
+    "gate",
+    "inferences",
+    "policy",
+    "registry",
+    "scan",
+    "schema_version",
+    "summary",
+    "tool"
+  ],
+  "title": "PyAhead static scan report schema version 1",
+  "type": "object"
+}

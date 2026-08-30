@@ -73,6 +73,17 @@ _CANONICAL_FIELD_AFTER_DELIMITER = re.compile(
     r"\s*[\"']?[a-z_][a-z0-9_-]*[\"']?\s*[:=]",
     flags=re.IGNORECASE,
 )
+_TYPING_CONSUMER = """\
+from pathlib import Path
+from typing import assert_type
+
+from pyahead.analysis import ScanReport, ScanRequest, scan
+from pyahead.registry import Registry, load_registry
+
+request = ScanRequest(root=Path("."))
+assert_type(scan(request), ScanReport)
+assert_type(load_registry(), Registry)
+"""
 
 
 class InstallSmokeError(RuntimeError):
@@ -822,6 +833,67 @@ def _validate_installed_origin(
         raise InstallSmokeError(message)
 
 
+def _validate_installed_contract_artifacts(
+    environment_dir: Path,
+    *,
+    environment: dict[str, str],
+    timeout: float,
+) -> None:
+    """Require the installed typing marker and public report schema resource."""
+    result = _run(
+        [
+            str(_venv_python(environment_dir)),
+            "-I",
+            "-c",
+            (
+                "import importlib.resources as r,json;"
+                "root=r.files('pyahead');"
+                "schema=r.files('pyahead.data.schema').joinpath('report-v1.json');"
+                "print(json.dumps({'py_typed':root.joinpath('py.typed').is_file(),"
+                "'schema':schema.is_file()}))"
+            ),
+        ],
+        cwd=environment_dir.parent,
+        environment=environment,
+        timeout=timeout,
+    )
+    try:
+        document = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        document = None
+    if document != {"py_typed": True, "schema": True}:
+        message = "installed distribution omitted typing or report-schema data"
+        raise InstallSmokeError(message)
+
+
+def _validate_installed_typing(
+    root: Path,
+    environment_dir: Path,
+    *,
+    environment: dict[str, str],
+    timeout: float,
+) -> None:
+    """Type-check the narrow public API against the installed wheel."""
+    consumer = root / "typing-consumer.py"
+    consumer.write_text(_TYPING_CONSUMER, encoding="utf-8")
+    _run(
+        [
+            sys.executable,
+            "-I",
+            "-m",
+            "mypy",
+            "--strict",
+            "--no-incremental",
+            "--python-executable",
+            str(_venv_python(environment_dir)),
+            str(consumer),
+        ],
+        cwd=root,
+        environment=environment,
+        timeout=timeout,
+    )
+
+
 def _write_sample_project(project: Path) -> None:
     project.mkdir()
     (project / "pyproject.toml").write_text(
@@ -903,6 +975,18 @@ def _smoke(
             environment=environment,
             timeout=timeout,
         )
+        _validate_installed_contract_artifacts(
+            environment_dir,
+            environment=environment,
+            timeout=timeout,
+        )
+        if artifact.suffix == ".whl":
+            _validate_installed_typing(
+                root,
+                environment_dir,
+                environment=environment,
+                timeout=timeout,
+            )
         launcher = _venv_launcher(environment_dir)
         if not launcher.is_file():
             message = "installed distribution did not create the pyahead launcher"

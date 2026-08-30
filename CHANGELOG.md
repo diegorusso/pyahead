@@ -8,6 +8,9 @@ stabilizing.
 
 ### Added
 
+- A closed static-report JSON Schema, packaged schema resource, `py.typed`
+  marker, and documented narrow public Python API with installed-wheel strict
+  mypy verification.
 - Opt-in dependency compatibility reports with declared environment targets,
   separate application and library semantics, direct build-free wheel/sdist
   metadata inspection, target marker evaluation, `Requires-Python` and wheel

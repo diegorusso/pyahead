@@ -32,6 +32,35 @@ On Windows, the last two paths are `.pyahead-smoke\Scripts\python.exe` and
 `.pyahead-smoke\Scripts\pyahead.exe`. Installation can contact a configured
 package index for dependencies. Scanning is offline.
 
+## Python API and compatibility
+
+The typed public-alpha library surface is intentionally narrow:
+
+```python
+from pathlib import Path
+
+from pyahead.analysis import ScanReport, ScanRequest, scan
+from pyahead.registry import Registry, RegistryError, load_registry
+
+request = ScanRequest(root=Path.cwd(), baseline_python="3.11", horizon_python="3.14")
+report: ScanReport = scan(request)
+registry: Registry = load_registry()
+```
+
+PyAhead `0.x` releases may make documented incompatible API changes between
+minor releases. Patch releases preserve this import surface and the documented
+report schema unless a security or correctness defect requires a clearly
+recorded exception. Parser, resolver, process, LibCST, automation, and other
+unlisted internals are not public APIs. Existing compatibility exports remain
+available until a separate public-API decision documents their removal.
+
+Static JSON reports conform to the closed
+[`report-v1.json`](schema/report-v1.json) schema. Matcher and inference
+`evidence` maps are the one documented extensibility point: their keys may grow,
+while each value remains a string or list of strings. Structural report objects
+reject unknown properties. The same schema is bundled as the package resource
+`pyahead.data.schema/report-v1.json` for offline consumers.
+
 ## Policy and first scan
 
 The baseline is the oldest supported Python minor. The horizon is the newest

@@ -1114,6 +1114,8 @@ def test_smoke_orchestration_preserves_artifact_modes(
     artifact.touch()
     observed_policies: list[install_smoke._InstallerPolicy] = []
     environments: list[dict[str, str]] = []
+    contract_checks: list[Path] = []
+    typing_checks: list[Path] = []
     policy = install_smoke._InstallerPolicy(
         offline=offline,
         cache=tmp_path / "installer-cache" if use_cache else None,
@@ -1143,6 +1145,27 @@ def test_smoke_orchestration_preserves_artifact_modes(
         assert timeout == 1.0
         environments.append(environment)
 
+    def fake_contract(
+        environment_dir: Path,
+        *,
+        environment: dict[str, str],
+        timeout: float,
+    ) -> None:
+        assert timeout == 1.0
+        contract_checks.append(environment_dir)
+        environments.append(environment)
+
+    def fake_typing(
+        _root: Path,
+        environment_dir: Path,
+        *,
+        environment: dict[str, str],
+        timeout: float,
+    ) -> None:
+        assert timeout == 1.0
+        typing_checks.append(environment_dir)
+        environments.append(environment)
+
     def fake_run(
         command: list[str],
         **options: object,
@@ -1158,6 +1181,12 @@ def test_smoke_orchestration_preserves_artifact_modes(
 
     monkeypatch.setattr(install_smoke, "_install", fake_install)
     monkeypatch.setattr(install_smoke, "_validate_installed_origin", fake_origin)
+    monkeypatch.setattr(
+        install_smoke,
+        "_validate_installed_contract_artifacts",
+        fake_contract,
+    )
+    monkeypatch.setattr(install_smoke, "_validate_installed_typing", fake_typing)
     monkeypatch.setattr(install_smoke, "_run", fake_run)
     monkeypatch.setattr(install_smoke, "_validate_scan", lambda _document: None)
 
@@ -1169,9 +1198,87 @@ def test_smoke_orchestration_preserves_artifact_modes(
     )
 
     assert observed_policies == [policy]
+    assert len(contract_checks) == 1
+    assert len(typing_checks) == (1 if kind == "wheel" else 0)
     assert all(environment is environments[0] for environment in environments)
     assert ("UV_OFFLINE" in environments[0]) is offline
     assert ("UV_NO_CACHE" in environments[0]) is not use_cache
+
+
+@pytest.mark.parametrize(
+    ("document", "valid"),
+    [
+        ({"py_typed": True, "schema": True}, True),
+        ({"py_typed": False, "schema": True}, False),
+        ({"py_typed": True, "schema": False}, False),
+        ({"py_typed": True, "schema": True, "extra": True}, False),
+    ],
+)
+def test_installed_contract_artifacts_are_both_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    document: dict[str, bool],
+    valid: bool,
+) -> None:
+    """An installed candidate must carry both public contract artifacts."""
+    monkeypatch.setattr(
+        install_smoke,
+        "_run",
+        lambda command, **_options: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(document),
+            stderr="",
+        ),
+    )
+
+    if valid:
+        install_smoke._validate_installed_contract_artifacts(
+            tmp_path,
+            environment={"PATH": ""},
+            timeout=1.0,
+        )
+    else:
+        with pytest.raises(install_smoke.InstallSmokeError, match="omitted"):
+            install_smoke._validate_installed_contract_artifacts(
+                tmp_path,
+                environment={"PATH": ""},
+                timeout=1.0,
+            )
+
+
+def test_installed_wheel_typing_uses_strict_mypy_and_target_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The consumer proves concrete return types from the installed wheel."""
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        **_options: object,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install_smoke, "_run", fake_run)
+    environment_dir = tmp_path / "environment"
+
+    install_smoke._validate_installed_typing(
+        tmp_path,
+        environment_dir,
+        environment={"PATH": ""},
+        timeout=1.0,
+    )
+
+    consumer = tmp_path / "typing-consumer.py"
+    assert commands[0][3:6] == ["mypy", "--strict", "--no-incremental"]
+    assert commands[0][commands[0].index("--python-executable") + 1] == str(
+        install_smoke._venv_python(environment_dir)
+    )
+    assert "assert_type(scan(request), ScanReport)" in consumer.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_native_environment_executable_paths(tmp_path: Path) -> None:

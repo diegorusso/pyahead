@@ -2267,7 +2267,9 @@ Deliverables:
 Acceptance:
 
 - required properties and `additionalProperties: false` close every report
-  schema object except a specifically documented extensibility point;
+  schema object except the two specifically documented extensibility points,
+  `evidenceMap` and `configuration.per_file_ignores`, whose key spaces are owned
+  by matchers and by the scanned project rather than by the schema;
 - generated and checked-in schemas are identical and every representative and
   golden report validates;
 - wheel and sdist contain the intended schema/typing artifacts, and a clean
