@@ -5,6 +5,9 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+import pytest
+
+import pyahead.reporting.console as console_reporting
 from pyahead._human_text import escape_terminal_text
 from pyahead.analysis import ScanRequest, scan
 from pyahead.model import (
@@ -25,7 +28,31 @@ from pyahead.model import (
     Suppression,
     SuppressionKind,
 )
-from pyahead.reporting import render_json, render_sarif, render_text
+from pyahead.reporting import render_json, render_quiet_text, render_sarif, render_text
+
+
+def test_quiet_report_computes_the_exact_result_line_directly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quiet output stays byte-identical without rendering discarded detail."""
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+    report = scan(
+        ScanRequest(
+            root=tmp_path,
+            baseline_python="3.11",
+            horizon_python="3.13",
+        )
+    )
+    expected = render_text(report).splitlines()[-1] + "\n"
+
+    def fail_if_rendered(_report: object) -> str:
+        message = "quiet mode rendered the full report"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(console_reporting, "render_text", fail_if_rendered)
+
+    assert render_quiet_text(report).encode() == expected.encode()
 
 
 def test_text_report_renders_multiple_findings_and_diagnostics(

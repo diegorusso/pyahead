@@ -320,36 +320,47 @@ That final behaviour is a principal reason for the hosted product to exist.
 
 ## 6. Repository layout
 
-The empty repository should begin as one Python package and one in-tree registry. Do not create the Django service, a JavaScript frontend, or multiple repositories during the CLI milestones.
+The repository remains one Python package with an in-tree registry. The current
+top-level and package boundaries are:
 
 ```text
 pyahead/
 ├── AGENTS.md                       # concise Codex working contract
 ├── .github/
-│   ├── ISSUE_TEMPLATE/
 │   ├── pull_request_template.md
-│   └── workflows/
-│       ├── ci.yml
-│       └── release.yml              # added only when publishing starts
+│   └── workflows/ci.yml
 ├── docs/
 │   ├── design.md                    # this document
+│   ├── usage.md
 │   ├── registry-authoring.md
-│   └── contributing.md
+│   ├── security-and-privacy.md
+│   ├── contributing.md
+│   ├── releasing.md
+│   ├── corpus-review.md
+│   ├── evidence/gate-c.md
+│   └── schema/                      # public report, evidence, and registry schemas
 ├── src/
 │   └── pyahead/
 │       ├── __init__.py
 │       ├── __main__.py
+│       ├── _human_text.py
+│       ├── _rooted_reader.py
+│       ├── _windows_output.py
+│       ├── baseline.py
 │       ├── cli.py
 │       ├── config.py
-│       ├── diagnostics.py
-│       ├── versions.py
-│       ├── project.py
+│       ├── dependencies.py          # separate dependency report pipeline
+│       ├── evidence.py              # pytest-warning artifact ingestion
 │       ├── model.py
+│       ├── output.py
+│       ├── pytest_plugin.py
+│       ├── py.typed
+│       ├── timeline.py
+│       ├── versions.py
 │       ├── analysis/
 │       │   ├── __init__.py
 │       │   ├── engine.py
 │       │   ├── discovery.py
-│       │   ├── names.py
 │       │   ├── reachability.py
 │       │   ├── suppressions.py
 │       │   └── matchers/
@@ -360,20 +371,16 @@ pyahead/
 │       │       └── builtins.py
 │       ├── registry/
 │       │   ├── loader.py
-│       │   ├── model.py
-│       │   ├── validation.py
-│       │   └── coverage.py
+│       │   ├── presentation.py
+│       │   └── schema.py
 │       ├── reporting/
 │       │   ├── console.py
 │       │   ├── json.py
-│       │   └── sarif.py
+│       │   ├── sarif.py
+│       │   └── schema.py
 │       └── data/
-│           └── registry/
-│               ├── releases.yaml
-│               ├── cpython/
-│               │   └── *.yaml
-│               └── coverage/
-│                   └── *.yaml
+│           ├── registry/            # index, releases, rules, and coverage YAML
+│           └── schema/report-v1.json
 ├── tests/
 │   ├── unit/
 │   ├── integration/
@@ -412,19 +419,16 @@ Runtime dependencies should remain small and purposeful:
 | --- | --- |
 | `libcst` | Lossless parsing, positions, scopes, and qualified-name metadata. |
 | `packaging` | Python versions, specifiers, requirements, and markers. |
-| `pydantic` | Strict registry, configuration, and report models. |
 | `PyYAML` | Safe loading of human-maintained registry records. |
 | `pathspec` | Gitignore-compatible file discovery. |
-| `click` | Stable subcommand-based CLI. |
-| `rich` | Readable terminal reports; never used by JSON/SARIF paths. |
 
 Development dependencies:
 
-- `pytest` and `pytest-cov`;
-- `hypothesis` for version-expression and schema properties where useful;
+- Hatchling for wheel and sdist builds;
+- `jsonschema` for public schema validation;
+- `pytest`, `pytest-cov`, and `pytest-xdist`;
 - `ruff` for lint and formatting;
-- `mypy` in strict mode;
-- `build` or `uv build` for distribution verification.
+- `mypy` in strict mode and `types-PyYAML` for checked YAML access.
 
 Avoid adding a dependency when a small standard-library implementation is clearer.
 
@@ -439,9 +443,12 @@ flowchart TD
     B --> D["File discovery"]
     C --> E["Static analysis engine"]
     D --> E
-    E --> F["Evidence and finding merger"]
+    W["Versioned pytest-warning artifact"] --> F["Provider-specific warning merger"]
+    E --> F
     F --> G["Gate evaluation"]
-    G --> H["Console, JSON, or SARIF"]
+    G --> H["ScanReport: console, JSON, or SARIF"]
+    I["Dependency CLI request"] --> J["Metadata and isolated uv analysis"]
+    J --> K["DependencyReport: text or dependency JSON"]
 ```
 
 The CLI is a thin adapter. Business logic must be callable as a Python library:
@@ -1433,35 +1440,37 @@ declared expectation rather than merely using them as lists of paths.
 
 ## 17. Evidence providers after the static alpha
 
-These components are designed now but implemented only after the static validation gate.
+Dynamic components begin only after the static validation gate. M7 and M8 now
+implement the two provider-specific boundaries described below; later entries
+remain design constraints rather than implied current features.
 
-### 17.1 Evidence-provider interface
+### 17.1 Provider-specific evidence boundaries
 
-```python
-class EvidenceProvider(Protocol):
-    name: str
+The `0.2` implementation deliberately has no generic provider protocol or
+dependency-injection framework. Each proven evidence source owns a narrow,
+versioned boundary:
 
-    def collect(self, request: EvidenceRequest) -> Iterable[Evidence]: ...
-```
+- `pyahead.pytest_plugin` writes the `evidence-v1` pytest-warning artifact in
+  user CI. `pyahead.evidence` validates that artifact and links current or stale
+  warning observations into the optional evidence section of `ScanReport`.
+  It never rewrites static findings, and unmatched observations remain visible.
+- `pyahead.dependencies` owns dependency targets, supplied metadata, resolver
+  evidence, completeness semantics, and `DependencyReport`. The `dependencies`
+  command renders this report through dependency-specific text and JSON paths;
+  dependency rows are not inserted into `ScanReport` or its static-report
+  schema.
 
-Evidence is normalized into:
-
-```python
-@dataclass(frozen=True)
-class Evidence:
-    provider: str
-    kind: str
-    target: EnvironmentTarget
-    subject: str | None
-    location: SourceLocation | None
-    confidence: EvidenceConfidence
-    observed: bool
-    details: Mapping[str, JsonValue]
-```
-
-Providers never mutate static findings. The merger creates a report view that links corroborating or conflicting evidence.
+A future evidence source receives its own design and versioned artifact or
+report contract first. Shared abstractions may be extracted only after two
+implemented providers demonstrate the same semantics; provider names alone are
+not sufficient reason to force unlike evidence into one model.
 
 ### 17.2 Dependency compatibility
+
+Dependency compatibility is a separate analysis product returning
+`DependencyReport`, not another static `Finding` kind. This boundary preserves
+dependency target, artifact inventory, resolver diagnostics, and incomplete
+status without weakening the deterministic static `ScanReport` contract.
 
 Separate application and library semantics:
 
@@ -1509,9 +1518,13 @@ PEP 702 messages may mention a removal version, but PyAhead must not parse free 
 
 ### 17.4 Runtime warnings
 
-Provide a pytest plugin or explicit wrapper that captures `DeprecationWarning` and `PendingDeprecationWarning` into normalized JSON. Pytest already controls warnings through `-W`; PyAhead's value is durable normalization and timeline merging.
+The explicit pytest plugin captures `DeprecationWarning` and
+`PendingDeprecationWarning` into the versioned evidence JSON artifact. Pytest
+continues to control warning policy through `-W`; PyAhead adds bounded durable
+normalization, completeness metadata, and deterministic timeline linking.
 
-Dynamic execution occurs in the user's CI, not the hosted scanner. The evidence artifact is uploaded or passed to `pyahead check --evidence`.
+Dynamic execution occurs in the user's CI, not the hosted scanner. The evidence
+artifact is passed explicitly to `pyahead check --evidence`.
 
 ### 17.5 Compatibility probes
 
@@ -1926,10 +1939,10 @@ Deliverables:
 Acceptance:
 
 ```console
-uv sync
+uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src
+uv run mypy src scripts
 uv run pytest
 uv build
 uv run pyahead --version

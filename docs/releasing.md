@@ -30,7 +30,7 @@ PYAHEAD_INSTALLER_CACHE=$(mktemp -d /tmp/pyahead-release-uv-cache.XXXXXX)
 uv sync --frozen --cache-dir "$PYAHEAD_INSTALLER_CACHE"
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src
+uv run mypy src scripts
 uv run pytest
 uv run pyahead registry validate
 uv run pyahead registry coverage

@@ -10,10 +10,10 @@
 
 <!-- List the exact commands run and their results. -->
 
-- [ ] `uv sync`
+- [ ] `uv sync --frozen`
 - [ ] `uv run ruff check .`
 - [ ] `uv run ruff format --check .`
-- [ ] `uv run mypy src`
+- [ ] `uv run mypy src scripts`
 - [ ] `uv run pytest`
 - [ ] `uv build`
 - [ ] `uv run pyahead --version`

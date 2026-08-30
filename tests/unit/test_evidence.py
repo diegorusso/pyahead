@@ -450,7 +450,7 @@ def test_different_commit_evidence_is_visible_stale_and_never_linked(
 
 
 def test_evidence_paths_and_duplicate_artifacts_fail_closed(tmp_path: Path) -> None:
-    """Ingestion is root bounded and coalesces identical artifact content."""
+    """Duplicate content keeps the smallest path independent of argument order."""
     report = _static_report(tmp_path)
     artifact = tmp_path / "warnings.json"
     clone = tmp_path / "warnings-copy.json"
@@ -466,14 +466,16 @@ def test_evidence_paths_and_duplicate_artifacts_fail_closed(tmp_path: Path) -> N
             root=tmp_path,
             source_commit=CURRENT_COMMIT,
         )
-    merged = merge_evidence(
-        report,
-        (artifact, clone),
-        root=tmp_path,
-        source_commit=CURRENT_COMMIT,
-    )
-    assert len(merged.evidence_artifacts) == 1
-    assert len(merged.observed_warnings) == 1
+    for paths in ((artifact, clone), (clone, artifact)):
+        merged = merge_evidence(
+            report,
+            paths,
+            root=tmp_path,
+            source_commit=CURRENT_COMMIT,
+        )
+        assert len(merged.evidence_artifacts) == 1
+        assert merged.evidence_artifacts[0].path == PurePosixPath("warnings-copy.json")
+        assert len(merged.observed_warnings) == 1
 
 
 def test_evidence_symlink_is_rejected(tmp_path: Path) -> None:

@@ -310,6 +310,35 @@ def _observed_evidence_summary(report: ScanReport) -> str:
     )
 
 
+def _result_line(report: ScanReport) -> str:
+    """Compute the deterministic final summary without rendering report detail."""
+    active_findings = tuple(
+        finding for finding in report.findings if finding.suppression is None
+    )
+    impact_counts = Counter(finding.impact.value for finding in active_findings)
+    impact_summary = ", ".join(
+        f"{impact_counts[impact]} {impact}"
+        for impact in ("breaking", "risk", "deprecated", "informational")
+        if impact_counts[impact]
+    )
+    if not impact_summary:
+        impact_summary = "none"
+    suppressed_count = len(report.findings) - len(active_findings)
+    suppression_summary = (
+        f"; {_plural(suppressed_count, 'finding')} suppressed"
+        if suppressed_count
+        else ""
+    )
+    evidence_summary = _observed_evidence_summary(report)
+    return (
+        f"Result: {_plural(len(active_findings), 'finding')} "
+        f"({impact_summary}); "
+        f"{_plural(report.counts.files_analyzed, 'file')} analyzed; "
+        f"{_plural(report.counts.files_incomplete, 'file')} incomplete"
+        f"{suppression_summary}{evidence_summary}."
+    )
+
+
 def render_text(report: ScanReport) -> str:
     """Render a stable, colour-free human report."""
     lines = [
@@ -375,39 +404,10 @@ def render_text(report: ScanReport) -> str:
 
     lines.extend(_observed_evidence_lines(report))
 
-    active_findings = tuple(
-        finding for finding in report.findings if finding.suppression is None
-    )
-    impact_counts = Counter(finding.impact.value for finding in active_findings)
-    impact_summary = ", ".join(
-        f"{impact_counts[impact]} {impact}"
-        for impact in ("breaking", "risk", "deprecated", "informational")
-        if impact_counts[impact]
-    )
-    if not impact_summary:
-        impact_summary = "none"
-    suppressed_count = len(report.findings) - len(active_findings)
-    suppression_summary = (
-        f"; {_plural(suppressed_count, 'finding')} suppressed"
-        if suppressed_count
-        else ""
-    )
-    evidence_summary = _observed_evidence_summary(report)
-    lines.extend(
-        [
-            "",
-            (
-                f"Result: {_plural(len(active_findings), 'finding')} "
-                f"({impact_summary}); "
-                f"{_plural(report.counts.files_analyzed, 'file')} analyzed; "
-                f"{_plural(report.counts.files_incomplete, 'file')} incomplete"
-                f"{suppression_summary}{evidence_summary}."
-            ),
-        ]
-    )
+    lines.extend(["", _result_line(report)])
     return "\n".join(lines) + "\n"
 
 
 def render_quiet_text(report: ScanReport) -> str:
     """Render only the deterministic final result line."""
-    return render_text(report).splitlines()[-1] + "\n"
+    return _result_line(report) + "\n"

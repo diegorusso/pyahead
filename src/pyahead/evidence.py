@@ -974,7 +974,12 @@ def _load_evidence_set(
                     f"{MAX_TOTAL_EVIDENCE_WARNINGS}"
                 ),
             )
-        unique_artifacts.setdefault(item.artifact_id, item)
+        representative = unique_artifacts.get(item.artifact_id)
+        if (
+            representative is None
+            or item.path.as_posix() < representative.path.as_posix()
+        ):
+            unique_artifacts[item.artifact_id] = item
     return tuple(
         sorted(
             unique_artifacts.values(),

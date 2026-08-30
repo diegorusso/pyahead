@@ -26,7 +26,7 @@ and refuse M10 until `docs/c-api-design.md` exists.
 uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src
+uv run mypy src scripts
 uv run pytest
 uv build
 uv run pyahead --version

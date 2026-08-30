@@ -11,10 +11,10 @@ Set up the locked development environment and run the complete verification
 suite:
 
 ```console
-uv sync
+uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src
+uv run mypy src scripts
 uv run pytest
 uv build
 uv run pyahead --version
