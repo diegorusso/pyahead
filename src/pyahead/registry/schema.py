@@ -1,6 +1,5 @@
 """Strict schema parsing and JSON Schema generation for registry version 1."""
 
-import argparse
 import json
 import math
 import re
@@ -12,6 +11,7 @@ from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import TypeAlias, TypeVar, cast
 
+from pyahead._human_text import SafeArgumentParser
 from pyahead.model import (
     AutomationReference,
     AutomationTool,
@@ -1665,10 +1665,16 @@ def write_json_schemas(directory: Path) -> tuple[Path, Path]:
     return index_path, rule_path
 
 
+def _parser() -> SafeArgumentParser:
+    """Build the terminal-safe registry-schema maintenance parser."""
+    parser = SafeArgumentParser(prog="python -m pyahead.registry.schema")
+    parser.add_argument("directory", type=Path)
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
     """Generate the checked-in schemas for registry authors."""
-    parser = argparse.ArgumentParser(prog="python -m pyahead.registry.schema")
-    parser.add_argument("directory", type=Path)
+    parser = _parser()
     arguments = parser.parse_args(argv)
     write_json_schemas(arguments.directory)
     return 0

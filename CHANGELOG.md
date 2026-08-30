@@ -72,6 +72,10 @@ stabilizing.
 
 - Documented offline scan, no-telemetry, no-target-execution, filesystem, and
   corpus-data boundaries.
+- Human-readable reports, CLI diagnostics, registry and dependency presentation,
+  and project maintenance logs now escape untrusted terminal controls, embedded
+  line breaks, and dangerous Unicode separators while preserving printable
+  Unicode and deterministic machine formats.
 - Root-bounded Windows output creation and replacement stays anchored to opened
   non-reparse directory handles and fails closed if those APIs are unavailable.
 - Corpus review worksheets carry and verify the exact result digest so a

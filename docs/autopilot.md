@@ -15,7 +15,9 @@ analyser, registry, Django, or hosted-service feature.
 `scripts/autopilot.py` is a Python 3.11+ standard-library controller. Its policy
 is in `automation/milestones.toml`, its role prompts are in
 `automation/prompts/`, and its closed-world JSON Schemas are in
-`automation/schemas/`.
+`automation/schemas/`. It retains a controller-native terminal-text boundary
+whose behavior is tested against the product boundary; importing mutable
+product source during a resumable run would weaken controller independence.
 
 The roles have deliberately different authority:
 
@@ -289,14 +291,48 @@ The Gate C hash may change only through the explicit `gate approve C` operator
 command while no milestone phase is active.
 
 Every subprocess has a deadline. Standard output and standard error are stored
-in separate complete log files. Logged commands also receive atomic start and
-completed-result receipts bound to an argv hash and the two output hashes; an
-intent saved before process creation is therefore not confused with a returned
-publication attempt. The runner never records or prints the child
-environment, and it redacts common authorization headers, GitHub/OpenAI token
-forms, and credential-bearing URLs. Redaction is not a general secret scanner:
-do not put secrets in source, prompts, command output, or repository-owned
-configuration, and inspect logs before sharing them.
+in separate complete human log files. The controller incrementally redacts and
+terminal-escapes each stream before writing it to a securely rooted temporary;
+raw child chunks are never written to a named file. Every child-supplied control
+character, including line feeds and tabs, is visibly encoded, so only the log
+renderer can create records or alignment. The sanitized temporary is flushed,
+identity-checked, and atomically finalized before a completion receipt can bind
+its full hash and byte size.
+
+Machine consumers use a separate base64 JSON sidecar containing at most exactly
+1 MiB from each redacted stream. The controller keeps draining and preserving
+the complete human log after that mirror fills, records an explicit overflow
+flag for each stream, and fails closed for any parser or publication decision
+that would otherwise depend on incomplete machine output. The schema-3 result
+receipt binds the argv hash, both complete human-log hashes and sizes, both
+machine-overflow flags, and the schema-2 machine-sidecar hash. An intent saved
+before process creation is therefore not confused with a returned publication
+attempt, and contradictory human and machine views are rejected. Existing
+schema-1 and schema-2 command receipts remain readable for already paused runs.
+
+The runner never records or prints the child environment, and its streaming
+boundary retains redaction state across arbitrary byte chunks for common
+authorization headers, GitHub/OpenAI token forms, and credential-bearing URLs.
+Stored redacted logs visibly encode terminal controls and dangerous Unicode
+format/separator characters. Human status and error output uses the same
+controller-native boundary, while `status --json` remains an unmodified machine
+representation. Redaction is not a general secret scanner: do not put secrets
+in source, prompts, command output, or repository-owned configuration, and
+inspect logs with a control-safe viewer before sharing them.
+
+Resume reads pin the repository root and every ancestor while reading each start
+receipt, result receipt, human log, and machine sidecar. They reject symlinks,
+Windows reparse points and alternate data streams, non-regular files,
+replacement, and in-place mutation. Complete human logs are authenticated as
+streams against their receipt hashes and sizes and have no controller-imposed
+log-size cap; machine mirrors and structural documents retain their documented
+bounds. If disk exhaustion, an I/O error, or unsafe path mutation prevents full
+sanitized persistence, no completion receipt claims that log is complete and
+the evidence-dependent operation stops resumably. A repair input written by the
+current controller has a separate hash-bound format receipt; that receipt lets
+the fixer retain controller-owned headings and line endings. Unversioned repair
+input from an older paused run remains resumable, but every control in it is
+visibly escaped because its original structural line endings cannot be proven.
 
 When an exact-candidate workflow completes unsuccessfully, the parent retrieves
 each completed unsuccessful job log before scheduling a repair. It first uses
@@ -304,10 +340,19 @@ each completed unsuccessful job log before scheduling a repair. It first uses
 a fallback to the repository-bound GitHub job-log API for the configured origin
 host, owner, repository, and exact job ID. The failure input lists only
 repository-relative paths under `.autopilot/runs/`; the network-restricted fixer
-reads those local files instead of querying GitHub. If both interfaces fail or
-return empty output, the run stays in its hosted-check phase with repair count
-unchanged. Fix authentication or a transient GitHub problem and run `resume`;
-the controller retries evidence collection before any fixer is started.
+reads those local files instead of querying GitHub. A successful retrieval with
+a complete, non-whitespace human stdout log remains valid hosted evidence even
+when its bounded machine mirror overflowed, because the log body is not parsed.
+The non-whitespace decision is re-derived while authenticating the complete
+terminal-safe log; a literal string indistinguishable from an escaped whitespace
+codepoint is conservatively treated as whitespace unless other visible content
+proves the log non-whitespace. The hosted record also requires its authenticated
+process-start receipt rather than accepting a completion document in isolation.
+If both interfaces fail, return only whitespace, or cannot fully persist the
+sanitized human log, the run stays in its hosted-check phase with repair count
+unchanged. Fix authentication, storage, or a transient GitHub problem and run
+`resume`; the controller retries evidence collection before any fixer is
+started.
 
 The exclusive lock prevents concurrent controllers. Normal Ctrl-C handling
 removes the lock and leaves the last safe state. A hard kill can leave a stale

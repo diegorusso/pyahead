@@ -13,12 +13,64 @@ from typing import cast
 
 import pytest
 
+from pyahead._human_text import escape_terminal_text
 from scripts import install_smoke
 
 _PUBLIC_INDEX = "https://pypi.org/simple"
 _INSTALL_COMMAND_COUNT = 2
 _DEFAULT_TIMEOUT = 300.0
 _MULTI_FIELD_REDACTIONS = 2
+
+
+def _write_project_metadata(repository: Path, contents: bytes) -> Path:
+    metadata = repository / "src" / "pyahead" / "__init__.py"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_bytes(contents)
+    return metadata
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        b'__version__ = "\xff"\n',
+        (
+            b'__version__ = "0.1.0a2"\n'
+            b"github_pat_SyntheticMetadata123 " + bytes((0x1B,)) + b" FORGED\n"
+        ),
+    ],
+    ids=("invalid-utf8", "credential-bearing-syntax"),
+)
+def test_project_version_rejects_malformed_metadata_without_retaining_source(
+    tmp_path: Path,
+    contents: bytes,
+) -> None:
+    """Decode and parse failures expose only the fixed metadata diagnostic."""
+    _write_project_metadata(tmp_path, contents)
+
+    with pytest.raises(
+        install_smoke.InstallSmokeError,
+        match=r"^unable to read the project version$",
+    ) as captured:
+        install_smoke._project_version(tmp_path)
+
+    assert str(captured.value) == "unable to read the project version"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_install_smoke_parser_redacts_credential_bearing_invalid_argument(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Caller credentials cannot survive an argparse choice diagnostic."""
+    credential = "ghp_SyntheticParserSecret123"
+
+    with pytest.raises(SystemExit, match="2"):
+        install_smoke._parser().parse_args(["--kind", credential])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert credential not in captured.err
+    assert "[REDACTED]" in captured.err
 
 
 def test_child_environment_is_an_explicit_allowlist(tmp_path: Path) -> None:
@@ -322,10 +374,22 @@ def test_origin_child_receives_the_same_environment(
             ("escaped-user", "escaped-pass"),
         ),
         (
+            "https://split-user:split-pass-left\nsplit-pass-right@example.invalid/simple",
+            ("split-user", "split-pass-left", "split-pass-right"),
+        ),
+        (
             "https://at-user:pa@ss@example.invalid/simple",
             ("at-user", "pa@ss"),
         ),
         ("Authorization: Bearer synthetic-bearer-value", ("synthetic-bearer-value",)),
+        (
+            "Authorization:\x1b Bearer synthetic-control-bearer",
+            ("synthetic-control-bearer",),
+        ),
+        (
+            "https://example.invalid/?token=split-query-left\nsplit-query-right&safe=keep",
+            ("split-query-left", "split-query-right"),
+        ),
         ("token=synthetic-assignment-value", ("synthetic-assignment-value",)),
         ("AWS_SECRET_ACCESS_KEY=synthetic-aws-value", ("synthetic-aws-value",)),
         ("GH_TOKEN=synthetic-gh-value", ("synthetic-gh-value",)),
@@ -509,6 +573,156 @@ def test_redaction_handles_multiple_fields_without_changing_safe_text() -> None:
     ) == install_smoke._redact_credentials(query)
 
 
+def test_error_detail_redacts_structural_credentials_before_control_escaping() -> None:
+    """Install stderr preserves safe fields but never a split or escaped secret."""
+    payload = (
+        r"{\"Authorization\":\"Bearer escaped-detail-secret\","
+        r"\"safe\":\"keep-json\"}"
+        " Authorization:\x1b Bearer control-detail-secret "
+        r"https:\/\/detail-user:detail-pass@example.invalid/path "
+        "https://example.invalid/?token=query-left\nquery-right&safe=keep-query"
+    )
+
+    detail = install_smoke._error_detail(payload)
+
+    for secret in (
+        "escaped-detail-secret",
+        "control-detail-secret",
+        "detail-user",
+        "detail-pass",
+        "query-left",
+        "query-right",
+    ):
+        assert secret not in detail
+    assert "keep-json" in detail
+    assert "keep-query" in detail
+    assert "\x1b" not in detail
+    assert "\\u000a" not in detail
+
+
+@pytest.mark.parametrize(
+    "control",
+    ["\x1b", r"\u001b"],
+    ids=("raw", "json-escaped"),
+)
+@pytest.mark.parametrize(
+    ("credential_name", "value"),
+    [
+        ("token", "synthetic-name-secret"),
+        ("Authorization", "Bearer synthetic-authorization-secret"),
+        ("proxy-authorization", "Basic synthetic-proxy-secret"),
+        ("password", "synthetic-password-secret"),
+        ("passwd", "synthetic-passwd-secret"),
+        ("secret_access_key", "synthetic-secret-access-key"),
+        ("secret-key", "synthetic-secret-key"),
+        ("auth", "synthetic-auth-secret"),
+        ("access_key", "synthetic-access-key"),
+        ("api-key", "synthetic-api-key"),
+        ("client_secret", "synthetic-client-secret"),
+        ("credential", "synthetic-credential-secret"),
+        ("AWS_SECRET_ACCESS_KEY", "synthetic-access-key-secret"),
+        ("GH_TOKEN", "synthetic-gh-secret"),
+        ("PIP_PASSWORD", "synthetic-pip-secret"),
+    ],
+)
+def test_error_detail_redacts_every_control_split_in_credential_names(
+    control: str,
+    credential_name: str,
+    value: str,
+) -> None:
+    """Raw and serialized controls cannot split a recognized credential name."""
+    secret = value.rsplit(maxsplit=1)[-1]
+    for position in range(1, len(credential_name) + 1):
+        split_name = (
+            f"{credential_name[:position]}{control}{credential_name[position:]}"
+        )
+
+        detail = install_smoke._error_detail(f"{split_name}={value}")
+
+        assert secret not in detail
+        assert "[REDACTED]" in detail
+
+
+@pytest.mark.parametrize(
+    "control",
+    ["\x1b", r"\u001b"],
+    ids=("raw", "json-escaped"),
+)
+@pytest.mark.parametrize(
+    ("prefix", "body"),
+    [
+        ("github_pat_", "SyntheticGithubToken123"),
+        ("ghp_", "SyntheticGhToken123"),
+        ("pypi-", "SyntheticPypiToken123"),
+        ("sk-", "SyntheticApiToken123"),
+        ("AKIA", "0123456789ABCDEF"),
+    ],
+)
+def test_error_detail_redacts_every_control_split_in_literal_token_prefixes(
+    control: str,
+    prefix: str,
+    body: str,
+) -> None:
+    """Raw and serialized controls cannot split a recognized token prefix."""
+    for position in range(1, len(prefix) + 1):
+        token = f"{prefix[:position]}{control}{prefix[position:]}{body}"
+
+        detail = install_smoke._error_detail(token)
+
+        assert body not in detail
+        assert detail == "[REDACTED]"
+
+
+@pytest.mark.parametrize(
+    "control",
+    ["\x1b", r"\u001b"],
+    ids=("raw", "json-escaped"),
+)
+@pytest.mark.parametrize(
+    ("syntax", "tail", "secrets"),
+    [
+        (
+            "https://",
+            "synthetic-user:synthetic-password@example.invalid",
+            ("synthetic-user", "synthetic-password"),
+        ),
+        (
+            "?token=",
+            "synthetic-query-secret&safe=keep",
+            ("synthetic-query-secret",),
+        ),
+    ],
+)
+def test_error_detail_redacts_every_control_split_in_credential_syntax(
+    control: str,
+    syntax: str,
+    tail: str,
+    secrets: tuple[str, ...],
+) -> None:
+    """Unsafe controls cannot split URL or query credential delimiters."""
+    for position in range(1, len(syntax) + 1):
+        split_syntax = f"{syntax[:position]}{control}{syntax[position:]}"
+
+        detail = install_smoke._error_detail(f"{split_syntax}{tail}")
+
+        assert not any(secret in detail for secret in secrets)
+        assert "[REDACTED]" in detail
+
+
+def test_error_detail_fails_closed_at_bounded_redaction_cutoff() -> None:
+    """A long URL authority cannot hide its delimiter beyond the scan ceiling."""
+    detail = install_smoke._error_detail(
+        "prefix https://bounded-user:bounded-pass"
+        + ("x" * install_smoke._MAX_REDACTION_SCAN)
+        + "@example.invalid"
+    )
+
+    assert len(detail) <= install_smoke._MAX_ERROR_DETAIL + len("...")
+    assert "bounded-user" not in detail
+    assert "bounded-pass" not in detail
+    assert "[REDACTED]" in detail
+
+
 def test_raw_redaction_marker_cannot_hide_a_later_secret() -> None:
     """Only query-pass provenance can make an existing marker trustworthy."""
     payload = "TOKEN=[REDACTED] synthetic-marker-secret"
@@ -619,6 +833,19 @@ def test_process_exceptions_are_bounded_and_redacted(
     assert len(rendered) <= install_smoke._MAX_ERROR_DETAIL + 100
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
+
+
+def test_bounded_terminal_detail_retains_edge_controls_visibly() -> None:
+    """Leading and trailing controls remain explicit diagnostic evidence."""
+    hostile = "\n\t\u2028detail\r\x1b\u2029"
+
+    rendered = install_smoke._bounded_terminal_detail(hostile)
+
+    assert rendered == escape_terminal_text(hostile)
+    assert "detail" in rendered
+    assert not any(
+        control in rendered for control in hostile if not control.isprintable()
+    )
 
 
 def test_main_redacts_outer_failures(
@@ -777,6 +1004,64 @@ def test_cli_passes_explicit_cache_policy(
         )
     ]
     assert capsys.readouterr().out == "wheel install smoke passed for pyahead 0.1.0a2\n"
+
+
+def test_success_output_escapes_a_hostile_project_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A successful smoke keeps project metadata inside the terminal boundary."""
+    hostile_version = "0.1\nFORGED\x1b\u2028"
+    artifact = tmp_path / "candidate.whl"
+    artifact.touch()
+    monkeypatch.setattr(
+        install_smoke,
+        "_project_version",
+        lambda _root: hostile_version,
+    )
+    monkeypatch.setattr(
+        install_smoke,
+        "_select_artifact",
+        lambda _dist, _kind, _version: artifact,
+    )
+    monkeypatch.setattr(install_smoke, "_smoke", lambda *_args, **_kwargs: None)
+
+    assert install_smoke.main(["--kind", "wheel"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == (
+        "wheel install smoke passed for pyahead "
+        f"{escape_terminal_text(hostile_version)}\n"
+    )
+    assert "\nFORGED" not in captured.out
+
+
+def test_success_output_redacts_a_credential_shaped_project_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Successful output redacts credentials even in valid version metadata."""
+    credential = "ghp_SyntheticVersionSecret123"
+    version = f"0.1+{credential}"
+    artifact = tmp_path / "candidate.whl"
+    artifact.touch()
+    monkeypatch.setattr(install_smoke, "_project_version", lambda _root: version)
+    monkeypatch.setattr(
+        install_smoke,
+        "_select_artifact",
+        lambda _dist, _kind, _version: artifact,
+    )
+    monkeypatch.setattr(install_smoke, "_smoke", lambda *_args, **_kwargs: None)
+
+    assert install_smoke.main(["--kind", "wheel"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == "wheel install smoke passed for pyahead 0.1+[REDACTED]\n"
+    assert credential not in captured.out
 
 
 def test_invalid_scan_does_not_retain_child_output() -> None:

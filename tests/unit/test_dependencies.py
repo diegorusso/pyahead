@@ -27,6 +27,7 @@ from packaging.requirements import Requirement
 import pyahead._rooted_reader as rooted_reader_module
 import pyahead._windows_output as windows_output_module
 import pyahead.dependencies as dependency_module
+from pyahead._human_text import escape_terminal_text
 from pyahead.config import load_project_configuration
 from pyahead.dependencies import (
     ArtifactAvailability,
@@ -4866,6 +4867,58 @@ def test_report_text_and_incomplete_precedence_are_visible(tmp_path: Path) -> No
     )
     assert "Incomplete metadata invalid.metadata" in render_dependency_text(incomplete)
     assert incomplete.exit_code is ExitCode.INCOMPLETE
+
+
+def test_dependency_human_output_escapes_diagnostics_without_changing_json(
+    tmp_path: Path,
+) -> None:
+    """Dependency diagnostics cannot inject lines or alter machine evidence."""
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    _wheel(wheel)
+    report = collect_dependency_report(
+        _configuration(metadata_paths=(wheel,)),
+        root=tmp_path,
+    )
+    hostile = "line\nINJECT\x1b[2J\r\u202e\u2028\u2029"
+    target = report.targets[0]
+    target = replace(
+        target,
+        declared_requirements=(
+            replace(target.declared_requirements[0], reason=hostile),
+        ),
+        assessments=(replace(target.assessments[0], reason=hostile),),
+        resolution=replace(target.resolution, reason=hostile),
+    )
+    report = replace(
+        report,
+        targets=(target,),
+        metadata_issues=(
+            dependency_module.MetadataIssue(
+                path=PurePosixPath(f"{hostile}.metadata"),
+                message=hostile,
+            ),
+        ),
+    )
+
+    text = render_dependency_text(report)
+    document = cast("dict[str, object]", json.loads(render_dependency_json(report)))
+
+    assert escape_terminal_text(hostile) in text
+    assert hostile not in text
+    assert "\nINJECT" not in text
+    for control in ("\r", "\x1b", "\u202e", "\u2028", "\u2029"):
+        assert control not in text
+    metadata_issues = cast("list[dict[str, object]]", document["metadata_issues"])
+    assert metadata_issues == [
+        {
+            "incomplete": True,
+            "message": hostile,
+            "path": f"{hostile}.metadata",
+        }
+    ]
+    targets = cast("list[dict[str, object]]", document["targets"])
+    resolution = cast("dict[str, object]", targets[0]["resolution"])
+    assert resolution["reason"] == hostile
 
 
 def test_resolver_version_and_command_validation_helpers(tmp_path: Path) -> None:

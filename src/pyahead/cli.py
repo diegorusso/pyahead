@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from pyahead import __version__
+from pyahead._human_text import SafeArgumentParser, escape_terminal_text
 from pyahead.analysis import ScanRequest, scan
 from pyahead.analysis.discovery import DiscoveryError
 from pyahead.baseline import render_baseline
@@ -201,7 +202,7 @@ def _scan_options(
 
 def _build_parser() -> ArgumentParser:
     """Create the command-line parser."""
-    parser = ArgumentParser(prog="pyahead")
+    parser = SafeArgumentParser(prog="pyahead")
     parser.add_argument(
         "--version",
         action="version",
@@ -359,25 +360,31 @@ def _scan_request(arguments: Namespace) -> ScanRequest:
 
 def _write_verbose_configuration(report: ScanReport) -> None:
     configuration = report.configuration
-    per_file_ignores = {
-        item.pattern: list(item.rule_ids) for item in configuration.per_file_ignores
-    }
+    per_file_ignore_entries = []
+    for item in configuration.per_file_ignores:
+        pattern = escape_terminal_text(item.pattern)
+        rule_ids = [escape_terminal_text(rule_id) for rule_id in item.rule_ids]
+        per_file_ignore_entries.append(f"{pattern!r}: {rule_ids!r}")
+    per_file_ignores = "{" + ", ".join(per_file_ignore_entries) + "}"
+    include = [escape_terminal_text(value) for value in configuration.include]
+    exclude = [escape_terminal_text(value) for value in configuration.exclude]
+    source_roots = [escape_terminal_text(value) for value in configuration.source_roots]
     sys.stderr.write(
         "pyahead: configuration: "
         f"baseline={report.policy.baseline_python} "
-        f"({report.policy_provenance.baseline_python}); "
+        f"({escape_terminal_text(report.policy_provenance.baseline_python)}); "
         f"horizon={report.policy.horizon_python} "
-        f"({report.policy_provenance.horizon_python}); "
-        f"include={list(configuration.include)!r}; "
-        f"exclude={list(configuration.exclude)!r}; "
-        f"source-roots={list(configuration.source_roots)!r} "
-        f"({configuration.source_roots_provenance}); "
+        f"({escape_terminal_text(report.policy_provenance.horizon_python)}); "
+        f"include={include!r}; "
+        f"exclude={exclude!r}; "
+        f"source-roots={source_roots!r} "
+        f"({escape_terminal_text(configuration.source_roots_provenance)}); "
         f"minimum-confidence={configuration.minimum_confidence.value}; "
         f"fail-on={configuration.fail_on.value}; "
         f"respect-gitignore={str(configuration.respect_gitignore).lower()}; "
         f"show-unscheduled={str(configuration.show_unscheduled).lower()}; "
         f"max-file-size-bytes={configuration.max_file_size_bytes}; "
-        f"per-file-ignores={per_file_ignores!r}; "
+        f"per-file-ignores={per_file_ignores}; "
         f"fail-new-only={str(configuration.fail_new_only).lower()}; "
         f"show-suppressed={str(configuration.show_suppressed).lower()}; "
         f"allow-incomplete={str(configuration.allow_incomplete).lower()}\n"
@@ -392,12 +399,19 @@ def _write_scan_diagnostics(report: ScanReport) -> None:
         else:
             start = diagnostic.location.region.start
             location = (
-                f" {diagnostic.location.path.as_posix()}:{start.line}:{start.column}"
+                f" {escape_terminal_text(diagnostic.location.path.as_posix())}:"
+                f"{start.line}:{start.column}"
             )
         incomplete = " [incomplete analysis]" if diagnostic.incomplete else ""
         sys.stderr.write(
-            f"pyahead: {diagnostic.code}{location}: {diagnostic.message}{incomplete}\n"
+            f"pyahead: {escape_terminal_text(diagnostic.code)}{location}: "
+            f"{escape_terminal_text(diagnostic.message)}{incomplete}\n"
         )
+
+
+def _write_error(error: BaseException) -> None:
+    """Write one terminal-safe expected CLI error."""
+    sys.stderr.write(f"pyahead: error: {escape_terminal_text(str(error))}\n")
 
 
 def _write_output(
@@ -483,7 +497,7 @@ def _run_check(arguments: Namespace) -> int:
         OutputError,
         RegistryError,
     ) as error:
-        sys.stderr.write(f"pyahead: error: {error}\n")
+        _write_error(error)
         return int(ExitCode.INVALID_INPUT)
     except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
         sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
@@ -527,7 +541,7 @@ def _run_baseline_create(arguments: Namespace) -> int:
         OutputError,
         RegistryError,
     ) as error:
-        sys.stderr.write(f"pyahead: error: {error}\n")
+        _write_error(error)
         return int(ExitCode.INVALID_INPUT)
     except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
         sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
@@ -563,7 +577,7 @@ def _run_dependencies(arguments: Namespace) -> int:
             root=root,
         )
     except (ConfigurationError, OutputError) as error:
-        sys.stderr.write(f"pyahead: error: {error}\n")
+        _write_error(error)
         return int(ExitCode.INVALID_INPUT)
     except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
         sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
@@ -593,7 +607,8 @@ def _run_registry(arguments: Namespace) -> int:
         if arguments.registry_command == "validate":
             noun = "rule" if len(registry.rules) == 1 else "rules"
             rendered = (
-                f"Registry {registry.release} ({registry.revision[:12]}): "
+                f"Registry {escape_terminal_text(registry.release)} "
+                f"({escape_terminal_text(registry.revision[:12])}): "
                 f"{len(registry.rules)} {noun} valid.\n"
             )
         elif arguments.registry_command == "list":
@@ -603,7 +618,7 @@ def _run_registry(arguments: Namespace) -> int:
         else:
             return int(ExitCode.INTERNAL_ERROR)
     except RegistryError as error:
-        sys.stderr.write(f"pyahead: error: {error}\n")
+        _write_error(error)
         return int(ExitCode.INVALID_INPUT)
     except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
         sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
@@ -619,15 +634,14 @@ def _run_explain(arguments: Namespace) -> int:
         if rule is not None:
             rendered = render_rule_explanation(registry, rule)
     except RegistryError as error:
-        sys.stderr.write(f"pyahead: error: {error}\n")
+        _write_error(error)
         return int(ExitCode.INVALID_INPUT)
     except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
         sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
         return int(ExitCode.INTERNAL_ERROR)
     if rule is None:
-        sys.stderr.write(
-            f"pyahead: error: unknown registry rule ID {arguments.rule_id!r}\n"
-        )
+        rule_id = escape_terminal_text(arguments.rule_id)
+        sys.stderr.write(f"pyahead: error: unknown registry rule ID {rule_id!r}\n")
         return int(ExitCode.INVALID_INPUT)
     sys.stdout.write(rendered)
     return int(ExitCode.SUCCESS)

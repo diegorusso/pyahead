@@ -171,6 +171,13 @@ SARIF uses stable rule IDs, relative paths, exact regions, and PyAhead
 fingerprints. Whether GitHub accepts a SARIF upload depends on repository and
 plan settings; PyAhead does not assume code scanning is enabled.
 
+Human-readable output escapes embedded line breaks, terminal controls, Unicode
+line and paragraph separators, and direction-changing format controls in
+repository-, registry-, evidence-, and diagnostic-provided values. Escapes are
+shown as visible `\uXXXX` or `\UXXXXXXXX` text; normal printable Unicode and
+PyAhead's own report line structure remain unchanged. JSON and SARIF preserve
+their machine data rather than applying terminal escaping.
+
 ### Pytest warning evidence in user CI
 
 PyAhead's first observed-evidence provider is an explicit pytest plugin. Tests

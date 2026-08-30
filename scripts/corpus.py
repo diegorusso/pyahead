@@ -17,6 +17,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, TextIO
 from urllib.parse import urlsplit
 
+from pyahead._human_text import SafeArgumentParser, escape_terminal_text
+
 _CORPUS_SIZE = 100
 _MAX_REPORT_BYTES = 64 * 1024 * 1024
 _ACCEPTED_SCAN_EXITS = frozenset({0, 3})
@@ -564,8 +566,9 @@ def _render_worksheet(rows: list[dict[str, Any]], *, result_digest: str) -> str:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="scan exactly 100 clean pinned public repository checkouts"
+    parser = SafeArgumentParser(
+        prog="pyahead-corpus",
+        description="scan exactly 100 clean pinned public repository checkouts",
     )
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
@@ -666,7 +669,8 @@ def main(argv: list[str] | None = None) -> int:
         git = _git_executable()
         repositories: list[dict[str, Any]] = []
         for index, spec in enumerate(specs, start=1):
-            sys.stderr.write(f"[{index}/{len(specs)}] scanning {spec.repository_url}\n")
+            repository_url = escape_terminal_text(spec.repository_url)
+            sys.stderr.write(f"[{index}/{len(specs)}] scanning {repository_url}\n")
             _verify_checkout(spec, git=git, timeout=arguments.git_timeout)
             repositories.append(_repository_result(spec, timeout=arguments.timeout))
         document = {
@@ -686,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_atomic(arguments.output, result_text)
         _write_atomic(arguments.worksheet, worksheet)
     except (CorpusError, OSError, subprocess.SubprocessError) as error:
-        sys.stderr.write(f"corpus run failed: {error}\n")
+        sys.stderr.write(f"corpus run failed: {escape_terminal_text(str(error))}\n")
         return 1
     return 0
 

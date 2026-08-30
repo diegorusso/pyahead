@@ -2,6 +2,7 @@
 
 from collections import Counter
 
+from pyahead._human_text import escape_terminal_text
 from pyahead.model import (
     CallShapeMatcher,
     CoverageDisposition,
@@ -45,18 +46,21 @@ def render_registry_coverage(registry: Registry) -> str:
         for rule_id in entry.rules
     }
     lines = [
-        f"Registry {registry.release} ({registry.revision[:12]}) coverage",
+        (
+            f"Registry {escape_terminal_text(registry.release)} "
+            f"({escape_terminal_text(registry.revision[:12])}) coverage"
+        ),
         f"Sources: {len(registry.coverage)}",
         f"Source entries: {len(source_keys)}",
         "",
     ]
     for manifest in registry.coverage:
         lines.append(
-            f"{manifest.source.id}  {len(manifest.entries)}/"
+            f"{escape_terminal_text(manifest.source.id)}  {len(manifest.entries)}/"
             f"{len(manifest.source_keys)} entries  "
-            f"checked {manifest.source.checked_on}"
+            f"checked {escape_terminal_text(manifest.source.checked_on)}"
         )
-        lines.append(f"  {manifest.source.url}")
+        lines.append(f"  {escape_terminal_text(manifest.source.url)}")
     lines.extend(["", "Dispositions:"])
     lines.extend(
         f"  {disposition.value}: {counts[disposition]}"
@@ -75,7 +79,10 @@ def render_registry_coverage(registry: Registry) -> str:
 def render_registry_list(registry: Registry) -> str:
     """List canonical rules without loading or scanning a project."""
     lines = [
-        f"Registry {registry.release} ({registry.revision[:12]})",
+        (
+            f"Registry {escape_terminal_text(registry.release)} "
+            f"({escape_terminal_text(registry.revision[:12])})"
+        ),
         f"Rules: {len(registry.rules)}",
         "",
     ]
@@ -83,10 +90,31 @@ def render_registry_list(registry: Registry) -> str:
         matcher_kinds = ", ".join(
             sorted({matcher.kind.value for matcher in rule.matchers})
         )
-        lines.append(f"{rule.id}  {rule.title}")
-        lines.append(f"  Subject: {rule.subject_kind.value} {rule.subject}")
+        lines.append(
+            f"{escape_terminal_text(rule.id)}  {escape_terminal_text(rule.title)}"
+        )
+        lines.append(
+            f"  Subject: {rule.subject_kind.value} {escape_terminal_text(rule.subject)}"
+        )
         lines.append(f"  Matchers: {matcher_kinds}")
     return "\n".join(lines) + "\n"
+
+
+def _literal_text(value: object) -> str:
+    """Render one closed scalar with canonical terminal-safe string controls."""
+    if not isinstance(value, str):
+        return repr(value)
+    rendered = ["'"]
+    for character in value:
+        escaped = escape_terminal_text(character)
+        if escaped != character:
+            rendered.append(escaped)
+        elif character in {"'", "\\"}:
+            rendered.append(f"\\{character}")
+        else:
+            rendered.append(character)
+    rendered.append("'")
+    return "".join(rendered)
 
 
 def _call_shape_details(matcher: CallShapeMatcher) -> str:
@@ -100,63 +128,85 @@ def _call_shape_details(matcher: CallShapeMatcher) -> str:
     if matcher.max_keyword_args is not None:
         predicates.append(f"max_keyword_args={matcher.max_keyword_args}")
     if matcher.required_keywords:
-        predicates.append(f"required_keywords={','.join(matcher.required_keywords)}")
+        predicates.append(
+            "required_keywords="
+            + ",".join(escape_terminal_text(item) for item in matcher.required_keywords)
+        )
     if matcher.forbidden_keywords:
-        predicates.append(f"forbidden_keywords={','.join(matcher.forbidden_keywords)}")
+        predicates.append(
+            "forbidden_keywords="
+            + ",".join(
+                escape_terminal_text(item) for item in matcher.forbidden_keywords
+            )
+        )
     predicates.extend(
         (
-            f"position[{predicate.position}]={predicate.equals!r}"
+            f"position[{predicate.position}]={_literal_text(predicate.equals)}"
             if predicate.position is not None
-            else f"keyword[{predicate.keyword}]={predicate.equals!r}"
+            else f"keyword[{escape_terminal_text(predicate.keyword or '')}]="
+            f"{_literal_text(predicate.equals)}"
         )
         for predicate in matcher.literal_arguments
     )
-    return f"qualified_name={matcher.qualified_name}; {'; '.join(predicates)}"
+    return (
+        f"qualified_name={escape_terminal_text(matcher.qualified_name)}; "
+        f"{'; '.join(predicates)}"
+    )
 
 
 def _matcher_details(matcher: RuleMatcher) -> str:
     if isinstance(matcher, ModuleImportMatcher):
-        return f"module={matcher.module}"
+        return f"module={escape_terminal_text(matcher.module)}"
     if isinstance(matcher, QualifiedReferenceMatcher):
         contexts = (
             ",".join(context.value for context in matcher.contexts)
             if matcher.contexts
             else "any-read"
         )
-        return f"qualified_name={matcher.qualified_name}; contexts={contexts}"
+        return (
+            f"qualified_name={escape_terminal_text(matcher.qualified_name)}; "
+            f"contexts={contexts}"
+        )
     if isinstance(matcher, QualifiedCallMatcher):
-        return f"qualified_name={matcher.qualified_name}"
+        return f"qualified_name={escape_terminal_text(matcher.qualified_name)}"
     if isinstance(matcher, CallShapeMatcher):
         return _call_shape_details(matcher)
     if isinstance(matcher, LiteralDynamicImportMatcher):
-        return f"module={matcher.module}; confidence={matcher.confidence.value}"
-    return f"pattern={matcher.pattern.value}"
+        return (
+            f"module={escape_terminal_text(matcher.module)}; "
+            f"confidence={matcher.confidence.value}"
+        )
+    return f"pattern={escape_terminal_text(matcher.pattern.value)}"
 
 
 def _matcher_example(matcher: RuleMatcher) -> str:
     if isinstance(matcher, ModuleImportMatcher):
-        return f"import {matcher.module}"
+        return f"import {escape_terminal_text(matcher.module)}"
     if isinstance(matcher, QualifiedReferenceMatcher):
-        return matcher.qualified_name
+        return escape_terminal_text(matcher.qualified_name)
     if isinstance(matcher, (QualifiedCallMatcher, CallShapeMatcher)):
-        return f"{matcher.qualified_name}(...)"
+        return f"{escape_terminal_text(matcher.qualified_name)}(...)"
     if isinstance(matcher, LiteralDynamicImportMatcher):
-        return f'importlib.import_module("{matcher.module}")'
+        return f'importlib.import_module("{escape_terminal_text(matcher.module)}")'
     return "~True"
 
 
 def render_rule_explanation(registry: Registry, rule: Rule) -> str:
     """Explain a rule entirely from registry data."""
     lines = [
-        f"{rule.id} — {rule.title}",
-        f"Registry: {registry.release} ({registry.revision[:12]})",
-        f"Subject: {rule.subject_kind.value} {rule.subject}",
+        f"{escape_terminal_text(rule.id)} — {escape_terminal_text(rule.title)}",
         (
-            f"Scope: {rule.ecosystem}/{rule.runtime}; contexts: "
+            f"Registry: {escape_terminal_text(registry.release)} "
+            f"({escape_terminal_text(registry.revision[:12])})"
+        ),
+        f"Subject: {rule.subject_kind.value} {escape_terminal_text(rule.subject)}",
+        (
+            f"Scope: {escape_terminal_text(rule.ecosystem)}/"
+            f"{escape_terminal_text(rule.runtime)}; contexts: "
             f"{', '.join(context.value for context in rule.contexts)}"
         ),
         "",
-        rule.summary,
+        escape_terminal_text(rule.summary),
         "",
         "Timeline:",
     ]
@@ -166,7 +216,8 @@ def render_rule_explanation(registry: Registry, rule: Rule) -> str:
         source = source_by_id[event.source_id]
         lines.append(
             f"  Python {event.python}: {event.kind.value}; impact={impact.value}; "
-            f"certainty={event.certainty.value}; source={source.id}"
+            f"certainty={event.certainty.value}; "
+            f"source={escape_terminal_text(source.id)}"
         )
     if rule.removal_unscheduled:
         lines.append("  Removal schedule: unscheduled (no authoritative removal event)")
@@ -174,21 +225,40 @@ def render_rule_explanation(registry: Registry, rule: Rule) -> str:
     for matcher in rule.matchers:
         lines.append(f"  {matcher.kind.value}: {_matcher_details(matcher)}")
         lines.append(f"    Example: {_matcher_example(matcher)}")
-    lines.extend(["", "Remediation:", f"  {rule.remediation.summary}"])
+    lines.extend(
+        ["", "Remediation:", f"  {escape_terminal_text(rule.remediation.summary)}"]
+    )
     if rule.remediation.documentation_url is not None:
-        lines.append(f"  Documentation: {rule.remediation.documentation_url}")
+        lines.append(
+            "  Documentation: "
+            f"{escape_terminal_text(rule.remediation.documentation_url)}"
+        )
     if rule.remediation.automation is not None:
         automation = rule.remediation.automation
         lines.append(
-            f"  Automation metadata: {automation.tool.value} {automation.rule} "
+            f"  Automation metadata: {automation.tool.value} "
+            f"{escape_terminal_text(automation.rule)} "
             "(not invoked)"
         )
     lines.extend(["", "Sources:"])
     lines.extend(
-        f"  {source.id}: {source.title} — {source.url}" for source in rule.sources
+        f"  {escape_terminal_text(source.id)}: "
+        f"{escape_terminal_text(source.title)} — {escape_terminal_text(source.url)}"
+        for source in rule.sources
     )
     if rule.aliases:
-        lines.extend(["", f"Aliases: {', '.join(rule.aliases)}"])
+        lines.extend(
+            [
+                "",
+                "Aliases: "
+                + ", ".join(escape_terminal_text(item) for item in rule.aliases),
+            ]
+        )
     if rule.tags:
-        lines.extend(["", f"Tags: {', '.join(rule.tags)}"])
+        lines.extend(
+            [
+                "",
+                "Tags: " + ", ".join(escape_terminal_text(item) for item in rule.tags),
+            ]
+        )
     return "\n".join(lines) + "\n"

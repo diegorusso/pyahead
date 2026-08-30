@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pyahead._human_text import SafeArgumentParser, escape_terminal_text
+
 
 class BenchmarkError(RuntimeError):
     """Raised when a benchmark cannot produce trustworthy measurements."""
@@ -328,8 +330,9 @@ def _write_output(destination: Path, content: str) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="measure checked-in PyAhead scan performance budgets"
+    parser = SafeArgumentParser(
+        prog="pyahead-benchmark",
+        description="measure checked-in PyAhead scan performance budgets",
     )
     parser.add_argument("--repeat", type=_positive_integer, default=3)
     parser.add_argument("--output", type=Path, default=Path("-"))
@@ -376,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         rendered = _render_document(results, repeat=arguments.repeat)
         _write_output(arguments.output, rendered)
     except (BenchmarkError, OSError, subprocess.SubprocessError) as error:
-        sys.stderr.write(f"benchmark failed: {error}\n")
+        sys.stderr.write(f"benchmark failed: {escape_terminal_text(str(error))}\n")
         return 2
     return 0 if all(bool(result["passed"]) for result in results) else 1
 

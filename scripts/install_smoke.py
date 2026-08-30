@@ -13,15 +13,23 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
+
+from pyahead._human_text import (
+    SafeArgumentParser,
+    _is_unsafe_terminal_codepoint,
+    escape_terminal_text,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 _MAX_ERROR_DETAIL = 2_000
+_MAX_REDACTION_SCAN = 8_192
 _MAX_CREDENTIAL_LITERAL_PREFIX = 2
 _PUBLIC_INDEX = "https://pypi.org/simple"
 _REDACTED = "[REDACTED]"
+_CREDENTIAL_CONTROL_SENTINEL = "\0"
 _INHERITED_ENVIRONMENT = (
     "COMSPEC",
     "LANG",
@@ -51,6 +59,20 @@ _TOKEN = re.compile(
     r"\b(?:github_pat_[A-Za-z0-9_]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|"
     r"pypi-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16})\b"
 )
+_CANONICAL_URL_USERINFO = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]*://(?P<secret>[^/\\\s?#@]+)@"
+)
+_CANONICAL_UNTERMINATED_URL = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]*://(?P<secret>[^/\\\s?#@]+)\Z"
+)
+_CANONICAL_SECRET_QUERY = re.compile(
+    r"(?i)[?&](?:access_token|api[_-]?key|apikey|auth|credential|key|password|"
+    r"secret|token)=(?P<secret>[^&#\s\"'\\]*)"
+)
+_CANONICAL_FIELD_AFTER_DELIMITER = re.compile(
+    r"\s*[\"']?[a-z_][a-z0-9_-]*[\"']?\s*[:=]",
+    flags=re.IGNORECASE,
+)
 
 
 class InstallSmokeError(RuntimeError):
@@ -67,9 +89,24 @@ class _InstallerPolicy:
     cache: Path | None
 
 
+@dataclass(frozen=True)
+class _CredentialMatchView:
+    """Canonical match text plus exact source spans for safe projection."""
+
+    text: str
+    starts: tuple[int, ...]
+    ends: tuple[int, ...]
+
+
 def _project_version(repository: Path) -> str:
     metadata = repository / "src" / "pyahead" / "__init__.py"
-    tree = ast.parse(metadata.read_text(encoding="utf-8"), filename=str(metadata))
+    try:
+        tree = ast.parse(metadata.read_text(encoding="utf-8"), filename=str(metadata))
+    except (OSError, SyntaxError, UnicodeError):
+        tree = None
+    if tree is None:
+        message = "unable to read the project version"
+        raise InstallSmokeError(message) from None
     for statement in tree.body:
         if not isinstance(statement, ast.Assign):
             continue
@@ -162,12 +199,231 @@ def _clean_environment(
     return environment
 
 
+def _credential_match_view(text: str) -> _CredentialMatchView:
+    """Decode JSON syntax and omit controls only in credential match text."""
+    rendered: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    cursor = 0
+    while cursor < len(text):
+        character = text[cursor]
+        if _is_unsafe_terminal_codepoint(ord(character)):
+            cursor += 1
+            continue
+        if character != "\\":
+            rendered.append(character)
+            starts.append(cursor)
+            cursor += 1
+            ends.append(cursor)
+            continue
+        run_end = cursor
+        while run_end < len(text) and text[run_end] == "\\":
+            run_end += 1
+        decoded: str | None = None
+        decoded_end = run_end
+        if run_end < len(text):
+            escaped = text[run_end]
+            if escaped in "\\/\"'":
+                decoded = escaped
+                decoded_end += 1
+            elif (
+                escaped == "u"
+                and run_end + 5 <= len(text)
+                and all(
+                    digit in "0123456789abcdefABCDEF"
+                    for digit in text[run_end + 1 : run_end + 5]
+                )
+            ):
+                decoded = chr(int(text[run_end + 1 : run_end + 5], 16))
+                decoded_end = run_end + 5
+        if decoded is None:
+            rendered.append("\\")
+            starts.append(cursor)
+            ends.append(run_end)
+            cursor = run_end
+            continue
+        if _is_unsafe_terminal_codepoint(ord(decoded)):
+            cursor = decoded_end
+            continue
+        rendered.append(decoded)
+        starts.append(cursor)
+        ends.append(decoded_end)
+        cursor = decoded_end
+    return _CredentialMatchView("".join(rendered), tuple(starts), tuple(ends))
+
+
+def _canonical_assignment_value_span(
+    text: str,
+    name_end: int,
+) -> tuple[int, int] | None:
+    """Locate one named credential value in canonical match text."""
+    cursor = name_end
+    if cursor < len(text) and text[cursor] in "\"'":
+        cursor += 1
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    if cursor >= len(text) or text[cursor] not in "=:,":
+        return None
+    cursor += 1
+    while cursor < len(text) and text[cursor].isspace():
+        cursor += 1
+    value_start = cursor
+    return value_start, _canonical_credential_value_end(text, value_start)
+
+
+def _canonical_credential_value_end(
+    text: str,
+    value_start: int,
+    *,
+    authorization: bool = False,
+) -> int:
+    """Find a fail-closed structural value end in canonical match text."""
+    if authorization and value_start < len(text) and text[value_start] not in "\"'":
+        match = re.match(
+            rf"(?i)(?:basic|bearer|token)[ \t{_CREDENTIAL_CONTROL_SENTINEL}]+"
+            rf"[^ \t,;}}\]{_CREDENTIAL_CONTROL_SENTINEL}]+",
+            text[value_start:],
+        )
+        if match is not None:
+            candidate = value_start + match.end()
+            if candidate == len(text) or text[candidate] in (
+                " ",
+                "\t",
+                "\r",
+                "\n",
+                _CREDENTIAL_CONTROL_SENTINEL,
+            ):
+                return candidate
+    value_end = value_start
+    while value_end < len(text):
+        if text[value_end] == "]" and text[value_start : value_end + 1].endswith(
+            _REDACTED
+        ):
+            value_end += 1
+            continue
+        if text[value_end] in "}]":
+            break
+        if text[value_end] in ",;" and _CANONICAL_FIELD_AFTER_DELIMITER.match(
+            text, value_end + 1
+        ):
+            break
+        value_end += 1
+    return value_end
+
+
+def _project_credential_span(
+    view: _CredentialMatchView,
+    start: int,
+    end: int,
+) -> tuple[int, int] | None:
+    """Project one non-empty canonical span back onto its original text."""
+    if start >= end or start < 0 or end > len(view.starts):
+        return None
+    return view.starts[start], view.ends[end - 1]
+
+
+def _structural_pattern_spans(
+    view: _CredentialMatchView,
+) -> list[tuple[int, int]]:
+    """Project canonical URL, query, and literal-token matches to source."""
+    spans: list[tuple[int, int]] = []
+    for pattern in (_CANONICAL_URL_USERINFO, _CANONICAL_SECRET_QUERY):
+        for match in pattern.finditer(view.text):
+            if match.group("secret") == _REDACTED:
+                continue
+            projected = _project_credential_span(
+                view,
+                match.start("secret"),
+                match.end("secret"),
+            )
+            if projected is not None:
+                spans.append(projected)
+    for match in _TOKEN.finditer(view.text):
+        projected = _project_credential_span(view, match.start(), match.end())
+        if projected is not None:
+            spans.append(projected)
+    return spans
+
+
+def _structural_named_spans(view: _CredentialMatchView) -> list[tuple[int, int]]:
+    """Project canonical named-credential matches onto source spans."""
+    spans: list[tuple[int, int]] = []
+    for match in _CREDENTIAL_NAME.finditer(view.text):
+        if match.start() > 0 and view.text[match.start() - 1] in "?&":
+            continue
+        assignment = _credential_assignment(view.text, match.start(), match.end())
+        if assignment is None:
+            continue
+        _key_start, _separator, value_start = assignment
+        credential_name = match.group("name").casefold()
+        value_end = _canonical_credential_value_end(
+            view.text,
+            value_start,
+            authorization=credential_name.endswith(("auth", "authorization")),
+        )
+        normalized_value = view.text[value_start:value_end].strip(" \t\"'")
+        if normalized_value == _REDACTED or re.fullmatch(
+            rf"(?i)(?:basic|bearer|token)\s+{re.escape(_REDACTED)}",
+            normalized_value,
+        ):
+            continue
+        projected = _project_credential_span(view, value_start, value_end)
+        if projected is not None:
+            spans.append(projected)
+    return spans
+
+
+def _apply_credential_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """Replace possibly overlapping source spans with one stable marker each."""
+    if not spans:
+        return text
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    parts: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        parts.extend((text[cursor:start], _REDACTED))
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def _redact_structural_credentials(text: str) -> str:
+    """Redact serialized or control-split credentials without rewriting syntax."""
+    view = _credential_match_view(text)
+    if view.text == text:
+        return text
+    spans = _structural_pattern_spans(view)
+    spans.extend(_structural_named_spans(view))
+    return _apply_credential_spans(text, spans)
+
+
+def _redact_unterminated_url_userinfo(text: str) -> str:
+    """Fail closed when a bounded diagnostic cuts off a possible URL authority."""
+    view = _credential_match_view(text)
+    match = _CANONICAL_UNTERMINATED_URL.search(view.text)
+    if match is None or match.group("secret") == _REDACTED:
+        return text
+    projected = _project_credential_span(
+        view, match.start("secret"), match.end("secret")
+    )
+    if projected is None:
+        return text
+    start, end = projected
+    return f"{text[:start]}{_REDACTED}{text[end:]}"
+
+
 def _redact_credentials(text: str) -> str:
     """Remove common credential forms before retaining diagnostic text."""
     redacted = _URL_USERINFO.sub(rf"\1{_REDACTED}@", text)
     redacted = _SECRET_QUERY.sub(rf"\1{_REDACTED}", redacted)
     redacted = _redact_named_credentials(redacted)
-    return _TOKEN.sub(_REDACTED, redacted)
+    redacted = _TOKEN.sub(_REDACTED, redacted)
+    return _redact_structural_credentials(redacted)
 
 
 def _redact_named_credentials(text: str) -> str:
@@ -248,13 +504,17 @@ def _credential_assignment(
         key_start = quoted_key_start
         after_key += 1
 
-    while after_key < len(text) and text[after_key].isspace():
+    while after_key < len(text) and (
+        text[after_key].isspace() or text[after_key] == _CREDENTIAL_CONTROL_SENTINEL
+    ):
         after_key += 1
     if after_key >= len(text) or text[after_key] not in "=:,":
         return None
     separator = text[after_key]
     value_start = after_key + 1
-    while value_start < len(text) and text[value_start].isspace():
+    while value_start < len(text) and (
+        text[value_start].isspace() or text[value_start] == _CREDENTIAL_CONTROL_SENTINEL
+    ):
         value_start += 1
     return key_start, separator, value_start
 
@@ -366,10 +626,20 @@ def _quoted_credential_end(
 def _error_detail(value: str | bytes | None) -> str:
     if value is None:
         return ""
-    text = (
-        value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
-    )
-    detail = _redact_credentials(text).strip()
+    if isinstance(value, bytes):
+        truncated = len(value) > _MAX_REDACTION_SCAN
+        text = value[:_MAX_REDACTION_SCAN].decode("utf-8", errors="replace")
+    else:
+        truncated = len(value) > _MAX_REDACTION_SCAN
+        text = value[:_MAX_REDACTION_SCAN]
+    if truncated:
+        text = _redact_unterminated_url_userinfo(text)
+    return _bounded_terminal_detail(_redact_credentials(text))
+
+
+def _bounded_terminal_detail(value: str) -> str:
+    """Make already-redacted diagnostic text safe without redacting it twice."""
+    detail = escape_terminal_text(value[:_MAX_REDACTION_SCAN])
     if len(detail) > _MAX_ERROR_DETAIL:
         return f"{detail[:_MAX_ERROR_DETAIL]}..."
     return detail
@@ -695,9 +965,18 @@ def _positive_timeout(value: str) -> float:
     return parsed
 
 
+class _InstallSmokeArgumentParser(SafeArgumentParser):
+    """Redact install-smoke credentials before the shared terminal boundary."""
+
+    def error(self, message: str) -> NoReturn:
+        """Report a redacted, control-safe argparse error."""
+        super().error(_error_detail(message))
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="install and scan with one built PyAhead distribution"
+    parser = _InstallSmokeArgumentParser(
+        prog="pyahead-install-smoke",
+        description="install and scan with one built PyAhead distribution",
     )
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
     parser.add_argument("--kind", choices=("wheel", "sdist"), required=True)
@@ -760,12 +1039,16 @@ def main(argv: list[str] | None = None) -> int:
             policy=policy,
         )
     except _SanitizedInstallSmokeError as error:
-        sys.stderr.write(f"install smoke failed: {error}\n")
+        sys.stderr.write(
+            f"install smoke failed: {_bounded_terminal_detail(str(error))}\n"
+        )
         return 1
     except (InstallSmokeError, OSError, subprocess.SubprocessError) as error:
         sys.stderr.write(f"install smoke failed: {_error_detail(str(error))}\n")
         return 1
-    sys.stdout.write(f"{arguments.kind} install smoke passed for pyahead {version}\n")
+    sys.stdout.write(
+        f"{arguments.kind} install smoke passed for pyahead {_error_detail(version)}\n"
+    )
     return 0
 
 

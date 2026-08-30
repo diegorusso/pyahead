@@ -7,19 +7,25 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from threading import Event
+from typing import TYPE_CHECKING, Self, cast
 
 import pytest
 
+from pyahead import _human_text
+from pyahead._human_text import escape_terminal_text
 from scripts import autopilot
 
 if TYPE_CHECKING:
@@ -33,6 +39,78 @@ DEFAULT_VERIFICATION = (
     "from pathlib import Path; "
     "raise SystemExit(0 if Path('feature.txt').is_file() else 1)"
 )
+_HOSTILE_OPERATOR_TEXT = "line\nFORGED\x1b[2J\r\u202e\u2028\u2029"
+
+
+def _capture_mismatch_diagnostic(
+    *,
+    actual: bytes,
+    expected: bytes,
+    details: Mapping[str, object],
+) -> str:
+    """Describe a capture mismatch without rendering its potentially huge body."""
+    first_difference = next(
+        (
+            offset
+            for offset, (actual_byte, expected_byte) in enumerate(
+                zip(actual, expected, strict=False)
+            )
+            if actual_byte != expected_byte
+        ),
+        None,
+    )
+    if first_difference is None and len(actual) != len(expected):
+        first_difference = min(len(actual), len(expected))
+    return json.dumps(
+        {
+            "actual_edges_hex": {
+                "first": actual[:16].hex(),
+                "last": actual[-16:].hex(),
+            },
+            "actual_sha256": hashlib.sha256(actual).hexdigest(),
+            "actual_size": len(actual),
+            "expected_edges_hex": {
+                "first": expected[:16].hex(),
+                "last": expected[-16:].hex(),
+            },
+            "expected_sha256": hashlib.sha256(expected).hexdigest(),
+            "expected_size": len(expected),
+            "first_difference": first_difference,
+            **details,
+        },
+        sort_keys=True,
+    )
+
+
+def _write_schema_one_command_result(
+    log_base: Path,
+    result: autopilot.CommandResult,
+) -> None:
+    """Write the exact legacy receipt shape retained for safe resume."""
+    started_path, result_path, stdout_path, stderr_path = (
+        autopilot._command_evidence_paths(log_base)  # noqa: SLF001
+    )
+    autopilot.atomic_write_json(
+        started_path,
+        {
+            "command_sha256": autopilot._command_sha256(result.command),  # noqa: SLF001
+            "schema_version": 1,
+        },
+    )
+    stdout_path.write_bytes(result.stdout.encode("utf-8"))
+    stderr_path.write_bytes(result.stderr.encode("utf-8"))
+    autopilot.atomic_write_json(
+        result_path,
+        {
+            "command_sha256": autopilot._command_sha256(result.command),  # noqa: SLF001
+            "interrupted": result.interrupted,
+            "returncode": result.returncode,
+            "schema_version": 1,
+            "stderr_sha256": autopilot.sha256_text(result.stderr),
+            "stdout_sha256": autopilot.sha256_text(result.stdout),
+            "timed_out": result.timed_out,
+        },
+    )
 
 
 class SimulatedCrashError(RuntimeError):
@@ -483,6 +561,7 @@ def _milestone_toml() -> str:
 def _write_config(
     root: Path,
     *,
+    default_timeout_seconds: int,
     git_command: Sequence[str],
     real_git: str,
     verification_code: str,
@@ -492,7 +571,7 @@ def _write_config(
 state_directory = ".autopilot"
 base_branch = "main"
 remote = "origin"
-default_timeout_seconds = 10
+default_timeout_seconds = {default_timeout_seconds}
 codex_timeout_seconds = 10
 max_repair_cycles = 3
 branch_template = "codex/{{from_slug}}-{{through_slug}}-autopilot"
@@ -613,6 +692,7 @@ def _create_repository(  # noqa: PLR0915 - setup mirrors real preconditions.
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
+    default_timeout_seconds: int = 10,
     verification_code: str = DEFAULT_VERIFICATION,
     fail_push_once: bool = False,
 ) -> RepositoryFixture:
@@ -674,6 +754,7 @@ fail_under = 90
         fail_sentinel.write_text("fail exactly once\n", encoding="utf-8")
     _write_config(
         root,
+        default_timeout_seconds=default_timeout_seconds,
         git_command=git_command,
         real_git=real_git,
         verification_code=verification_code,
@@ -701,6 +782,8 @@ fail_under = 90
     gh_run_plan_path = control / "gh-run-plan.json"
     gh_run_state_path = control / "gh-run-state.json"
     git_events_path = control / "git-events.json"
+    git_global_config_path = control / "gitconfig"
+    git_global_config_path.write_text("", encoding="utf-8")
     monkeypatch.setenv("PYAHEAD_FAKE_CODEX_PLAN", str(plan_path))
     monkeypatch.setenv("PYAHEAD_FAKE_CODEX_STATE", str(counter_path))
     monkeypatch.setenv("PYAHEAD_FAKE_CODEX_EVENTS", str(codex_events_path))
@@ -709,6 +792,7 @@ fail_under = 90
     monkeypatch.setenv("PYAHEAD_FAKE_GH_RUN_STATE", str(gh_run_state_path))
     monkeypatch.setenv("PYAHEAD_FAKE_GIT", real_git)
     monkeypatch.setenv("PYAHEAD_FAKE_GIT_REAL", real_git)
+    monkeypatch.setenv("PYAHEAD_FAKE_GIT_GLOBAL_CONFIG", str(git_global_config_path))
     monkeypatch.setenv("PYAHEAD_FAKE_GIT_REMOTE", str(origin))
     monkeypatch.setenv("PYAHEAD_FAKE_GIT_EVENTS", str(git_events_path))
     if fail_push_once:
@@ -873,6 +957,34 @@ def test_every_command_has_useful_help(
     help_text = capsys.readouterr().out
     assert "usage:" in help_text
     assert "-h, --help" in help_text
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        _HOSTILE_OPERATOR_TEXT,
+        "normal café 雪 🚀",
+        "surrogate\ud800value",
+        "tag\U000e0001value",
+    ],
+)
+def test_standalone_terminal_boundary_matches_the_product(value: str) -> None:
+    """The bare controller duplicates semantics, not mutable package imports."""
+    assert autopilot._escape_terminal_text(value) == escape_terminal_text(value)  # noqa: SLF001
+
+
+def test_standalone_parser_escapes_untrusted_arguments(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Bare-Python argparse failures cannot forge operator records."""
+    with pytest.raises(SystemExit) as raised:
+        autopilot.build_parser().parse_args(["status", _HOSTILE_OPERATOR_TEXT])
+
+    assert raised.value.code == int(autopilot.ExitCode.INVALID_INPUT)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert _HOSTILE_OPERATOR_TEXT not in captured.err
+    assert escape_terminal_text(_HOSTILE_OPERATOR_TEXT) in captured.err
 
 
 def test_exit_codes_are_stable_and_documented() -> None:
@@ -1711,12 +1823,20 @@ def test_failed_repair_process_retries_the_same_repair_cycle(
     assert failed_state["current_phase"] == "agent_failed"
     assert failed_state["repair_count"] == 1
     semantic_failure = fixture.root / cast("str", failed_state["failed_output_path"])
-    assert "Return code: 1" in semantic_failure.read_text(encoding="utf-8")
+    semantic_text = semantic_failure.read_text(encoding="utf-8")
+    assert semantic_text.startswith("Command: ")
+    assert "\nReturn code: 1\n" in semantic_text
+    assert "\nSTDOUT:\n" in semantic_text
+    assert "\nSTDERR:\n" in semantic_text
     process_failures = cast(
         "list[dict[str, object]]", failed_state["agent_process_failures"]
     )
     assert len(process_failures) == 1
     assert process_failures[0]["path"] != failed_state["failed_output_path"]
+    process_failure_path = fixture.root / cast("str", process_failures[0]["path"])
+    process_failure_text = process_failure_path.read_text(encoding="utf-8")
+    assert process_failure_text.splitlines()[0].startswith("Command: ")
+    assert process_failures[0]["sha256"] == autopilot.sha256_text(process_failure_text)
     assert fixture.make_autopilot().resume() is autopilot.ExitCode.SUCCESS
     assert [event["role"] for event in fixture.codex_events()] == [
         "implementation",
@@ -1741,8 +1861,13 @@ def test_failed_repair_process_retries_the_same_repair_cycle(
 def test_failed_hosted_fixer_retry_retains_original_job_log_paths(
     repo_factory: Callable[..., RepositoryFixture],
 ) -> None:
-    """A failed hosted fixer never replaces the CI evidence supplied to its retry."""
-    fixture = repo_factory()
+    """A failed fixer resumes with the complete oversized hosted fallback log."""
+    fixture = repo_factory(default_timeout_seconds=30)
+    fallback_log = (
+        "HOSTED-RESUME-START\n"
+        + "z" * (autopilot.MAX_RESULT_BYTES + 1)
+        + "\nHOSTED-RESUME-END\n"
+    )
     fixture.set_plan(
         [
             {
@@ -1772,7 +1897,8 @@ def test_failed_hosted_fixer_retry_retains_original_job_log_paths(
                     {
                         "conclusion": "failure",
                         "databaseId": 101,
-                        "log": "actionable hosted failure\n",
+                        "log": fallback_log,
+                        "log_run_view_empty": True,
                         "name": "fixture-hosted",
                         "status": "completed",
                         "url": (
@@ -1796,18 +1922,55 @@ def test_failed_hosted_fixer_retry_retains_original_job_log_paths(
     semantic_failure = fixture.root / cast("str", failed_state["failed_output_path"])
     semantic_text = semantic_failure.read_text(encoding="utf-8")
     assert "Complete redacted failed-job logs" in semantic_text
-    assert "M6-candidate-0-hosted-job-101.stdout.log" in semantic_text
+    assert "M6-candidate-0-hosted-job-101-api.stdout.log" in semantic_text
     process_failures = cast(
         "list[dict[str, object]]", failed_state["agent_process_failures"]
     )
     assert process_failures[0]["path"] != failed_state["failed_output_path"]
+    hosted_log = next(
+        (fixture.root / ".autopilot/runs").rglob(
+            "M6-candidate-0-hosted-job-101-api.stdout.log"
+        )
+    )
+    hosted_text = hosted_log.read_text(encoding="utf-8")
+    assert hosted_text.startswith("HOSTED-RESUME-START\\u000a")
+    assert hosted_text.endswith("\\u000aHOSTED-RESUME-END\\u000a")
+    hosted_base = hosted_log.with_name(hosted_log.name.removesuffix(".stdout.log"))
+    _started, durable = fixture.make_autopilot()._read_command_evidence(  # noqa: SLF001
+        hosted_base,
+        (
+            *autopilot.load_config(fixture.root).tools["gh"],
+            "api",
+            "--hostname",
+            "github.com",
+            "repos/example/pyahead/actions/jobs/101/logs",
+        ),
+    )
+    assert durable is not None
+    assert durable.process_succeeded
+    assert durable.stdout_overflow
+    assert durable.human_stdout_size == len(hosted_text.encode("utf-8"))
+
+    hosted_evidence = cast("dict[str, object]", failed_state["hosted_evidence"])
+    failure_logs = cast("list[dict[str, object]]", hosted_evidence["failure_logs"])
+    started_path = fixture.root / cast("str", failure_logs[0]["started_log"])
+    missing_started = started_path.with_suffix(started_path.suffix + ".missing")
+    started_path.replace(missing_started)
+    try:
+        with pytest.raises(autopilot.StateError, match="incomplete"):
+            fixture.make_autopilot()._validate_hosted_failure_log_records(  # noqa: SLF001
+                failed_state,
+                hosted_evidence,
+            )
+    finally:
+        missing_started.replace(started_path)
 
     assert fixture.make_autopilot().resume() is autopilot.ExitCode.SUCCESS
     retry_prompt = next(
         (fixture.root / ".autopilot/runs").rglob("M6-repair-1-retry-1.md")
     ).read_text(encoding="utf-8")
     assert "Complete redacted failed-job logs" in retry_prompt
-    assert "M6-candidate-0-hosted-job-101.stdout.log" in retry_prompt
+    assert "M6-candidate-0-hosted-job-101-api.stdout.log" in retry_prompt
 
 
 def test_failed_reviewer_process_resumes_in_a_fresh_read_only_session(
@@ -1848,20 +2011,20 @@ def test_command_runner_interruption_and_signal_semantics(
 
     class InterruptingProcess:
         returncode = -15
+        pid = None
 
         def __init__(self) -> None:
             self.calls = 0
             self.terminated = False
+            self.stdin = None
+            self.stdout = BytesIO(b"partial stdout")
+            self.stderr = BytesIO(b"partial stderr")
 
-        def communicate(
-            self,
-            input: str | None = None,  # noqa: A002 - mirrors subprocess API.
-            timeout: float | None = None,
-        ) -> tuple[str, str]:
+        def wait(self, timeout: float | None = None) -> int:
             self.calls += 1
             if self.calls == 1:
                 raise KeyboardInterrupt
-            return "partial stdout", "partial stderr"
+            return self.returncode
 
         def terminate(self) -> None:
             self.terminated = True
@@ -1885,7 +2048,10 @@ def test_command_runner_interruption_and_signal_semantics(
         )
 
     assert process.terminated
-    assert log_base.with_suffix(".stdout.log").read_text() == "partial stdout"
+    _started, _result, stdout_path, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    assert stdout_path.read_text() == "partial stdout"
     signaled = autopilot.CommandResult(("fixture",), -15, "", "", 0.0)
     assert signaled.signal_number == 15
     assert not signaled.succeeded
@@ -1915,10 +2081,211 @@ def test_timeout_terminates_spawned_process_group(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("inherited_pipe", ["stdout", "stderr"])
+@pytest.mark.parametrize("evidence_mode", ["memory", "rooted-logs"])
+def test_deadline_includes_workers_held_by_an_exited_childs_grandchild(
+    tmp_path: Path,
+    inherited_pipe: str,
+    evidence_mode: str,
+) -> None:
+    """Detached inherited pipes cannot outlive the one command deadline."""
+    late_text = f"late-{inherited_pipe}"
+    target = f"sys.{inherited_pipe}"
+    grandchild = (
+        "import sys,time; time.sleep(0.25); "
+        f"{target}.write({late_text!r}); {target}.flush()"
+    )
+    discarded = "stderr" if inherited_pipe == "stdout" else "stdout"
+    stream_arguments = f"{discarded}=subprocess.DEVNULL, stdin=subprocess.DEVNULL"
+    detached = ", start_new_session=True" if os.name != "nt" else ""
+    parent = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}], "
+        f"{stream_arguments}{detached})"
+    )
+    log_base = (
+        tmp_path / "logs" / inherited_pipe if evidence_mode == "rooted-logs" else None
+    )
+
+    started = time.monotonic()
+    result = autopilot.CommandRunner().run(
+        [sys.executable, "-c", parent],
+        cwd=tmp_path,
+        timeout_seconds=0.05,
+        log_base=log_base,
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.75
+    assert result.timed_out
+    assert not result.succeeded
+    assert late_text not in result.stdout
+    assert late_text not in result.stderr
+    retained: dict[Path, bytes] = {}
+    if log_base is not None:
+        evidence_paths = (
+            *autopilot._command_evidence_paths(log_base),  # noqa: SLF001
+            autopilot._command_output_path(log_base),  # noqa: SLF001
+        )
+        retained = {path: path.read_bytes() for path in evidence_paths}
+        receipt = json.loads(
+            autopilot._command_evidence_paths(log_base)[1].read_text(  # noqa: SLF001
+                encoding="utf-8"
+            )
+        )
+        assert receipt["timed_out"] is True
+
+    time.sleep(0.35)
+
+    assert all(path.read_bytes() == content for path, content in retained.items())
+    assert not list(tmp_path.rglob(".*.tmp"))
+
+
+def test_preloaded_process_input_is_delivered_completely(tmp_path: Path) -> None:
+    """The immutable stdin staging path preserves exact prompt bytes and EOF."""
+    prompt = "first line\nprintable unicode: café\n"
+
+    result = autopilot.CommandRunner().run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
+        ],
+        cwd=tmp_path,
+        timeout_seconds=1,
+        input_text=prompt,
+    )
+
+    assert result.succeeded
+    assert result.stdout == prompt
+
+
+def test_detached_stdin_holder_cannot_publish_incomplete_input_evidence(
+    tmp_path: Path,
+) -> None:
+    """Unconsumed staged stdin returns boundedly without late publication."""
+    log_base = tmp_path / "logs" / "detached-stdin"
+    log_base.parent.mkdir(parents=True)
+    _started_path, result_path, stdout_path, stderr_path = (
+        autopilot._command_evidence_paths(log_base)  # noqa: SLF001
+    )
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    prior = {
+        result_path: b"prior result receipt",
+        output_path: b"prior machine sidecar",
+        stdout_path: b"prior stdout",
+        stderr_path: b"prior stderr",
+    }
+    for path, content in prior.items():
+        path.write_bytes(content)
+    holder = "import time; time.sleep(0.25)"
+    detached = ", start_new_session=True" if os.name != "nt" else ""
+    parent = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable, '-c', {holder!r}], "
+        "stdin=sys.stdin, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
+        f"{detached})"
+    )
+
+    started = time.monotonic()
+    with pytest.raises(
+        autopilot.StateError,
+        match="input consumption could not be confirmed",
+    ):
+        autopilot.CommandRunner().run(
+            [sys.executable, "-c", parent],
+            cwd=tmp_path,
+            timeout_seconds=0.5,
+            input_text="x" * (4 * 1024 * 1024),
+            log_base=log_base,
+        )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.75
+    assert all(path.read_bytes() == content for path, content in prior.items())
+    time.sleep(0.35)
+    assert all(path.read_bytes() == content for path, content in prior.items())
+    assert not list(log_base.parent.glob(".*.tmp"))
+
+
+def test_deadline_never_waits_for_or_publishes_a_busy_stream_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker holding the mutation lock leaves only unpublished temporaries."""
+    entered = Event()
+    release = Event()
+    original_write = autopilot._RootedStreamingFile.write  # noqa: SLF001
+
+    def blocked_write(
+        stream: autopilot._RootedStreamingFile,
+        content: bytes,
+    ) -> None:
+        if content and not entered.is_set():
+            entered.set()
+            release.wait(timeout=5)
+        original_write(stream, content)
+
+    monkeypatch.setattr(autopilot._RootedStreamingFile, "write", blocked_write)  # noqa: SLF001
+    chunk_size = 32
+    monkeypatch.setattr(autopilot, "_CAPTURE_CHUNK_BYTES", chunk_size)
+    log_base = tmp_path / "logs" / "busy-worker"
+    log_base.parent.mkdir(parents=True)
+    started_path, result_path, stdout_path, stderr_path = (
+        autopilot._command_evidence_paths(log_base)  # noqa: SLF001
+    )
+    stdout_path.write_bytes(b"prior stdout")
+    stderr_path.write_bytes(b"prior stderr")
+    command = (
+        sys.executable,
+        "-c",
+        (
+            "import sys,time; "
+            f"sys.stdout.buffer.write(b'x' * {chunk_size}); "
+            "sys.stdout.buffer.flush(); time.sleep(2)"
+        ),
+    )
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(
+            autopilot.StateError,
+            match="could not be frozen at its deadline",
+        ):
+            autopilot.CommandRunner().run(
+                command,
+                cwd=tmp_path,
+                timeout_seconds=0.3,
+                log_base=log_base,
+            )
+        elapsed = time.monotonic() - started
+        assert entered.is_set()
+        assert elapsed < 1.2
+        assert started_path.is_file()
+        assert not result_path.exists()
+        assert not autopilot._command_output_path(log_base).exists()  # noqa: SLF001
+        assert stdout_path.read_bytes() == b"prior stdout"
+        assert stderr_path.read_bytes() == b"prior stderr"
+        assert list(log_base.parent.glob(".*.tmp"))
+    finally:
+        release.set()
+
+    cleanup_deadline = time.monotonic() + 2
+    while list(log_base.parent.glob(".*.tmp")) and time.monotonic() < cleanup_deadline:
+        time.sleep(0.01)
+    assert not list(log_base.parent.glob(".*.tmp"))
+    assert not result_path.exists()
+    assert not autopilot._command_output_path(log_base).exists()  # noqa: SLF001
+    assert stdout_path.read_bytes() == b"prior stdout"
+    assert stderr_path.read_bytes() == b"prior stderr"
+
+
 def test_atomic_state_write_leaves_only_complete_document(tmp_path: Path) -> None:
     """State replacement produces canonical JSON and removes temporary files."""
     state_path = tmp_path / ".autopilot/state.json"
-    autopilot.atomic_write_json(state_path, {"phase": "safe", "count": 2})
+    autopilot.atomic_write_json(
+        state_path, {"phase": "safe", "count": 2}, root=tmp_path
+    )
 
     assert json.loads(state_path.read_text(encoding="utf-8")) == {
         "count": 2,
@@ -1936,6 +2303,964 @@ def test_atomic_state_write_rejects_non_json_numbers(tmp_path: Path) -> None:
     assert not state_path.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-race regression")
+def test_command_evidence_parent_swap_cannot_redirect_rooted_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A post-intent ancestor swap fails closed without writing outside the run."""
+    logs = tmp_path / ".autopilot" / "runs" / "race" / "logs"
+    logs.mkdir(parents=True)
+    retained_logs = logs.with_name("logs-retained")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    log_base = logs / "command"
+    real_popen = subprocess.Popen
+
+    def swap_after_process_creation(*args: object, **kwargs: object) -> object:
+        intent = autopilot._command_intent_path(log_base)  # noqa: SLF001
+        started = autopilot._command_evidence_paths(log_base)[0]  # noqa: SLF001
+        assert intent.is_file()
+        assert not started.exists()
+        process = real_popen(*args, **kwargs)
+        logs.rename(retained_logs)
+        logs.symlink_to(outside, target_is_directory=True)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", swap_after_process_creation)
+
+    with pytest.raises(autopilot.StateError, match="atomic output path changed"):
+        autopilot.CommandRunner().run(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            cwd=tmp_path,
+            timeout_seconds=2,
+            log_base=log_base,
+        )
+
+    assert logs.is_symlink()
+    assert list(outside.iterdir()) == []
+    assert autopilot._command_intent_path(  # noqa: SLF001
+        retained_logs / "command"
+    ).is_file()
+    assert not autopilot._command_evidence_paths(  # noqa: SLF001
+        retained_logs / "command"
+    )[0].exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-race regression")
+def test_streaming_log_parent_swap_cannot_redirect_temp_or_final_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mid-stream ancestor swap leaves no output or receipt outside the root."""
+    logs = tmp_path / ".autopilot" / "runs" / "stream-race" / "logs"
+    logs.mkdir(parents=True)
+    retained_logs = logs.with_name("logs-retained")
+    outside = tmp_path / "outside-stream"
+    outside.mkdir()
+    log_base = logs / "command"
+    original_write = autopilot._RootedStreamingFile.write  # noqa: SLF001
+    swapped = False
+
+    def swap_after_first_write(
+        stream: autopilot._RootedStreamingFile,
+        content: bytes,
+    ) -> None:
+        nonlocal swapped
+        original_write(stream, content)
+        if content and not swapped:
+            logs.rename(retained_logs)
+            logs.symlink_to(outside, target_is_directory=True)
+            swapped = True
+
+    monkeypatch.setattr(autopilot._RootedStreamingFile, "write", swap_after_first_write)  # noqa: SLF001
+
+    with pytest.raises(autopilot.StateError, match="could not be finalized"):
+        autopilot.CommandRunner().run(
+            [sys.executable, "-c", "print('safe streamed output')"],
+            cwd=tmp_path,
+            timeout_seconds=5,
+            log_base=log_base,
+        )
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+    assert not autopilot._command_evidence_paths(  # noqa: SLF001
+        retained_logs / "command"
+    )[1].exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows ADS test")
+def test_windows_rooted_writes_reject_alternate_data_streams(
+    tmp_path: Path,
+) -> None:
+    """Native Windows output cannot select an alternate data stream."""
+    with pytest.raises(autopilot.StateError, match="alternate data stream"):
+        autopilot._atomic_write_bytes(  # noqa: SLF001
+            tmp_path / "evidence.json:stream", b"unsafe", root=tmp_path
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows junction test")
+def test_windows_rooted_writes_reject_a_junction_ancestor(
+    tmp_path: Path,
+) -> None:
+    """Native Windows output never traverses a directory junction ancestor."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "linked"
+    command_prompt = shutil.which("cmd.exe")
+    if command_prompt is None:
+        pytest.skip("Windows command processor is unavailable")
+    created = subprocess.run(
+        [command_prompt, "/d", "/c", "mklink", "/J", str(linked), str(outside)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"directory junction creation is unavailable: {created.stderr}")
+
+    with pytest.raises(autopilot.StateError):
+        autopilot._atomic_write_bytes(  # noqa: SLF001
+            linked / "evidence.json", b"unsafe", root=tmp_path
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows streaming ADS test")
+def test_windows_rooted_streaming_rejects_alternate_data_streams(
+    tmp_path: Path,
+) -> None:
+    """Native streaming output cannot select a Windows alternate data stream."""
+    with (
+        autopilot._RootedAtomicWriter(tmp_path, tmp_path) as writer,  # noqa: SLF001
+        pytest.raises(autopilot.StateError, match="alternate data stream"),
+    ):
+        writer.open_stream(tmp_path / "evidence.log:stream")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows streaming junction test")
+def test_windows_rooted_streaming_rejects_a_junction_ancestor(
+    tmp_path: Path,
+) -> None:
+    """Native streaming handles never traverse a directory junction ancestor."""
+    outside = tmp_path / "outside-stream"
+    outside.mkdir()
+    linked = tmp_path / "linked-stream"
+    command_prompt = shutil.which("cmd.exe")
+    if command_prompt is None:
+        pytest.skip("Windows command processor is unavailable")
+    created = subprocess.run(
+        [command_prompt, "/d", "/c", "mklink", "/J", str(linked), str(outside)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"directory junction creation is unavailable: {created.stderr}")
+
+    with (
+        pytest.raises(autopilot.StateError),
+        autopilot._RootedAtomicWriter(tmp_path, linked) as writer,  # noqa: SLF001
+    ):
+        writer.open_stream(linked / "evidence.log")
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize("extra", [0, 1], ids=("exact-limit", "limit-plus-one"))
+def test_scaled_command_capture_boundary_survives_delayed_small_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stream: str,
+    extra: int,
+) -> None:
+    """Scheduling delays do not change exact and overflowing capture semantics."""
+    boundary = 256
+    original_feed = autopilot._StreamingRedactor.feed  # noqa: SLF001
+
+    def delayed_feed(redactor: object, content: bytes) -> str:
+        time.sleep(0.001)
+        return original_feed(redactor, content)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(autopilot, "MAX_RESULT_BYTES", boundary)
+    monkeypatch.setattr(autopilot, "_CAPTURE_CHUNK_BYTES", 7)
+    monkeypatch.setattr(autopilot._StreamingRedactor, "feed", delayed_feed)  # noqa: SLF001
+    size = boundary + extra
+    expression = f"sys.{stream}.buffer.write(b'x' * {size})"
+    log_base = tmp_path / f"scaled-delayed-{stream}-{extra}"
+
+    result = autopilot.CommandRunner().run(
+        [sys.executable, "-c", f"import sys; {expression}"],
+        cwd=tmp_path,
+        timeout_seconds=5,
+        log_base=log_base,
+    )
+
+    _started, receipt_path, stdout_path, stderr_path = (
+        autopilot._command_evidence_paths(log_base)  # noqa: SLF001
+    )
+    output_document = json.loads(
+        autopilot._command_output_path(log_base).read_text(encoding="ascii")  # noqa: SLF001
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    human_path = stdout_path if stream == "stdout" else stderr_path
+    mirror = base64.b64decode(output_document[f"{stream}_base64"])
+    assert not result.timed_out
+    assert result.process_succeeded
+    assert human_path.read_bytes() == b"x" * size
+    assert mirror == b"x" * boundary
+    assert receipt[f"{stream}_size_bytes"] == size
+    assert receipt[f"{stream}_overflow"] is bool(extra)
+    assert output_document[f"{stream}_overflow"] is bool(extra)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize("extra", [0, 1], ids=("exact-limit", "limit-plus-one"))
+def test_command_capture_keeps_complete_human_log_and_bounded_machine_mirror(
+    tmp_path: Path,
+    stream: str,
+    extra: int,
+) -> None:
+    """Machine mirrors stop at 1 MiB while complete human evidence is retained."""
+    assert autopilot.MAX_RESULT_BYTES == 1024 * 1024
+    size = autopilot.MAX_RESULT_BYTES + extra
+    expression = f"sys.{stream}.buffer.write(b'x' * {size})"
+    log_base = tmp_path / f"capture-{stream}-{extra}"
+
+    result = autopilot.CommandRunner().run(
+        [sys.executable, "-c", f"import sys; {expression}"],
+        cwd=tmp_path,
+        # Coverage traces the byte-oriented streaming sanitizer and can make
+        # draining this stress payload much slower than the child itself.
+        timeout_seconds=30,
+        log_base=log_base,
+    )
+
+    output_document = json.loads(
+        autopilot._command_output_path(log_base).read_text(encoding="ascii")  # noqa: SLF001
+    )
+    retained_stdout = base64.b64decode(output_document["stdout_base64"])
+    retained_stderr = base64.b64decode(output_document["stderr_base64"])
+    human_path = autopilot._command_evidence_paths(log_base)[  # noqa: SLF001
+        2 if stream == "stdout" else 3
+    ]
+    human_bytes = human_path.read_bytes()
+    receipt = json.loads(
+        autopilot._command_evidence_paths(log_base)[1].read_text(encoding="utf-8")  # noqa: SLF001
+    )
+    retained = retained_stdout if stream == "stdout" else retained_stderr
+    expected_human = b"x" * size
+    mismatch = _capture_mismatch_diagnostic(
+        actual=human_bytes,
+        expected=expected_human,
+        details={
+            "mirror_overflow": output_document[f"{stream}_overflow"],
+            "mirror_sha256": hashlib.sha256(retained).hexdigest(),
+            "mirror_size": len(retained),
+            "receipt_overflow": receipt[f"{stream}_overflow"],
+            "receipt_sha256": receipt[f"{stream}_sha256"],
+            "receipt_size": receipt[f"{stream}_size_bytes"],
+            "returncode": result.returncode,
+            "timed_out": result.timed_out,
+        },
+    )
+    assert not result.timed_out, mismatch
+    human_matches = human_bytes == expected_human
+    assert human_matches, mismatch
+    assert receipt[f"{stream}_size_bytes"] == size
+    assert receipt[f"{stream}_sha256"] == hashlib.sha256(human_bytes).hexdigest()
+    if extra == 0:
+        assert result.succeeded
+        retained_matches = retained == b"x" * autopilot.MAX_RESULT_BYTES
+        assert retained_matches, mismatch
+        assert output_document[f"{stream}_overflow"] is False
+    else:
+        assert not result.succeeded
+        assert result.process_succeeded
+        retained_matches = retained == b"x" * autopilot.MAX_RESULT_BYTES
+        assert retained_matches, mismatch
+        assert output_document[f"{stream}_overflow"] is True
+        assert receipt[f"{stream}_overflow"] is True
+
+
+def test_large_stdout_and_stderr_survive_receipt_authenticated_resume(
+    repo_factory: Callable[..., RepositoryFixture],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both complete human streams survive bounded-machine overflow and resume."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    # Keep the scaled mirror above the fixed receipt-document size so resume
+    # still exercises the ordinary rooted reader limits.
+    boundary = 4096
+    monkeypatch.setattr(autopilot, "MAX_RESULT_BYTES", boundary)
+    command = (
+        sys.executable,
+        "-c",
+        (
+            "import sys; "
+            f"sys.stdout.buffer.write(b'OUT-START|' + b'o' * {boundary} + "
+            "b'|OUT-END'); "
+            f"sys.stderr.buffer.write(b'ERR-START|' + b'e' * {boundary} + "
+            "b'|ERR-END')"
+        ),
+    )
+    log_base = fixture.root / ".autopilot" / "runs" / "large-resume" / "logs" / "both"
+
+    result = pilot.runner.run(
+        command,
+        cwd=fixture.root,
+        timeout_seconds=10,
+        log_base=log_base,
+    )
+    started, durable = pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+    process_succeeded = result.process_succeeded
+    assert process_succeeded, json.dumps(
+        {
+            "returncode": result.returncode,
+            "stderr_size": result.human_stderr_size,
+            "stdout_size": result.human_stdout_size,
+            "timed_out": result.timed_out,
+        },
+        sort_keys=True,
+    )
+    assert not result.succeeded
+    assert result.stdout_overflow
+    assert result.stderr_overflow
+    assert started
+    assert durable is not None
+    assert durable.process_succeeded
+    assert not durable.succeeded
+    assert durable.stdout_overflow
+    assert durable.stderr_overflow
+    stdout_path = autopilot._command_evidence_paths(log_base)[2]  # noqa: SLF001
+    stderr_path = autopilot._command_evidence_paths(log_base)[3]  # noqa: SLF001
+    stdout = stdout_path.read_bytes()
+    stderr = stderr_path.read_bytes()
+    assert bool(stdout.startswith(b"OUT-START|"))
+    assert bool(stdout.endswith(b"|OUT-END"))
+    assert bool(stderr.startswith(b"ERR-START|"))
+    assert bool(stderr.endswith(b"|ERR-END"))
+    output = json.loads(
+        autopilot._command_output_path(log_base).read_text(encoding="ascii")  # noqa: SLF001
+    )
+    assert len(base64.b64decode(output["stdout_base64"])) == boundary
+    assert len(base64.b64decode(output["stderr_base64"])) == boundary
+
+
+def test_streaming_redaction_covers_every_byte_boundary_and_long_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chunk boundaries, controls, escapes, and invalid UTF-8 cannot leak secrets."""
+    secrets = (
+        b"raw-authorization-secret",
+        b"escaped-authorization-secret",
+        b"userinfo-secret",
+        b"query-secret",
+        b"control-secret",
+        b"invalid-secret",
+        b"ghp_TokenSecret012345678901234567890",
+    )
+    payload = (
+        b"Authorization: Bearer raw-authorization-secret safe-one\n"
+        b'{\\"Authorization\\":\\"Bearer escaped-authorization-secret\\",'
+        b'\\"safe\\":\\"safe-two\\"}\n'
+        b"https://user:userinfo-secret@example.invalid/safe-three\n"
+        b"https://example.invalid/?to\\u006ben=query-secret&safe=safe-four\n"
+        b"Authori\x1bzation:\x1bBearer\x1bcontrol-secret\nsafe-five\n"
+        b"https://example.invalid/?token=invalid-secret\xfftail&safe=safe-six\n"
+        b"ghp_TokenSecret012345678901234567890 safe-seven\n"
+    )
+    monkeypatch.setattr(autopilot, "_CAPTURE_CHUNK_BYTES", 1)
+    stress_timeout_seconds = 30
+    log_base = tmp_path / "every-byte"
+
+    result = autopilot.CommandRunner().run(
+        [
+            sys.executable,
+            "-c",
+            f"import sys; sys.stdout.buffer.write({payload!r})",
+        ],
+        cwd=tmp_path,
+        timeout_seconds=stress_timeout_seconds,
+        log_base=log_base,
+    )
+
+    assert not result.timed_out
+    human = autopilot._command_evidence_paths(log_base)[2].read_bytes()  # noqa: SLF001
+    sidecar = json.loads(
+        autopilot._command_output_path(log_base).read_text(encoding="ascii")  # noqa: SLF001
+    )
+    machine = base64.b64decode(sidecar["stdout_base64"])
+    assert result.succeeded
+    assert all(secret not in human and secret not in machine for secret in secrets)
+    for suffix in (
+        b"safe-one",
+        b"safe-two",
+        b"safe-three",
+        b"safe-four",
+        b"safe-five",
+        b"safe-six",
+        b"safe-seven",
+    ):
+        assert suffix in human
+        assert suffix in machine
+
+    long_size = autopilot.MAX_RESULT_BYTES + 1
+    long_base = tmp_path / "long-secret"
+    long_result = autopilot.CommandRunner().run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "print('https://example.invalid/?token=' + "
+                f"'s' * {long_size} + '&safe=long-tail')"
+            ),
+        ],
+        cwd=tmp_path,
+        timeout_seconds=stress_timeout_seconds,
+        log_base=long_base,
+    )
+    assert not long_result.timed_out
+    long_human = autopilot._command_evidence_paths(long_base)[2].read_text()  # noqa: SLF001
+    assert long_result.succeeded
+    assert "s" * 100 not in long_human
+    assert long_human.count("[REDACTED]") == 1
+    assert "&safe=long-tail" in long_human
+
+
+def test_streaming_redactor_preserves_next_prefix_after_oversized_secrets() -> None:
+    """A completed huge secret cannot erase a following partial credential prefix."""
+
+    def rendered(first: bytes, second: bytes) -> str:
+        redactor = autopilot._StreamingRedactor()  # noqa: SLF001
+        return redactor.feed(first) + redactor.feed(second) + redactor.finish()
+
+    huge = b"A" * (autopilot.MAX_RESULT_BYTES + 16)
+    cases = (
+        (
+            b"?token=" + huge + b"&tok",
+            b"en=NEXTQUERYSECRET&safe=query-tail\n",
+            "NEXTQUERYSECRET",
+            "query-tail",
+        ),
+        (
+            b"Authorization=" + huge + b"\nAuthori",
+            b"zation=NEXTAUTHSECRET\nsafe-auth-tail\n",
+            "NEXTAUTHSECRET",
+            "safe-auth-tail",
+        ),
+        (
+            b'{"Authorization":"' + huge + b'","safe":1}\n{"Authori',
+            b'zation":"NEXTQUOTEDSECRET","tail":2}\n',
+            "NEXTQUOTEDSECRET",
+            '"tail":2',
+        ),
+        (
+            b"https://" + huge + b"@example.invalid/\nhttps:/",
+            b"/NEXTURLSECRET@example.invalid/url-tail\n",
+            "NEXTURLSECRET",
+            "url-tail",
+        ),
+        (
+            b"ghp_" + huge + b" ghp_SHOR",
+            b"TNEXTTOKENSECRET012345678901234567890 token-tail\n",
+            "NEXTTOKENSECRET",
+            "token-tail",
+        ),
+    )
+    for first, second, secret, tail in cases:
+        output = rendered(first, second)
+        assert secret not in output
+        assert tail in output
+        assert output.count("[REDACTED]") >= 2
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "secret", "tail"),
+    [
+        pytest.param(
+            b'{"Authorization":"' + b"A" * 2048,
+            b' QUOTEDSPACELEAK","safe":1}\n',
+            "QUOTEDSPACELEAK",
+            '"safe":1',
+            id="quoted-space",
+        ),
+        pytest.param(
+            b'{"Authorization":"' + b"A" * 2048,
+            b',"QUOTEDCOMMALEAK","safe":1}\n',
+            "QUOTEDCOMMALEAK",
+            '"safe":1',
+            id="quoted-comma",
+        ),
+        pytest.param(
+            b'{"Authorization":"' + b"A" * 2048,
+            b'\\"QUOTEDESCAPELEAK","safe":1}\n',
+            "QUOTEDESCAPELEAK",
+            '"safe":1',
+            id="quoted-escape",
+        ),
+        pytest.param(
+            b"Authorization: Bearer " + b"A" * 2048,
+            b'"RAWAUTHLEAK\nsafe-raw-tail\n',
+            "RAWAUTHLEAK",
+            "safe-raw-tail",
+            id="raw-quote",
+        ),
+        pytest.param(
+            b"Authorization=" + b"A" * 2048,
+            b" GENERICAUTHLEAK\nsafe-generic-tail\n",
+            "GENERICAUTHLEAK",
+            "safe-generic-tail",
+            id="generic-space",
+        ),
+    ],
+)
+def test_active_authorization_uses_structural_boundaries(
+    first: bytes,
+    second: bytes,
+    secret: str,
+    tail: str,
+) -> None:
+    """Spaces, quotes, and commas inside active values never reopen retention."""
+    redactor = autopilot._StreamingRedactor()  # noqa: SLF001
+    output = redactor.feed(first) + redactor.feed(second) + redactor.finish()
+
+    assert secret not in output
+    assert tail in output
+    assert autopilot._redact(output) == output  # noqa: SLF001
+
+
+def test_active_token_canonicalizes_json_escaped_continuation() -> None:
+    """A JSON escape cannot terminate an already recognized token."""
+    redactor = autopilot._StreamingRedactor()  # noqa: SLF001
+    output = (
+        redactor.feed(b"ghp_" + b"A" * 2048)
+        + redactor.feed(b"\\u0042TOKENESCAPELEAK012345678901234567890 safe-tail\n")
+        + redactor.finish()
+    )
+
+    assert "TOKENESCAPELEAK" not in output
+    assert "safe-tail" in output
+    assert output.count("[REDACTED]") == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            b"ghp_ABCDEFGHIJ\nKLMNOPQRSTUVWXYZ0123456789 tail\n",
+            id="github-candidate-lf",
+        ),
+        pytest.param(
+            b"sk-ABCDEFGHIJ\r\nKLMNOPQRSTUVWXYZ0123456789 tail\n",
+            id="openai-candidate-crlf",
+        ),
+        pytest.param(
+            b"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345\nTOKENCONTINUATION0123456789 tail\n",
+            id="github-active-lf",
+        ),
+        pytest.param(
+            b"sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345\r\n"
+            b"TOKENCONTINUATION-0123456789 tail\n",
+            id="openai-active-crlf",
+        ),
+    ],
+)
+def test_streaming_tokens_treat_crlf_as_credential_control_gaps(
+    payload: bytes,
+) -> None:
+    """Recognized tokens cannot expose continuations split by line controls."""
+    expected = autopilot._redact(  # noqa: SLF001
+        payload.decode("utf-8", errors="surrogateescape")
+    )
+    assert expected == "[REDACTED] tail\n"
+
+    for split in range(len(payload) + 1):
+        redactor = autopilot._StreamingRedactor()  # noqa: SLF001
+        output = (
+            redactor.feed(payload[:split])
+            + redactor.feed(payload[split:])
+            + redactor.finish()
+        )
+        assert output == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"Authorization: Bearer secret-value\n",
+        b"Authorization: [REDACTED]\n",
+        b'{"Authorization":"secret-value","safe":1}\n',
+        b"https://user:secret@example.invalid/path\n",
+        b"https://example.invalid/?token=secret&safe=tail\n",
+        b"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 tail\n",
+    ],
+)
+def test_streaming_redaction_is_idempotent(payload: bytes) -> None:
+    """Passing already-redacted output through the boundary changes nothing."""
+
+    def transform(value: bytes) -> str:
+        redactor = autopilot._StreamingRedactor()  # noqa: SLF001
+        return redactor.feed(value) + redactor.finish()
+
+    once = transform(payload)
+    twice = transform(once.encode("utf-8", errors="surrogateescape"))
+
+    assert twice == once
+
+
+@pytest.mark.parametrize(
+    ("payload", "secret", "tail"),
+    [
+        pytest.param(
+            b"?t"
+            + b"\xff" * (autopilot._CAPTURE_CHUNK_BYTES + 600)  # noqa: SLF001
+            + b"oken=INVALIDGAPLEAK&tail=invalid\n",
+            "INVALIDGAPLEAK",
+            "tail=invalid",
+            id="invalid-gap",
+        ),
+        pytest.param(
+            b"?t"
+            + b"\x1b" * (autopilot._CAPTURE_CHUNK_BYTES + 600)  # noqa: SLF001
+            + b"oken=CONTROLGAPLEAK&tail=control\n",
+            "CONTROLGAPLEAK",
+            "tail=control",
+            id="control-gap",
+        ),
+        pytest.param(
+            b"a"
+            + b"+" * (autopilot._CAPTURE_CHUNK_BYTES + 600)  # noqa: SLF001
+            + b"://URLSCHEMELEAK@example.invalid/tail=url\n",
+            "URLSCHEMELEAK",
+            "tail=url",
+            id="unbounded-url-scheme",
+        ),
+    ],
+)
+def test_streaming_prefix_state_outlives_raw_lookbehind(
+    payload: bytes,
+    secret: str,
+    tail: str,
+) -> None:
+    """Control gaps and URL schemes retain finite matching state across chunks."""
+    redactor = autopilot._StreamingRedactor()  # noqa: SLF001
+    chunk_size = autopilot._CAPTURE_CHUNK_BYTES  # noqa: SLF001
+    rendered = [
+        redactor.feed(payload[start : start + chunk_size])
+        for start in range(0, len(payload), chunk_size)
+    ]
+    rendered.append(redactor.finish())
+    output = "".join(rendered)
+
+    assert secret not in output
+    assert tail in output
+    assert len(redactor._escape_pending) <= 5  # noqa: SLF001
+    assert redactor._token_bytes <= autopilot._STREAM_CANDIDATE_BYTES  # noqa: SLF001
+    assert redactor._url_authority_bytes <= autopilot._STREAM_CANDIDATE_BYTES  # noqa: SLF001
+
+
+def test_streaming_authorization_path_never_calls_quadratic_batch_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated malformed fields use only the one-pass streaming automaton."""
+    calls = 0
+
+    def forbidden_scan(*_arguments: object, **_keywords: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("streaming redaction called a batch credential scan")
+
+    monkeypatch.setattr(autopilot, "_credential_match_view", forbidden_scan)
+    monkeypatch.setattr(autopilot, "_canonical_assignment_value_span", forbidden_scan)
+    redactor = autopilot._StreamingRedactor()  # noqa: SLF001
+    payload = (b"Authorization=x " * 4096) + b"\nlinear-tail\n"
+    output = redactor.feed(payload) + redactor.finish()
+
+    assert calls == 0
+    assert "linear-tail" in output
+    assert "x " not in output
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n"], ids=("lf", "crlf"))
+def test_nested_authorization_crossing_line_frontier_is_redacted_everywhere(
+    line_break: str,
+) -> None:
+    """An outer value cannot hide a nested assignment after its line frontier."""
+    synthetic_value = "SYNTHETICNESTEDSECRET"
+    payload = f"authorization=x authorization{line_break}=Bearer {synthetic_value}"
+    expected = f"authorization=[REDACTED]{line_break}=[REDACTED]"
+
+    assert autopilot._redact(payload) == expected  # noqa: SLF001
+    assert autopilot._redact_structure({"summary": payload}) == {  # noqa: SLF001
+        "summary": expected
+    }
+    raw = payload.encode("utf-8")
+    for split in range(len(raw) + 1):
+        redactor = autopilot._StreamingRedactor()  # noqa: SLF001
+        output = (
+            redactor.feed(raw[:split]) + redactor.feed(raw[split:]) + redactor.finish()
+        )
+        assert output == expected
+
+    bytewise = autopilot._StreamingRedactor()  # noqa: SLF001
+    output = "".join(bytewise.feed(raw[index : index + 1]) for index in range(len(raw)))
+    output += bytewise.finish()
+    assert output == expected
+    second = autopilot._StreamingRedactor()  # noqa: SLF001
+    assert second.feed(output.encode("utf-8")) + second.finish() == expected
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n"], ids=("lf", "crlf"))
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_command_capture_redacts_nested_authorization_in_every_retained_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    line_break: str,
+    stream: str,
+) -> None:
+    """Streaming human logs and machine sidecars share the crossing fix."""
+    synthetic_value = "SYNTHETICNESTEDSECRET"
+    payload = f"authorization=x authorization{line_break}=Bearer {synthetic_value}"
+    expected = f"authorization=[REDACTED]{line_break}=[REDACTED]"
+    monkeypatch.setattr(autopilot, "_CAPTURE_CHUNK_BYTES", 1)
+    log_base = tmp_path / f"nested-{stream}-{len(line_break)}"
+    command = (
+        sys.executable,
+        "-c",
+        f"import sys; sys.{stream}.write({payload!r}); sys.{stream}.flush()",
+    )
+
+    result = autopilot.CommandRunner().run(
+        command,
+        cwd=tmp_path,
+        timeout_seconds=10,
+        log_base=log_base,
+    )
+
+    selected = result.stdout if stream == "stdout" else result.stderr
+    human_path = autopilot._command_evidence_paths(log_base)[  # noqa: SLF001
+        2 if stream == "stdout" else 3
+    ]
+    human = human_path.read_text(encoding="utf-8")
+    sidecar = json.loads(
+        autopilot._command_output_path(log_base).read_text(encoding="ascii")  # noqa: SLF001
+    )
+    machine = base64.b64decode(sidecar[f"{stream}_base64"]).decode("utf-8")
+    assert not result.timed_out
+    assert selected == expected
+    assert machine == expected
+    assert human == autopilot._escape_terminal_text(expected)  # noqa: SLF001
+    assert synthetic_value not in selected
+    assert synthetic_value not in machine
+    assert synthetic_value not in human
+
+
+def test_monotonic_batch_redaction_matches_bounded_exhaustive_reference() -> None:
+    """The linear frontier preserves exhaustive semantics on a broad corpus."""
+
+    def exhaustive(value: str) -> str:
+        view = autopilot._credential_match_view(value)  # noqa: SLF001
+        spans: list[tuple[int, int]] = []
+        search_from = 0
+        while match := autopilot._CANONICAL_AUTHORIZATION.search(  # noqa: SLF001
+            view.text, search_from
+        ):
+            search_from = match.end()
+            assignment = autopilot._canonical_assignment_value_start(  # noqa: SLF001
+                view, match.end()
+            )
+            if assignment is None:
+                continue
+            _separator, value_start = assignment
+            _start, value_end = autopilot._canonical_assignment_value_span(  # noqa: SLF001
+                view, value, value_start
+            )
+            normalized = (
+                view.text[value_start:value_end]
+                .replace(autopilot._CREDENTIAL_CONTROL_SENTINEL, "")  # noqa: SLF001
+                .strip(" \t\"'")
+            )
+            if normalized == autopilot._REDACTED or re.fullmatch(  # noqa: SLF001
+                rf"(?i)(?:basic|bearer|token)\s+{re.escape(autopilot._REDACTED)}",  # noqa: SLF001
+                normalized,
+            ):
+                continue
+            projected = autopilot._project_credential_span(  # noqa: SLF001
+                view, value_start, value_end
+            )
+            if projected is not None:
+                spans.append(projected)
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        parts: list[str] = []
+        cursor = 0
+        for start, end in merged:
+            parts.extend((value[cursor:start], autopilot._REDACTED))  # noqa: SLF001
+            cursor = end
+        parts.append(value[cursor:])
+        return "".join(parts)
+
+    names = ("authorization", "Authorization", "Proxy-Authorization")
+    separators = ("=", ":", " : ")
+    values = ("secret", "Bearer secret", "[REDACTED]")
+    corpus = [
+        f"{name}{separator}{value}{ending}safe=tail"
+        for name in names
+        for separator in separators
+        for value in values
+        for ending in ("\n", "\r\n", ";")
+    ]
+    corpus.extend(
+        [
+            "authorization=x authorization\n=Bearer crossing",
+            "authorization=x authorization\r\n=Bearer crossing",
+            "Authorization: Bearer authorization = crossing",
+            "authorization=x authorization=\ncrossing",
+            "authorization=x authorization=same-line",
+        ]
+    )
+
+    for payload in corpus:
+        expected = exhaustive(payload)
+        assert autopilot._redact_structural_credentials(payload) == expected  # noqa: SLF001
+
+    negative = '{"Authorization":"x Authorization","safe":"keep"}\n'
+    redacted = autopilot._redact(negative)  # noqa: SLF001
+    stream = autopilot._StreamingRedactor()  # noqa: SLF001
+    streamed = stream.feed(negative.encode("utf-8")) + stream.finish()
+    assert '"safe":"keep"' in redacted
+    assert '"safe":"keep"' in streamed
+    assert autopilot._redact(redacted) == redacted  # noqa: SLF001
+
+
+def test_existing_redaction_markers_use_only_fixed_width_position_checks() -> None:
+    """Many retained markers never copy each growing value prefix."""
+
+    class PositionTrackingText(str):
+        __slots__ = ("checks", "slices")
+
+        slices: list[slice]
+        checks: list[tuple[int, int | None]]
+
+        def __new__(cls, value: str) -> Self:
+            instance = super().__new__(cls, value)
+            instance.slices = []
+            instance.checks = []
+            return instance
+
+        def __getitem__(self, key: int | slice) -> str:
+            if isinstance(key, slice):
+                self.slices.append(key)
+            return super().__getitem__(key)
+
+        def startswith(
+            self,
+            prefix: str | tuple[str, ...],
+            start: int = 0,
+            end: int | None = None,
+        ) -> bool:
+            self.checks.append((start, end))
+            return super().startswith(prefix, start, end)
+
+    marker_count = 4096
+    tracked = PositionTrackingText(autopilot._REDACTED * marker_count + "tail")  # noqa: SLF001
+    view = autopilot._CredentialMatchView(  # noqa: SLF001
+        tracked,
+        tuple(range(len(tracked))),
+        tuple(range(1, len(tracked) + 1)),
+    )
+
+    span = autopilot._canonical_assignment_value_span(  # noqa: SLF001
+        view,
+        str(tracked),
+        0,
+    )
+
+    assert span == (0, len(tracked))
+    assert tracked.slices == []
+    assert len(tracked.checks) == marker_count
+    assert all(
+        end is not None and end - start == len(autopilot._REDACTED)  # noqa: SLF001
+        for start, end in tracked.checks
+    )
+
+
+def test_command_log_writer_streams_oversize_complete_human_evidence(
+    tmp_path: Path,
+) -> None:
+    """Direct complete results also separate human logs from machine mirrors."""
+    log_base = tmp_path / "oversize"
+    result = autopilot.CommandResult(
+        ("fixture",),
+        0,
+        "x" * (autopilot.MAX_RESULT_BYTES + 1),
+        "",
+        0.0,
+    )
+
+    persisted = autopilot.CommandRunner.write_logs(result, log_base, root=tmp_path)
+
+    output = json.loads(
+        autopilot._command_output_path(log_base).read_text(encoding="ascii")  # noqa: SLF001
+    )
+    assert persisted.stdout_overflow is True
+    assert not persisted.succeeded
+    assert autopilot._command_evidence_paths(log_base)[2].read_text() == result.stdout  # noqa: SLF001
+    assert len(base64.b64decode(output["stdout_base64"])) == (
+        autopilot.MAX_RESULT_BYTES
+    )
+
+
+def test_command_log_paths_cannot_escape_or_select_a_run_results_directory(
+    tmp_path: Path,
+) -> None:
+    """Command receipts remain in their rooted run's immediate logs directory."""
+    result = autopilot.CommandResult(("fixture",), 0, "safe", "", 0.0)
+
+    with pytest.raises(autopilot.StateError, match="outside the trusted root"):
+        autopilot.CommandRunner.write_logs(
+            result,
+            tmp_path.parent / "outside-command",
+            root=tmp_path,
+        )
+    with pytest.raises(autopilot.StateError, match="run logs directory"):
+        autopilot.CommandRunner.write_logs(
+            result,
+            tmp_path / ".autopilot" / "runs" / "one-run" / "results" / "command",
+            root=tmp_path,
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink regression")
+def test_rooted_atomic_write_rejects_a_symlink_leaf_without_replacing_it(
+    tmp_path: Path,
+) -> None:
+    """An existing symlink leaf is rejected and its outside target is unchanged."""
+    outside = tmp_path / "outside"
+    outside.write_text("sentinel", encoding="utf-8")
+    destination = tmp_path / "evidence.json"
+    destination.symlink_to(outside)
+
+    with pytest.raises(autopilot.StateError, match="unsafe"):
+        autopilot._atomic_write_bytes(  # noqa: SLF001
+            destination, b"replacement", root=tmp_path
+        )
+
+    assert destination.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "sentinel"
+
+
 def test_pre_hardening_state_schema_is_rejected(tmp_path: Path) -> None:
     """M1.5 state cannot be interpreted under the stronger M1.5.1 semantics."""
     state_root = tmp_path / ".autopilot"
@@ -1948,6 +3273,7 @@ def test_pre_hardening_state_schema_is_rejected(tmp_path: Path) -> None:
             "run_id": "old-run",
             "schema_version": 1,
         },
+        root=tmp_path,
     )
 
     with pytest.raises(autopilot.StateError, match="schema is unsupported"):
@@ -2170,6 +3496,56 @@ def test_push_failure_resumes_publication_only_and_creates_draft_pr(
     pr_body = next((fixture.root / ".autopilot/runs").rglob("pr-body.md"))
     body_text = pr_body.read_text(encoding="utf-8")
     assert "returncode=0, timeout=False, signal=None" in body_text
+
+
+def test_draft_pr_body_escapes_every_dynamic_value(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Persisted state and commands cannot forge lines in operator Markdown."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    run_id = "20260828T120000Z-0123456789"
+    run_directory = fixture.root / ".autopilot" / "runs" / run_id
+    run_directory.mkdir(parents=True)
+    state: dict[str, object] = {
+        "base_commit": _HOSTILE_OPERATOR_TEXT,
+        "branch": _HOSTILE_OPERATOR_TEXT,
+        "completed_commits": [
+            {
+                "commit": _HOSTILE_OPERATOR_TEXT,
+                "hosted_evidence": {
+                    "candidate_sha": _HOSTILE_OPERATOR_TEXT,
+                    "conclusion": _HOSTILE_OPERATOR_TEXT,
+                    "url": _HOSTILE_OPERATOR_TEXT,
+                },
+                "milestone": _HOSTILE_OPERATOR_TEXT,
+                "verification": [
+                    {
+                        "command": [_HOSTILE_OPERATOR_TEXT],
+                        "returncode": _HOSTILE_OPERATOR_TEXT,
+                        "signal": _HOSTILE_OPERATOR_TEXT,
+                        "succeeded": True,
+                        "timed_out": _HOSTILE_OPERATOR_TEXT,
+                    }
+                ],
+            }
+        ],
+        "current_phase": _HOSTILE_OPERATOR_TEXT,
+        "run_directory": f".autopilot/runs/{run_id}",
+        "run_id": run_id,
+    }
+
+    body_path = pilot._write_pr_body(state, _HOSTILE_OPERATOR_TEXT)  # noqa: SLF001
+
+    body = body_path.read_text(encoding="utf-8")
+    assert "\\u000aFORGED" in body
+    assert "\r" not in body
+    assert "\t" not in body
+    assert "\x1b" not in body
+    assert "\u202e" not in body
+    assert "\u2028" not in body
+    assert "\u2029" not in body
+    assert "FORGED" not in set(body.splitlines())
 
 
 def test_resume_adopts_exact_remote_checkpoint_after_unrecorded_push(
@@ -2534,7 +3910,7 @@ def test_hosted_failure_starts_fresh_repair_and_unique_candidate(
             "M6-candidate-0-hosted-job-101.stdout.log"
         )
     )
-    assert hosted_log.read_text(encoding="utf-8") == "windows fixture traceback\n"
+    assert hosted_log.read_text(encoding="utf-8") == "windows fixture traceback\\u000a"
     gh_events = json.loads(fixture.gh_events_path.read_text(encoding="utf-8"))
     assert any(
         event[:6] == ["run", "view", "9001", "--job", "101", "--log"]
@@ -2546,7 +3922,12 @@ def test_empty_run_view_log_uses_repository_api_fallback(
     repo_factory: Callable[..., RepositoryFixture],
 ) -> None:
     """An empty successful CLI log is not mistaken for complete evidence."""
-    fixture = repo_factory()
+    fixture = repo_factory(default_timeout_seconds=30)
+    fallback_log = (
+        "API-FALLBACK-START\n"
+        + "x" * (autopilot.MAX_RESULT_BYTES + 1)
+        + "\nAPI-FALLBACK-END\n"
+    )
     fixture.set_plan(
         [
             {
@@ -2571,7 +3952,7 @@ def test_empty_run_view_log_uses_repository_api_fallback(
                     {
                         "conclusion": "failure",
                         "databaseId": 101,
-                        "log": "API fallback traceback\n",
+                        "log": fallback_log,
                         "log_run_view_empty": True,
                         "name": "fixture-hosted",
                         "status": "completed",
@@ -2598,7 +3979,15 @@ def test_empty_run_view_log_uses_repository_api_fallback(
             "M6-candidate-0-hosted-job-101-api.stdout.log"
         )
     )
-    assert api_log.read_text(encoding="utf-8") == "API fallback traceback\n"
+    complete_log = api_log.read_text(encoding="utf-8")
+    assert complete_log.startswith("API-FALLBACK-START\\u000a")
+    assert complete_log.endswith("\\u000aAPI-FALLBACK-END\\u000a")
+    sidecar = json.loads(
+        autopilot._command_output_path(  # noqa: SLF001
+            api_log.with_name(api_log.name.removesuffix(".stdout.log"))
+        ).read_text(encoding="ascii")
+    )
+    assert sidecar["stdout_overflow"] is True
     repair_prompt = next(
         (fixture.root / ".autopilot/runs").rglob("M6-repair-1.md")
     ).read_text(encoding="utf-8")
@@ -2613,11 +4002,18 @@ def test_empty_run_view_log_uses_repository_api_fallback(
     ] in gh_events
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["empty", "whitespace-only"],
+)
 def test_empty_logs_from_both_interfaces_stop_before_repair(
     repo_factory: Callable[..., RepositoryFixture],
+    mode: str,
 ) -> None:
-    """Two empty responses remain a resumable publication failure."""
+    """Empty or whitespace-only responses remain a resumable failure."""
     fixture = repo_factory()
+    log = "unused fixture log\n" if mode == "empty" else " \t\r\n"
+    empty_interfaces = mode == "empty"
     fixture.set_plan(
         [
             {
@@ -2636,9 +4032,9 @@ def test_empty_logs_from_both_interfaces_stop_before_repair(
                     {
                         "conclusion": "failure",
                         "databaseId": 101,
-                        "log": "unused fixture log\n",
-                        "log_api_empty": True,
-                        "log_run_view_empty": True,
+                        "log": log,
+                        "log_api_empty": empty_interfaces,
+                        "log_run_view_empty": empty_interfaces,
                         "name": "fixture-hosted",
                         "status": "completed",
                         "url": (
@@ -4064,6 +5460,47 @@ def test_dry_run_prints_full_plan_without_mutation(
     assert not fixture.codex_events_path.exists()
 
 
+def test_dry_run_splits_only_renderer_owned_linefeeds(
+    repo_factory: Callable[..., RepositoryFixture],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsafe separators in a prompt remain visible data, not output structure."""
+    fixture = repo_factory()
+    output = StringIO()
+    pilot = autopilot.Autopilot(
+        fixture.root,
+        autopilot.load_config(fixture.root),
+        stdout=output,
+        stderr=StringIO(),
+    )
+    milestone = pilot.config.milestone("M2")
+    contract = autopilot.extract_milestone_contract(
+        (fixture.root / "docs/design.md").read_text(encoding="utf-8"), milestone
+    )
+    hostile = "payload\rNEL\u0085ZL\u2028ZP\u2029VT\vFF\fESC\x1bEND"
+    monkeypatch.setattr(
+        pilot,
+        "_render_implementation_prompt",
+        lambda *_args, **_kwargs: f"trusted\n{hostile}\n",
+    )
+
+    pilot._print_dry_run_milestone(  # noqa: SLF001
+        milestone,
+        contract,
+        push=False,
+        draft_pr=False,
+    )
+
+    rendered = output.getvalue()
+    assert f"      {escape_terminal_text(hostile)}\n" in rendered
+    assert all(
+        character not in rendered for character in hostile if ord(character) < 32
+    )
+    assert "\u0085" not in rendered
+    assert "\u2028" not in rendered
+    assert "\u2029" not in rendered
+
+
 def test_recursive_child_invocation_is_refused_before_repository_access(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -4075,6 +5512,434 @@ def test_recursive_child_invocation_is_refused_before_repository_access(
 
     assert result == int(autopilot.ExitCode.STATE_ERROR)
     assert "recursive invocation" in capsys.readouterr().err
+
+
+def test_expected_controller_errors_are_terminal_safe(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Expected failures cross the native boundary before reaching stderr."""
+
+    def fail_root() -> Path:
+        raise autopilot.InvalidInputError(_HOSTILE_OPERATOR_TEXT)
+
+    monkeypatch.setattr(autopilot, "repository_root", fail_root)
+
+    result = autopilot.main(["status"])
+
+    assert result == int(autopilot.ExitCode.INVALID_INPUT)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        f"autopilot: {escape_terminal_text(_HOSTILE_OPERATOR_TEXT)}\n"
+    )
+
+
+def test_controller_human_writers_add_only_their_own_line_endings(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Human writers escape child controls before adding one structural newline."""
+    pilot = repo_factory().make_autopilot()
+
+    pilot._write(_HOSTILE_OPERATOR_TEXT)  # noqa: SLF001
+    pilot._warn(f"{_HOSTILE_OPERATOR_TEXT}\tfield")  # noqa: SLF001
+
+    assert cast("StringIO", pilot.stdout).getvalue() == (
+        escape_terminal_text(_HOSTILE_OPERATOR_TEXT) + "\n"
+    )
+    assert cast("StringIO", pilot.stderr).getvalue() == (
+        "autopilot: " + escape_terminal_text(f"{_HOSTILE_OPERATOR_TEXT}\tfield") + "\n"
+    )
+
+
+def test_human_status_is_safe_and_json_status_is_byte_preserving(
+    repo_factory: Callable[..., RepositoryFixture],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Human status escapes values while JSON remains machine data."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    state: dict[str, object] = {
+        "branch": "codex/m2-m2-autopilot",
+        "candidate": {"active": None},
+        "completed_commits": [],
+        "current_milestone": "M2",
+        "current_phase": "blocked",
+        "last_error": _HOSTILE_OPERATOR_TEXT,
+        "publication": {"status": "local"},
+        "repair_count": _HOSTILE_OPERATOR_TEXT,
+        "run_id": "test-run",
+    }
+    monkeypatch.setattr(pilot.store, "read", lambda **_kwargs: state)
+
+    pilot.status()
+
+    output = cast("StringIO", pilot.stdout)
+    human = output.getvalue()
+    assert _HOSTILE_OPERATOR_TEXT not in human
+    assert f"Last error: {escape_terminal_text(_HOSTILE_OPERATOR_TEXT)}\n" in human
+    assert f"Repair cycles: {escape_terminal_text(_HOSTILE_OPERATOR_TEXT)}\n" in human
+    output.seek(0)
+    output.truncate()
+
+    pilot.status(as_json=True)
+
+    assert output.getvalue() == (
+        json.dumps(
+            autopilot._redact_structure(state),  # noqa: SLF001
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n"], ids=("lf", "crlf"))
+def test_parsed_implementation_and_json_status_redact_nested_authorization(
+    repo_factory: Callable[..., RepositoryFixture],
+    monkeypatch: pytest.MonkeyPatch,
+    line_break: str,
+) -> None:
+    """Raw structured results stay parseable but operator JSON cannot leak them."""
+    fixture = repo_factory()
+    synthetic_value = "SYNTHETICNESTEDSECRET"
+    payload = f"authorization=x authorization{line_break}=Bearer {synthetic_value}"
+    expected = f"authorization=[REDACTED]{line_break}=[REDACTED]"
+    result_path = fixture.root / "implementation.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "milestone": "M2",
+                "status": "completed",
+                "summary": payload,
+                "files_changed": [],
+                "acceptance_criteria_addressed": [],
+                "commands_reportedly_run": [],
+                "limitations": [],
+                "blocking_reason": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parsed = autopilot.parse_implementation_result(result_path, "M2", [])
+    assert parsed.summary == payload
+    implementation = autopilot._implementation_to_dict(parsed)  # noqa: SLF001
+    assert (
+        cast(
+            "dict[str, object]",
+            autopilot._redact_structure(implementation),  # noqa: SLF001
+        )["summary"]
+        == expected
+    )
+    state: dict[str, object] = {
+        "branch": "codex/m2-m2-autopilot",
+        "candidate": {"active": None},
+        "completed_commits": [],
+        "current_milestone": "M2",
+        "current_phase": "blocked",
+        "implementation_result": implementation,
+        "publication": {"status": "local"},
+        "repair_count": 0,
+        "run_id": "test-run",
+    }
+    pilot = fixture.make_autopilot()
+    monkeypatch.setattr(pilot.store, "read", lambda **_kwargs: state)
+
+    pilot.status(as_json=True)
+
+    output = json.loads(cast("StringIO", pilot.stdout).getvalue())
+    retained = cast("dict[str, object]", output["implementation_result"])
+    assert retained["summary"] == expected
+    assert synthetic_value not in json.dumps(output)
+
+
+def test_json_status_redacts_adversarial_result_with_one_monotonic_value_scan(
+    repo_factory: Callable[..., RepositoryFixture],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated names inside one malformed result value cannot cause rescans."""
+    fixture = repo_factory()
+    result_path = fixture.root / "implementation.json"
+    repeated = "authorization=[REDACTED] x " * 4096
+    result_path.write_text(
+        json.dumps(
+            {
+                "milestone": "M2",
+                "status": "completed",
+                "summary": repeated,
+                "files_changed": [],
+                "acceptance_criteria_addressed": [],
+                "commands_reportedly_run": [],
+                "limitations": [],
+                "blocking_reason": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    parsed = autopilot.parse_implementation_result(result_path, "M2", [])
+    state: dict[str, object] = {
+        "branch": "codex/m2-m2-autopilot",
+        "candidate": {"active": None},
+        "completed_commits": [],
+        "current_milestone": "M2",
+        "current_phase": "blocked",
+        "implementation_result": autopilot._implementation_to_dict(parsed),  # noqa: SLF001
+        "publication": {"status": "local"},
+        "repair_count": 0,
+        "run_id": "test-run",
+    }
+    pilot = fixture.make_autopilot()
+    monkeypatch.setattr(pilot.store, "read", lambda **_kwargs: state)
+    original = autopilot._canonical_assignment_value_span  # noqa: SLF001
+    scans = 0
+
+    def counted_scan(
+        view: autopilot._CredentialMatchView,
+        source: str,
+        name_end: int,
+    ) -> tuple[int, int] | None:
+        nonlocal scans
+        scans += 1
+        return original(view, source, name_end)
+
+    monkeypatch.setattr(autopilot, "_canonical_assignment_value_span", counted_scan)
+
+    pilot.status(as_json=True)
+
+    output = json.loads(cast("StringIO", pilot.stdout).getvalue())
+    implementation = cast("dict[str, object]", output["implementation_result"])
+    assert implementation["summary"] == "authorization=[REDACTED]"
+    assert scans == 1
+
+
+def test_batch_authorization_matching_never_copies_each_remaining_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many bounded fields match against one canonical buffer at rising offsets."""
+    field_count = 4096
+    payload = ",".join("authorization=[REDACTED]" for _ in range(field_count))
+    original = autopilot._CANONICAL_AUTHORIZATION_VALUE  # noqa: SLF001
+    calls: list[tuple[int, int]] = []
+
+    class MatchRecorder:
+        def match(self, text: str, position: int = 0) -> re.Match[str] | None:
+            calls.append((len(text), position))
+            return original.match(text, position)
+
+    monkeypatch.setattr(autopilot, "_CANONICAL_AUTHORIZATION_VALUE", MatchRecorder())
+
+    rendered = autopilot._redact_structure({"summary": payload})  # noqa: SLF001
+
+    assert rendered == {"summary": payload}
+    assert len(calls) == field_count
+    assert {length for length, _position in calls} == {len(payload)}
+    positions = [position for _length, position in calls]
+    assert positions == sorted(positions)
+
+
+def test_review_prompt_escapes_child_paths_commands_and_hosted_evidence(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A child-controlled value cannot forge persisted reviewer prompt lines."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    milestone = pilot.config.milestone("M2")
+    contract = autopilot.extract_milestone_contract(
+        (fixture.root / "docs/design.md").read_text(encoding="utf-8"), milestone
+    )
+    state: dict[str, object] = {
+        "contract_hash": "a" * 64,
+        "expected_head": "b" * 40,
+        "hosted_evidence": {"job": _HOSTILE_OPERATOR_TEXT},
+        "verification_results": [
+            {
+                "command": [sys.executable, _HOSTILE_OPERATOR_TEXT],
+                "returncode": _HOSTILE_OPERATOR_TEXT,
+                "signal": _HOSTILE_OPERATOR_TEXT,
+                "stderr_log": _HOSTILE_OPERATOR_TEXT,
+                "stdout_log": _HOSTILE_OPERATOR_TEXT,
+                "succeeded": True,
+                "timed_out": _HOSTILE_OPERATOR_TEXT,
+            }
+        ],
+        "worktree_snapshot": {_HOSTILE_OPERATOR_TEXT: {"kind": "untracked"}},
+    }
+
+    prompt = pilot._render_review_prompt(state, milestone, contract)  # noqa: SLF001
+
+    assert "\\u000aFORGED" in prompt
+    assert "\nFORGED" not in prompt
+    assert "\r" not in prompt
+    assert "\t" not in prompt
+    assert "\x1b" not in prompt
+    assert "\u202e" not in prompt
+    assert "\u2028" not in prompt
+    assert "\u2029" not in prompt
+
+
+def test_repair_prompt_escapes_structured_review_findings(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Reviewer-controlled text remains data in the persisted fixer prompt."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    milestone = pilot.config.milestone("M2")
+    contract = autopilot.extract_milestone_contract(
+        (fixture.root / "docs/design.md").read_text(encoding="utf-8"), milestone
+    )
+    state: dict[str, object] = {
+        "contract_hash": "a" * 64,
+        "failed_output_path": None,
+        "review_findings": [
+            {
+                "explanation": _HOSTILE_OPERATOR_TEXT,
+                "file": _HOSTILE_OPERATOR_TEXT,
+                "line": None,
+                "required_remediation": _HOSTILE_OPERATOR_TEXT,
+                "severity": "high",
+            }
+        ],
+    }
+
+    prompt = pilot._render_repair_prompt(state, milestone, contract)  # noqa: SLF001
+
+    assert "\\u000aFORGED" in prompt
+    assert "\nFORGED" not in prompt
+    assert "\r" not in prompt
+    assert "\t" not in prompt
+    assert "\x1b" not in prompt
+    assert "\u202e" not in prompt
+    assert "\u2028" not in prompt
+    assert "\u2029" not in prompt
+
+
+def test_repair_prompt_preserves_authenticated_structural_lines(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """New safe failure documents retain headings while legacy input is escaped."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    milestone = pilot.config.milestone("M2")
+    contract = autopilot.extract_milestone_contract(
+        (fixture.root / "docs/design.md").read_text(encoding="utf-8"), milestone
+    )
+    run_id = "20260828T000000Z-aaaaaaaaaa"
+    run_directory = fixture.root / ".autopilot" / "runs" / run_id
+    (run_directory / "results").mkdir(parents=True)
+    state: dict[str, object] = {
+        "contract_hash": "a" * 64,
+        "current_milestone": "M2",
+        "failed_output_path": None,
+        "repair_count": 1,
+        "review_findings": [],
+        "run_directory": f".autopilot/runs/{run_id}",
+        "run_id": run_id,
+    }
+    content = "Command: fixture\nSTDOUT:\nsafe\\u000aoutput\nSTDERR:\nnone\n"
+    state["failed_output_path"] = pilot._write_failure_input(  # noqa: SLF001
+        state, content
+    )
+
+    prompt = pilot._render_repair_prompt(state, milestone, contract)  # noqa: SLF001
+
+    assert "Command: fixture\nSTDOUT:\nsafe\\u000aoutput\nSTDERR:\nnone" in prompt
+    assert "Command: fixture\\u000aSTDOUT:" not in prompt
+
+
+def test_failure_document_bound_is_exact_and_resume_uses_bounded_evidence(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """The writer and pinned resume reader share one aggregate byte ceiling."""
+    exact = "x" * autopilot.MAX_FAILURE_DOCUMENT_BYTES
+    exact_builder = autopilot._FailureDocumentBuilder()  # noqa: SLF001
+    exact_builder.append(exact)
+    assert exact_builder.render_bytes() == exact.encode()
+
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    milestone = pilot.config.milestone("M2")
+    contract = autopilot.extract_milestone_contract(
+        (fixture.root / "docs/design.md").read_text(encoding="utf-8"), milestone
+    )
+    run_id = "20260828T000000Z-cccccccccc"
+    results = fixture.root / ".autopilot" / "runs" / run_id / "results"
+    results.mkdir(parents=True)
+    exact_path = results / "exact-limit.txt"
+    autopilot._atomic_write_bytes(  # noqa: SLF001
+        exact_path, exact.encode(), root=fixture.root
+    )
+    assert (
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            fixture.root,
+            exact_path,
+            autopilot.MAX_FAILURE_DOCUMENT_BYTES,
+            context="exact failure document",
+        )
+        == exact.encode()
+    )
+    autopilot._atomic_write_bytes(  # noqa: SLF001
+        exact_path, f"{exact}y".encode(), root=fixture.root
+    )
+    with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            fixture.root,
+            exact_path,
+            autopilot.MAX_FAILURE_DOCUMENT_BYTES,
+            context="oversize failure document",
+        )
+    state: dict[str, object] = {
+        "contract_hash": "a" * 64,
+        "current_milestone": "M2",
+        "failed_output_path": None,
+        "repair_count": 1,
+        "review_findings": [],
+        "run_directory": f".autopilot/runs/{run_id}",
+        "run_id": run_id,
+    }
+    state["failed_output_path"] = pilot._write_failure_input(  # noqa: SLF001
+        state, exact + "y"
+    )
+    failure_path = fixture.root / cast("str", state["failed_output_path"])
+    persisted = failure_path.read_bytes()
+
+    assert len(persisted) <= autopilot.MAX_FAILURE_DOCUMENT_BYTES
+    assert persisted.endswith(autopilot._FAILURE_OMISSION.encode("ascii"))  # noqa: SLF001
+    prompt = pilot._render_repair_prompt(state, milestone, contract)  # noqa: SLF001
+    assert autopilot._FAILURE_OMISSION.strip() in prompt  # noqa: SLF001
+
+
+def test_repair_prompt_escapes_every_legacy_failure_linefeed(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Unversioned paused-run text cannot forge fixer prompt structure."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    milestone = pilot.config.milestone("M2")
+    contract = autopilot.extract_milestone_contract(
+        (fixture.root / "docs/design.md").read_text(encoding="utf-8"), milestone
+    )
+    run_id = "20260828T000000Z-bbbbbbbbbb"
+    run_directory = fixture.root / ".autopilot" / "runs" / run_id
+    results_directory = run_directory / "results"
+    results_directory.mkdir(parents=True)
+    failure_path = results_directory / "M2-failure-1.txt"
+    failure_path.write_text("trusted\nFORGED\u2028line\n", encoding="utf-8")
+    state: dict[str, object] = {
+        "contract_hash": "a" * 64,
+        "current_milestone": "M2",
+        "failed_output_path": failure_path.relative_to(fixture.root).as_posix(),
+        "repair_count": 1,
+        "review_findings": [],
+        "run_directory": f".autopilot/runs/{run_id}",
+        "run_id": run_id,
+    }
+
+    prompt = pilot._render_repair_prompt(state, milestone, contract)  # noqa: SLF001
+
+    assert "trusted\\u000aFORGED\\u2028line\\u000a" in prompt
+    assert "\nFORGED" not in prompt
 
 
 def test_subprocess_arguments_are_never_shell_interpreted(tmp_path: Path) -> None:
@@ -4103,20 +5968,1473 @@ def test_subprocess_logs_and_state_output_redact_common_credentials(
 ) -> None:
     """Known credential forms never reach logs or operator-facing JSON state."""
     token = "gh" + "p_" + ("a" * 24)
+    basic = "c3ludGhldGljLWJhc2ljOnNlY3JldA=="
+    proxy_basic = "c3ludGhldGljLXByb3h5OnNlY3JldA=="
+    url_userinfo = (
+        "https-user:https-password",
+        "ssh-user:ssh-password",
+        "custom-user:custom-password",
+    )
+    query_values = (
+        "query-token-value",
+        "query-access-token-value",
+        "query-api-underscore-value",
+        "query-api-dash-value",
+        "query-apikey-value",
+        "query-password-value",
+        "query-secret-value",
+        "query-auth-value",
+        "query-credential-value",
+        "query-fragment-value",
+        "query-quote-value",
+        "query-backslash-value",
+        "query-whitespace-value",
+    )
+    boundary_suffixes = (
+        "#fragment-is-safe",
+        '"quote-is-safe',
+        "\\backslash-is-safe",
+        " whitespace-is-safe",
+    )
+    payload = "\n".join(
+        (
+            token,
+            f"Authorization: Basic {basic}",
+            f"Proxy-Authorization: Basic {proxy_basic}",
+            f"https://{url_userinfo[0]}@example.invalid/simple",
+            f"ssh://{url_userinfo[1]}@example.invalid/repository",
+            f"custom+tls://{url_userinfo[2]}@example.invalid/resource",
+            f"https://example.invalid/?token={query_values[0]}&safe=keep",
+            f"https://example.invalid/?ACCESS_TOKEN={query_values[1]}&safe=keep",
+            f"https://example.invalid/?api_key={query_values[2]}&safe=keep",
+            f"https://example.invalid/?safe=keep&api-key={query_values[3]}&later=safe-too",
+            f"https://example.invalid/?apikey={query_values[4]}&safe=keep",
+            f"https://example.invalid/?password={query_values[5]}&safe=keep",
+            f"https://example.invalid/?secret={query_values[6]}&safe=keep",
+            f"https://example.invalid/?auth={query_values[7]}&safe=keep",
+            f"https://example.invalid/?credential={query_values[8]}&safe=keep",
+            f"https://example.invalid/?token={query_values[9]}{boundary_suffixes[0]}",
+            f"https://example.invalid/?token={query_values[10]}{boundary_suffixes[1]}",
+            f"https://example.invalid/?token={query_values[11]}{boundary_suffixes[2]}",
+            f"https://example.invalid/?token={query_values[12]}{boundary_suffixes[3]}",
+            "token=ordinary-non-url-setting",
+        )
+    )
     log_base = tmp_path / "credential-output"
     result = autopilot.CommandRunner().run(
-        [sys.executable, "-c", f"print({token!r})"],
+        [sys.executable, "-c", f"print({payload!r})"],
         cwd=tmp_path,
         timeout_seconds=2,
         log_base=log_base,
     )
 
-    stdout_log = log_base.with_suffix(".stdout.log").read_text(encoding="utf-8")
-    redacted_state = json.dumps(
-        autopilot._redact_structure({"nested": [token]})  # noqa: SLF001
+    _started, result_path, stdout_path, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
     )
+    stdout_log = stdout_path.read_text(encoding="utf-8")
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    output_bytes = output_path.read_bytes()
+    output_document = json.loads(output_bytes)
+    result_document = json.loads(result_path.read_text(encoding="utf-8"))
+    retained_stdout = base64.b64decode(output_document["stdout_base64"]).decode()
+    redacted_state = json.dumps(
+        autopilot._redact_structure({"nested": [payload]})  # noqa: SLF001
+    )
+    redacted_payload = autopilot._redact(payload)  # noqa: SLF001
     assert result.succeeded
-    assert token not in result.stdout
-    assert token not in stdout_log
-    assert token not in redacted_state
+    for secret in (token, basic, proxy_basic, *url_userinfo, *query_values):
+        assert secret not in result.stdout
+        assert secret not in stdout_log
+        assert secret not in retained_stdout
+        assert secret not in redacted_state
+    for view in (result.stdout, stdout_log, retained_stdout, redacted_state):
+        assert "safe=keep" in view
+        assert "ordinary-non-url-setting" in view
+        for suffix in boundary_suffixes:
+            assert suffix in view
+    assert output_document["schema_version"] == 2
+    assert result_document["schema_version"] == 3
+    assert result_document["output_sha256"] == hashlib.sha256(output_bytes).hexdigest()
+    assert retained_stdout == result.stdout
+    assert autopilot._redact(redacted_payload) == redacted_payload  # noqa: SLF001
+    assert "?token=[REDACTED]&safe=keep" in retained_stdout
+    assert "?safe=keep&api-key=[REDACTED]&later=safe-too" in retained_stdout
     assert "[REDACTED]" in stdout_log
+    assert "[REDACTED]" in retained_stdout
+
+
+def test_structural_and_control_split_credentials_are_redacted_before_retention(
+    tmp_path: Path,
+) -> None:
+    """Serialized and control-split credentials never cross a durable boundary."""
+    secrets = (
+        "synthetic-json-auth",
+        "synthetic-escaped-auth",
+        "synthetic-url-user",
+        "synthetic-url-pass",
+        "synthetic-control-auth",
+        "synthetic-split-user",
+        "synthetic-pass-left",
+        "synthetic-pass-right",
+        "synthetic-query-left",
+        "synthetic-query-right",
+    )
+    payload = (
+        '{"Authorization":"Bearer synthetic-json-auth","safe":"keep-json"}\n'
+        r"{\"Authorization\":\"Bearer synthetic-escaped-auth\","
+        r"\"safe\":\"keep-escaped\"}"
+        "\n"
+        r"https:\/\/synthetic-url-user:synthetic-url-pass@example.invalid/path"
+        "\nAuthorization:\x1b Bearer synthetic-control-auth\n"
+        "https://synthetic-split-user:synthetic-pass-left\n"
+        "synthetic-pass-right@example.invalid/path\n"
+        "https://example.invalid/?token=synthetic-query-left\n"
+        "synthetic-query-right&safe=keep-query"
+    )
+    log_base = tmp_path / "structural-credentials"
+
+    result = autopilot.CommandRunner().run(
+        [sys.executable, "-c", f"print({payload!r})"],
+        cwd=tmp_path,
+        timeout_seconds=2,
+        log_base=log_base,
+    )
+
+    stdout_path = autopilot._command_evidence_paths(log_base)[2]  # noqa: SLF001
+    human_log = stdout_path.read_text(encoding="utf-8")
+    output_document = json.loads(
+        autopilot._command_output_path(log_base).read_text(encoding="ascii")  # noqa: SLF001
+    )
+    sidecar = base64.b64decode(output_document["stdout_base64"]).decode()
+    state_text = json.dumps(
+        autopilot._redact_structure({"result": [payload]})  # noqa: SLF001
+    )
+    redacted = autopilot._redact(payload)  # noqa: SLF001
+
+    assert result.succeeded
+    for retained in (result.stdout, human_log, sidecar, state_text, redacted):
+        assert all(secret not in retained for secret in secrets)
+        assert "keep-json" in retained
+        assert "keep-escaped" in retained
+        assert "keep-query" in retained
+        assert "[REDACTED]" in retained
+    assert "\\u001b" in human_log
+    assert autopilot._redact(redacted) == redacted  # noqa: SLF001
+
+
+def test_dotted_command_log_bases_retain_complete_unique_names(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Dotted milestones and adjacent commands cannot collapse onto one receipt."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    run_directory = fixture.root / ".autopilot" / "runs" / "dotted-evidence"
+    bases = (
+        run_directory / "logs" / "M8.5-verify-0-0-ruff",
+        run_directory / "logs" / "M8.5-verify-0-1-mypy",
+    )
+    commands = (("ruff", "check"), ("mypy", "src"))
+    records: list[dict[str, object]] = []
+    for index, (log_base, command) in enumerate(zip(bases, commands, strict=True)):
+        result = autopilot.CommandResult(
+            command,
+            0,
+            f"command-{index}",
+            "",
+            0.01,
+        )
+        pilot.runner.write_logs(result, log_base)
+        records.append(
+            autopilot._serialize_command_result(result, log_base)  # noqa: SLF001
+        )
+
+    all_paths = {
+        path
+        for log_base in bases
+        for path in (
+            *autopilot._command_evidence_paths(log_base),  # noqa: SLF001
+            autopilot._command_output_path(log_base),  # noqa: SLF001
+        )
+    }
+    assert len(all_paths) == 10
+    assert all(path.name.startswith("M8.5-verify-") for path in all_paths)
+    assert not (run_directory / "logs" / "M8.stdout.log").exists()
+    agent_base = run_directory / "logs" / "M8.5-implementation-0"
+    assert {
+        path.name
+        for path in (
+            *autopilot._command_evidence_paths(agent_base),  # noqa: SLF001
+            autopilot._command_output_path(agent_base),  # noqa: SLF001
+        )
+    } == {
+        "M8.5-implementation-0.output.json",
+        "M8.5-implementation-0.result.json",
+        "M8.5-implementation-0.started.json",
+        "M8.5-implementation-0.stderr.log",
+        "M8.5-implementation-0.stdout.log",
+    }
+    plain_base = run_directory / "logs" / "M8-verify"
+    assert autopilot._command_evidence_paths(plain_base)[2].name == (  # noqa: SLF001
+        "M8-verify.stdout.log"
+    )
+    for log_base, record in zip(bases, records, strict=True):
+        durable = pilot._read_verification_evidence(  # noqa: SLF001
+            run_directory,
+            record,
+            expected_log_base=log_base,
+        )
+        assert durable.command == tuple(record["command"])
+
+
+def test_process_failure_preserves_renderer_lines_and_escapes_child_controls() -> None:
+    """Failure headings stay readable without permitting child-created records."""
+    result = autopilot.CommandResult(
+        command=("fixture", _HOSTILE_OPERATOR_TEXT),
+        returncode=1,
+        stdout=f"{_HOSTILE_OPERATOR_TEXT}\tstdout",
+        stderr=f"error\n{_HOSTILE_OPERATOR_TEXT}\tstderr",
+        duration_seconds=0.01,
+    )
+
+    rendered = autopilot._format_command_failure(result)  # noqa: SLF001
+
+    lines = rendered.splitlines()
+    assert lines[0].startswith("Command: ")
+    assert lines[1] == "Outcome: exited 1"
+    assert lines[2] == "STDOUT:"
+    assert lines[4] == "STDERR:"
+    assert "\\u000aFORGED" in lines[3]
+    assert "\\u0009stdout" in lines[3]
+    assert "\\u0009stderr" in lines[5]
+    assert "\r" not in rendered
+    assert "\t" not in rendered
+    assert "\x1b" not in rendered
+    assert "FORGED" not in set(lines)
+
+
+def test_subprocess_logs_escape_every_child_control(
+    tmp_path: Path,
+) -> None:
+    """A child cannot forge records or alignment in human forensic logs."""
+    log_base = tmp_path / "control-output"
+    child_output = f"{_HOSTILE_OPERATOR_TEXT}\tfield"
+    result = autopilot.CommandRunner().run(
+        [
+            sys.executable,
+            "-c",
+            f"import sys; sys.stdout.write({child_output!r})",
+        ],
+        cwd=tmp_path,
+        timeout_seconds=2,
+        log_base=log_base,
+    )
+
+    _started, result_path, stdout_path, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    stdout_log = stdout_path.read_text(encoding="utf-8")
+    result_document = json.loads(result_path.read_text(encoding="utf-8"))
+    output_document_bytes = autopilot._command_output_path(log_base).read_bytes()  # noqa: SLF001
+    output_document = json.loads(output_document_bytes)
+    assert result.succeeded
+    assert "\x1b" in result.stdout
+    assert "\u202e" in result.stdout
+    expected = autopilot._safe_log_text(result.stdout)  # noqa: SLF001
+    assert stdout_log == expected
+    assert "\n" not in stdout_log
+    assert "\t" not in stdout_log
+    assert "\\u000aFORGED" in stdout_log
+    assert "\\u0009field" in stdout_log
+    assert "\x1b" not in stdout_log
+    assert result_document["schema_version"] == 3
+    assert result_document["stdout_sha256"] == autopilot.sha256_text(expected)
+    assert (
+        result_document["output_sha256"]
+        == hashlib.sha256(output_document_bytes).hexdigest()
+    )
+    assert base64.b64decode(output_document["stdout_base64"]).decode() == result.stdout
+
+
+def test_controller_uses_the_product_pinned_unicode_safety_table() -> None:
+    """Standalone bootstrap behavior cannot drift with the running Python UCD."""
+    assert autopilot._UNSAFE_CODEPOINT_RANGES == (  # noqa: SLF001
+        _human_text._UNSAFE_CODEPOINT_RANGES  # noqa: SLF001
+    )
+    fixture = "normal café 雪 \U00013439 after"
+    expected = "normal café 雪 \\U00013439 after"
+
+    assert autopilot._escape_terminal_text(fixture) == expected  # noqa: SLF001
+    assert escape_terminal_text(fixture) == expected
+
+
+def test_durable_command_evidence_preserves_crlf_http_semantics(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Opaque machine evidence, not human logs, retains HTTP framing."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "repos/example/pyahead/git/refs")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "create"
+    started_path, _result_path, stdout_path, _stderr_path = (
+        autopilot._command_evidence_paths(log_base)  # noqa: SLF001
+    )
+    autopilot.atomic_write_json(
+        started_path,
+        {
+            "command_sha256": autopilot._command_sha256(command),  # noqa: SLF001
+            "schema_version": 1,
+        },
+    )
+    remote_ref = "refs/heads/codex/candidate"
+    sha = "a" * 40
+    body = json.dumps({"object": {"sha": sha, "type": "commit"}, "ref": remote_ref})
+    result = autopilot.CommandResult(
+        command=command,
+        returncode=0,
+        stdout=(
+            f"HTTP/2.0 201 Created\r\nContent-Type: application/json\r\n\r\n{body}\r\n"
+        ),
+        stderr="",
+        duration_seconds=0.01,
+    )
+
+    pilot.runner.write_logs(result, log_base)
+    started, durable = pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+    assert started
+    assert durable is not None
+    visible_stdout = stdout_path.read_text(encoding="utf-8")
+    assert "\r" not in visible_stdout
+    assert "\n" not in visible_stdout
+    assert "\\u000d\\u000a" in visible_stdout
+    assert durable.stdout == result.stdout
+    assert pilot._candidate_create_outcome(durable, remote_ref, sha) == "created"  # noqa: SLF001
+
+
+def test_legacy_command_receipt_remains_resumable(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A paused schema-1 publication command keeps its established semantics."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("git", "push", "--porcelain")
+    log_base = fixture.root / ".autopilot" / "runs" / "legacy" / "logs" / "push"
+    started_path, result_path, stdout_path, stderr_path = (
+        autopilot._command_evidence_paths(log_base)  # noqa: SLF001
+    )
+    stdout = "To example\n\t[new branch]\tobject -> candidate\n"
+    stderr = ""
+    autopilot.atomic_write_json(
+        started_path,
+        {
+            "command_sha256": autopilot._command_sha256(command),  # noqa: SLF001
+            "schema_version": 1,
+        },
+    )
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    autopilot.atomic_write_json(
+        result_path,
+        {
+            "command_sha256": autopilot._command_sha256(command),  # noqa: SLF001
+            "interrupted": False,
+            "returncode": 0,
+            "schema_version": 1,
+            "stderr_sha256": autopilot.sha256_text(stderr),
+            "stdout_sha256": autopilot.sha256_text(stdout),
+            "timed_out": False,
+        },
+    )
+
+    started, durable = pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+    assert started
+    assert durable is not None
+    assert durable.stdout == stdout
+    assert durable.stderr == stderr
+
+
+def test_legacy_command_receipt_preserves_crlf_http_streams(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Schema-1 resume hashes and parses exact CRLF bytes without translation."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "repos/example/pyahead/git/refs")
+    log_base = fixture.root / ".autopilot" / "runs" / "legacy" / "logs" / "create"
+    started_path, result_path, stdout_path, stderr_path = (
+        autopilot._command_evidence_paths(log_base)  # noqa: SLF001
+    )
+    remote_ref = "refs/heads/codex/candidate"
+    sha = "a" * 40
+    body = json.dumps({"object": {"sha": sha, "type": "commit"}, "ref": remote_ref})
+    stdout = f"HTTP/2.0 201 Created\r\nContent-Type: application/json\r\n\r\n{body}\r\n"
+    stderr = "diagnostic line one\r\ndiagnostic line two\r\n"
+    autopilot.atomic_write_json(
+        started_path,
+        {
+            "command_sha256": autopilot._command_sha256(command),  # noqa: SLF001
+            "schema_version": 1,
+        },
+    )
+    stdout_path.write_bytes(stdout.encode())
+    stderr_path.write_bytes(stderr.encode())
+    autopilot.atomic_write_json(
+        result_path,
+        {
+            "command_sha256": autopilot._command_sha256(command),  # noqa: SLF001
+            "interrupted": False,
+            "returncode": 0,
+            "schema_version": 1,
+            "stderr_sha256": autopilot.sha256_text(stderr),
+            "stdout_sha256": autopilot.sha256_text(stdout),
+            "timed_out": False,
+        },
+    )
+
+    started, durable = pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+    assert started
+    assert durable is not None
+    assert durable.stdout == stdout
+    assert durable.stderr == stderr
+    assert pilot._candidate_create_outcome(durable, remote_ref, sha) == "created"  # noqa: SLF001
+
+
+def test_failed_verification_uses_safe_exact_schema_one_crlf_evidence(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Legacy multiline streams remain data below controller-owned headings."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    run_directory = fixture.root / ".autopilot" / "runs" / "legacy-verification"
+    log_base = run_directory / "logs" / "M2-verify-0-0-tests"
+    result = autopilot.CommandResult(
+        command=(sys.executable, "-c", "raise SystemExit(1)"),
+        returncode=1,
+        stdout="first\r\nFORGED STDOUT\nlast",
+        stderr="error one\r\nFORGED STDERR\rfinal",
+        duration_seconds=0.01,
+    )
+    _write_schema_one_command_result(log_base, result)
+    record = autopilot._serialize_command_result(result, log_base)  # noqa: SLF001
+
+    durable = pilot._read_verification_evidence(  # noqa: SLF001
+        run_directory,
+        record,
+    )
+    rendered = autopilot._format_verification_failure(durable)  # noqa: SLF001
+
+    assert durable.stdout == result.stdout
+    assert durable.stderr == result.stderr
+    assert "\r" not in rendered
+    assert "\\u000d\\u000aFORGED STDOUT\\u000a" in rendered
+    assert "\\u000d\\u000aFORGED STDERR\\u000d" in rendered
+    assert "FORGED STDOUT" not in set(rendered.splitlines())
+    assert "FORGED STDERR" not in set(rendered.splitlines())
+
+
+@pytest.mark.parametrize(
+    ("field", "contradiction"),
+    [
+        ("command", ["different"]),
+        ("returncode", 2),
+        ("timed_out", True),
+        ("signal", 9),
+        ("succeeded", True),
+    ],
+)
+def test_verification_record_must_agree_with_durable_result(
+    repo_factory: Callable[..., RepositoryFixture],
+    field: str,
+    contradiction: object,
+) -> None:
+    """Mutable state cannot contradict the integrity-protected command receipt."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    run_directory = fixture.root / ".autopilot" / "runs" / "record-contradiction"
+    log_base = run_directory / "logs" / "M2-verify-0-0-tests"
+    result = autopilot.CommandResult(("verify",), 1, "output", "error", 0.01)
+    pilot.runner.write_logs(result, log_base)
+    record = autopilot._serialize_command_result(result, log_base)  # noqa: SLF001
+    record[field] = contradiction
+
+    with pytest.raises(autopilot.StateError, match="contradictory"):
+        pilot._read_verification_evidence(run_directory, record)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "unsafe_stem",
+    [
+        ".",
+        "..",
+        ".hidden",
+        "../outside",
+        "nested/../alias",
+        "M2-verify-0-0-tests\nFORGED",
+        "M2 verify 0",
+        "\uff2d2-verify-0-0-tests",
+    ],
+)
+def test_verification_evidence_rejects_noncanonical_or_unconfined_stems(
+    repo_factory: Callable[..., RepositoryFixture],
+    unsafe_stem: str,
+) -> None:
+    """Persisted log names cannot select aliases or escape the immediate log dir."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    run_directory = fixture.root / ".autopilot" / "runs" / "unsafe-log-stem"
+    log_base = run_directory / "logs" / "M2-verify-0-0-tests"
+    result = autopilot.CommandResult(("verify",), 1, "output", "error", 0.01)
+    pilot.runner.write_logs(result, log_base)
+    record = autopilot._serialize_command_result(result, log_base)  # noqa: SLF001
+    record["stdout_log"] = f"{unsafe_stem}.stdout.log"
+    record["stderr_log"] = f"{unsafe_stem}.stderr.log"
+
+    with pytest.raises(autopilot.StateError, match="log path is unsafe"):
+        pilot._read_verification_evidence(run_directory, record)  # noqa: SLF001
+
+
+def test_verification_evidence_rejects_valid_alias_of_expected_command(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Even valid evidence cannot replace the generated command-specific basename."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    run_directory = fixture.root / ".autopilot" / "runs" / "log-alias"
+    expected_base = run_directory / "logs" / "M2-verify-0-0-tests"
+    alias_base = run_directory / "logs" / "M2-verify-0-1-tests"
+    result = autopilot.CommandResult(("verify",), 1, "output", "error", 0.01)
+    pilot.runner.write_logs(result, alias_base)
+    record = autopilot._serialize_command_result(result, alias_base)  # noqa: SLF001
+
+    with pytest.raises(autopilot.StateError, match="log path is unsafe"):
+        pilot._read_verification_evidence(  # noqa: SLF001
+            run_directory,
+            record,
+            expected_log_base=expected_base,
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is privileged on Windows")
+@pytest.mark.parametrize("tamper", ["rewrite", "symlink"])
+def test_verification_evidence_refuses_tampered_or_symlinked_logs(
+    repo_factory: Callable[..., RepositoryFixture],
+    tamper: str,
+) -> None:
+    """Failed verification aggregation cannot read detached human-log content."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    run_directory = fixture.root / ".autopilot" / "runs" / f"log-{tamper}"
+    log_base = run_directory / "logs" / "M2-verify-0-0-tests"
+    result = autopilot.CommandResult(("verify",), 1, "original", "", 0.01)
+    pilot.runner.write_logs(result, log_base)
+    record = autopilot._serialize_command_result(result, log_base)  # noqa: SLF001
+    _started, _result, stdout_path, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    if tamper == "rewrite":
+        stdout_path.write_text("forged", encoding="utf-8")
+    else:
+        outside = fixture.root / "outside-verification.log"
+        stdout_path.replace(outside)
+        stdout_path.symlink_to(outside)
+
+    with pytest.raises(autopilot.StateError):
+        pilot._read_verification_evidence(run_directory, record)  # noqa: SLF001
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX descriptor reads")
+def test_verification_evidence_refuses_in_place_log_mutation(
+    repo_factory: Callable[..., RepositoryFixture],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A log changed through its path during a pinned read fails closed."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    run_directory = fixture.root / ".autopilot" / "runs" / "log-mutation"
+    log_base = run_directory / "logs" / "M2-verify-0-0-tests"
+    result = autopilot.CommandResult(
+        ("verify",),
+        1,
+        "a" * 70_000,
+        "",
+        0.01,
+    )
+    _write_schema_one_command_result(log_base, result)
+    record = autopilot._serialize_command_result(result, log_base)  # noqa: SLF001
+    _started, _result, stdout_path, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    target = stdout_path.stat()
+    original_read = autopilot.os.read
+    mutated = False
+
+    def mutate_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, size)
+        opened = os.fstat(descriptor)
+        if (
+            not mutated
+            and chunk
+            and (opened.st_dev, opened.st_ino) == (target.st_dev, target.st_ino)
+        ):
+            stdout_path.write_bytes(b"b" * 70_000)
+            mutated = True
+        return chunk
+
+    monkeypatch.setattr(autopilot.os, "read", mutate_after_read)
+
+    with pytest.raises(autopilot.StateError):
+        pilot._read_verification_evidence(run_directory, record)  # noqa: SLF001
+    assert mutated is True
+
+
+def test_durable_command_reader_pins_all_six_artifacts(
+    repo_factory: Callable[..., RepositoryFixture],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structural documents stay bounded while complete human logs stream."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "wired"
+    started_path, result_path, stdout_path, stderr_path = (
+        autopilot._command_evidence_paths(log_base)  # noqa: SLF001
+    )
+    autopilot.atomic_write_json(
+        started_path,
+        {
+            "command_sha256": autopilot._command_sha256(command),  # noqa: SLF001
+            "schema_version": 1,
+        },
+    )
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "output", "", 0.01),
+        log_base,
+    )
+    original = autopilot._read_pinned_file_bytes  # noqa: SLF001
+    original_inspector = autopilot._inspect_pinned_human_log  # noqa: SLF001
+    calls: list[tuple[Path, int]] = []
+    inspected: list[Path] = []
+
+    def recording_reader(
+        root: Path,
+        path: Path,
+        limit: int,
+        *,
+        context: str,
+    ) -> bytes:
+        calls.append((path, limit))
+        return original(root, path, limit, context=context)
+
+    def recording_inspector(
+        root: Path,
+        path: Path,
+        *,
+        expected_size: int,
+        expected_sha256: str,
+        context: str,
+    ) -> autopilot._PinnedHumanLogInspection:
+        inspected.append(path)
+        return original_inspector(
+            root,
+            path,
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+            context=context,
+        )
+
+    monkeypatch.setattr(autopilot, "_read_pinned_file_bytes", recording_reader)
+    monkeypatch.setattr(autopilot, "_inspect_pinned_human_log", recording_inspector)
+
+    started, durable = pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+    assert started
+    assert durable is not None
+    assert calls == [
+        (
+            autopilot._command_intent_path(log_base),  # noqa: SLF001
+            autopilot.MAX_RESULT_BYTES,
+        ),
+        (started_path, autopilot.MAX_RESULT_BYTES),
+        (result_path, autopilot.MAX_RESULT_BYTES),
+        (
+            autopilot._command_output_path(log_base),  # noqa: SLF001
+            autopilot.MAX_COMMAND_OUTPUT_DOCUMENT_BYTES,
+        ),
+        (stdout_path, autopilot.MAX_COMMAND_LOG_BYTES),
+        (stderr_path, autopilot.MAX_COMMAND_LOG_BYTES),
+    ]
+    assert inspected == [stdout_path, stderr_path]
+
+
+def test_pinned_runtime_reader_enforces_exact_byte_limit(tmp_path: Path) -> None:
+    """A durable file may reach the cap but cannot exceed it by one byte."""
+    selected = tmp_path / "run" / "evidence.log"
+    selected.parent.mkdir()
+    selected.write_bytes(b"abcd")
+
+    assert (
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            tmp_path,
+            selected,
+            4,
+            context="runtime evidence",
+        )
+        == b"abcd"
+    )
+    with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            tmp_path,
+            selected,
+            3,
+            context="runtime evidence",
+        )
+
+
+def test_pinned_runtime_reader_rejects_unsafe_path_kinds(tmp_path: Path) -> None:
+    """Escapes, directories, symlinks, and FIFOs cannot become durable input."""
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.write_bytes(b"outside")
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    target = tmp_path / "target"
+    target.write_bytes(b"target")
+    outside_directory = tmp_path.parent / f"{tmp_path.name}-outside-directory"
+    outside_directory.mkdir()
+    (outside_directory / "secret").write_bytes(b"secret")
+
+    with pytest.raises(autopilot.StateError, match="outside the repository"):
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            tmp_path,
+            outside,
+            64,
+            context="runtime evidence",
+        )
+    with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            tmp_path,
+            directory,
+            64,
+            context="runtime evidence",
+        )
+    if os.name != "nt":
+        symlink = tmp_path / "symlink"
+        symlink.symlink_to(target)
+        with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+            autopilot._read_pinned_file_bytes(  # noqa: SLF001
+                tmp_path,
+                symlink,
+                64,
+                context="runtime evidence",
+            )
+        ancestor = tmp_path / "ancestor"
+        ancestor.symlink_to(outside_directory, target_is_directory=True)
+        with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+            autopilot._read_pinned_file_bytes(  # noqa: SLF001
+                tmp_path,
+                ancestor / "secret",
+                64,
+                context="runtime evidence",
+            )
+    if hasattr(os, "mkfifo"):
+        fifo = tmp_path / "fifo"
+        os.mkfifo(fifo)
+        with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+            autopilot._read_pinned_file_bytes(  # noqa: SLF001
+                tmp_path,
+                fifo,
+                64,
+                context="runtime evidence",
+            )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX descriptor reads")
+@pytest.mark.parametrize("mutation", ["replace", "rewrite", "grow"])
+def test_pinned_runtime_reader_detects_leaf_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """Replacement, same-size rewriting, and growth fail closed after a read."""
+    selected = tmp_path / "run" / "evidence.log"
+    selected.parent.mkdir()
+    selected.write_bytes(b"a" * 70_000)
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"b" * 70_000)
+    original_read = autopilot.os.read
+    mutated = False
+
+    def mutate_after_first_chunk(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, size)
+        if chunk and not mutated:
+            if mutation == "replace":
+                replacement.replace(selected)
+            elif mutation == "rewrite":
+                selected.write_bytes(b"b" * 70_000)
+            else:
+                with selected.open("ab") as output:
+                    output.write(b"grown")
+            mutated = True
+        return chunk
+
+    monkeypatch.setattr(autopilot.os, "read", mutate_after_first_chunk)
+
+    with pytest.raises(autopilot.StateError, match="unsafe or unreadable") as raised:
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            tmp_path,
+            selected,
+            100_000,
+            context="runtime evidence",
+        )
+    assert mutated is True
+    assert raised.value.__cause__ is not None
+    assert "changed while being read" in str(raised.value.__cause__)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX descriptor reads")
+def test_pinned_runtime_reader_detects_ancestor_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replaced logical ancestor cannot redirect a pinned evidence read."""
+    parent = tmp_path / "run"
+    archived = tmp_path / "run-before-swap"
+    parent.mkdir()
+    selected = parent / "evidence.log"
+    selected.write_bytes(b"a" * 70_000)
+    original_read = autopilot.os.read
+    swapped = False
+
+    def swap_after_first_chunk(descriptor: int, size: int) -> bytes:
+        nonlocal swapped
+        chunk = original_read(descriptor, size)
+        if chunk and not swapped:
+            parent.rename(archived)
+            parent.mkdir()
+            (parent / "evidence.log").write_bytes(b"redirected")
+            swapped = True
+        return chunk
+
+    monkeypatch.setattr(autopilot.os, "read", swap_after_first_chunk)
+
+    with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            tmp_path,
+            selected,
+            100_000,
+            context="runtime evidence",
+        )
+    assert swapped is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX descriptor reads")
+def test_pinned_runtime_reader_checks_mutation_before_oversize(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raced oversized file is classified as changed, never merely too large."""
+    selected = tmp_path / "evidence.log"
+    selected.write_bytes(b"a" * 70_000)
+    original_read = autopilot.os.read
+    mutated = False
+
+    def rewrite_after_first_chunk(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, size)
+        if chunk and not mutated:
+            selected.write_bytes(b"b" * 70_000)
+            mutated = True
+        return chunk
+
+    monkeypatch.setattr(autopilot.os, "read", rewrite_after_first_chunk)
+
+    with pytest.raises(autopilot.StateError) as raised:
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            tmp_path,
+            selected,
+            65_000,
+            context="runtime evidence",
+        )
+    assert mutated is True
+    assert raised.value.__cause__ is not None
+    assert "changed while being read" in str(raised.value.__cause__)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX descriptor reads")
+def test_optional_command_marker_disappearing_after_lookup_is_unsafe(
+    repo_factory: Callable[..., RepositoryFixture],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only an initially absent marker is optional; a raced marker is unsafe."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "vanish"
+    started_path, _result, _stdout, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    autopilot.atomic_write_json(
+        started_path,
+        {
+            "command_sha256": autopilot._command_sha256(command),  # noqa: SLF001
+            "schema_version": 1,
+        },
+    )
+    original_open = autopilot.os.open
+    removed = False
+
+    def remove_before_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal removed
+        if os.fspath(path) == started_path.name and dir_fd is not None and not removed:
+            started_path.unlink()
+            removed = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(autopilot.os, "open", remove_before_open)
+    monkeypatch.setattr(autopilot, "_supports_pinned_descriptor_reads", lambda: True)
+
+    with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+    assert removed is True
+
+
+def test_windows_pinned_runtime_reader_rejects_invalid_native_read_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A contradictory native byte count cannot underflow the bounded loop."""
+
+    def invalid_read(
+        _handle: object,
+        _buffer: object,
+        requested: int,
+        count: object,
+        _overlapped: object,
+    ) -> int:
+        count._obj.value = requested + 1  # type: ignore[attr-defined]  # noqa: SLF001
+        return 1
+
+    api = cast(
+        "autopilot._ControllerWindowsAPI",  # noqa: SLF001
+        argparse.Namespace(read_file=invalid_read),
+    )
+    chain = autopilot._ControllerWindowsDirectoryChain(  # noqa: SLF001
+        (1,), ((1, b"a" * 16, 0),)
+    )
+    snapshot = autopilot._ControllerWindowsFileSnapshot(  # noqa: SLF001
+        attributes=0,
+        volume_serial_number=1,
+        file_id=b"a" * 16,
+        file_size=1,
+        creation_time=1,
+        last_write_time=1,
+        change_time=1,
+    )
+    monkeypatch.setattr(autopilot, "_controller_windows_api", lambda: api)
+    monkeypatch.setattr(
+        autopilot,
+        "_controller_windows_open_directory_chain",
+        lambda *_args: chain,
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_windows_open_relative", lambda *_args, **_kwargs: 2
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_windows_is_real_file", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_windows_file_snapshot", lambda *_args: snapshot
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_close_windows_handle", lambda *_args: None
+    )
+
+    with pytest.raises(OSError, match="invalid byte count"):
+        autopilot._controller_read_windows_pinned_file(  # noqa: SLF001
+            tmp_path,
+            Path("evidence.log"),
+            4,
+        )
+
+
+def test_windows_pinned_runtime_reader_rejects_snapshot_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows file identity and mutation metadata must remain stable."""
+
+    def end_of_file(
+        _handle: object,
+        _buffer: object,
+        _requested: int,
+        count: object,
+        _overlapped: object,
+    ) -> int:
+        count._obj.value = 0  # type: ignore[attr-defined]  # noqa: SLF001
+        return 1
+
+    api = cast(
+        "autopilot._ControllerWindowsAPI",  # noqa: SLF001
+        argparse.Namespace(read_file=end_of_file),
+    )
+    chain = autopilot._ControllerWindowsDirectoryChain(  # noqa: SLF001
+        (1,), ((1, b"a" * 16, 0),)
+    )
+    initial = autopilot._ControllerWindowsFileSnapshot(  # noqa: SLF001
+        attributes=0,
+        volume_serial_number=1,
+        file_id=b"a" * 16,
+        file_size=0,
+        creation_time=1,
+        last_write_time=1,
+        change_time=1,
+    )
+    changed = autopilot._ControllerWindowsFileSnapshot(  # noqa: SLF001
+        attributes=0,
+        volume_serial_number=1,
+        file_id=b"a" * 16,
+        file_size=1,
+        creation_time=1,
+        last_write_time=2,
+        change_time=2,
+    )
+    snapshots = iter((initial, changed))
+    monkeypatch.setattr(autopilot, "_controller_windows_api", lambda: api)
+    monkeypatch.setattr(
+        autopilot,
+        "_controller_windows_open_directory_chain",
+        lambda *_args: chain,
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_windows_open_relative", lambda *_args, **_kwargs: 2
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_windows_is_real_file", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_windows_file_snapshot", lambda *_args: next(snapshots)
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_windows_is_real_directory", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        autopilot, "_controller_close_windows_handle", lambda *_args: None
+    )
+
+    with pytest.raises(OSError, match="changed while being read"):
+        autopilot._controller_read_windows_pinned_file(  # noqa: SLF001
+            tmp_path,
+            Path("evidence.log"),
+            4,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows handles")
+@pytest.mark.parametrize("component", ["ancestor", "leaf"])
+def test_windows_pinned_runtime_reader_rejects_reparse_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    component: str,
+) -> None:
+    """Native relative handles reject swapped ancestor and leaf reparse points."""
+    root = tmp_path / "root"
+    parent = root / "parent"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    parent.mkdir()
+    outside.mkdir()
+    selected = parent / "evidence.log"
+    selected.write_bytes(b"inside")
+    (outside / "evidence.log").write_bytes(b"outside")
+    probe = root / "probe"
+    try:
+        probe.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("the Windows runner cannot create symlinks")
+    probe.unlink()
+    swapped = False
+    if component == "ancestor":
+        original_chain = autopilot._controller_windows_open_directory_chain  # noqa: SLF001
+
+        def swap_ancestor(
+            api: autopilot._ControllerWindowsAPI,
+            opened_root: Path,
+            relative_parent: Path,
+        ) -> autopilot._ControllerWindowsDirectoryChain:
+            nonlocal swapped
+            archived = root / "parent-before-swap"
+            parent.rename(archived)
+            parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+            return original_chain(api, opened_root, relative_parent)
+
+        monkeypatch.setattr(
+            autopilot,
+            "_controller_windows_open_directory_chain",
+            swap_ancestor,
+        )
+    else:
+        original_relative = autopilot._controller_windows_open_relative  # noqa: SLF001
+
+        def swap_leaf(
+            api: autopilot._ControllerWindowsAPI,
+            parent_handle: int,
+            name: str,
+            creation: autopilot._ControllerNtCreateOptions,
+            *,
+            missing_leaf: bool = False,
+        ) -> int:
+            nonlocal swapped
+            if name == selected.name and missing_leaf and not swapped:
+                archived = parent / "evidence-before-swap.log"
+                selected.rename(archived)
+                selected.symlink_to(outside / "evidence.log")
+                swapped = True
+            return original_relative(
+                api,
+                parent_handle,
+                name,
+                creation,
+                missing_leaf=missing_leaf,
+            )
+
+        monkeypatch.setattr(
+            autopilot,
+            "_controller_windows_open_relative",
+            swap_leaf,
+        )
+
+    with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+        autopilot._read_pinned_file_bytes(  # noqa: SLF001
+            root,
+            selected,
+            64,
+            context="runtime evidence",
+        )
+    assert swapped is True
+
+
+def test_command_output_sidecar_hash_detects_tampering(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A changed machine sidecar cannot be accepted under an old receipt."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "sidecar"
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "original\n", "", 0.01),
+        log_base,
+    )
+    autopilot._command_output_path(log_base).write_text(  # noqa: SLF001
+        '{"schema_version": 1}\n', encoding="ascii"
+    )
+
+    with pytest.raises(autopilot.StateError, match="contradictory"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+def test_overflow_receipt_flags_and_complete_human_logs_fail_closed_on_tamper(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Resume rejects missing finals, partial temps, and overflow contradictions."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = (sys.executable, "-c", "print('x' * 1048577, end='')")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "flags"
+    result = pilot.runner.run(
+        command,
+        cwd=fixture.root,
+        # Coverage traces the byte-oriented streaming sanitizer and can make
+        # draining this stress payload much slower than the child itself.
+        timeout_seconds=30,
+        log_base=log_base,
+    )
+    assert not result.timed_out
+    assert result.stdout_overflow
+    evidence_paths = autopilot._command_evidence_paths  # noqa: SLF001
+    _started, result_path, stdout_path, _stderr = evidence_paths(log_base)
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    receipt["stdout_overflow"] = False
+    autopilot.atomic_write_json(result_path, receipt)
+    with pytest.raises(autopilot.StateError, match="contradictory"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+    receipt["stdout_overflow"] = True
+    autopilot.atomic_write_json(result_path, receipt)
+    partial = stdout_path.with_name(f".{stdout_path.name}.partial.tmp")
+    stdout_path.replace(partial)
+    with pytest.raises(autopilot.StateError, match="unsafe or unreadable"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+    assert partial.is_file()
+
+
+def test_whitespace_receipt_cannot_claim_nonempty_hosted_output(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """The authenticated sidecar rejects a forged human non-whitespace flag."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = (sys.executable, "-c", "import sys; sys.stdout.write(' \\t\\n')")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "space"
+    result = pilot.runner.run(
+        command,
+        cwd=fixture.root,
+        timeout_seconds=10,
+        log_base=log_base,
+    )
+    assert result.human_stdout_non_whitespace is False
+    result_path = autopilot._command_evidence_paths(log_base)[1]  # noqa: SLF001
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    receipt["stdout_non_whitespace"] = True
+    autopilot.atomic_write_json(result_path, receipt)
+
+    with pytest.raises(autopilot.StateError, match="contradictory"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+def test_overflowed_whitespace_log_rejects_coordinated_metadata_tamper(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """The complete human log disproves forged sidecar and receipt flags."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = (
+        sys.executable,
+        "-c",
+        f"import sys; sys.stdout.write(' ' * {autopilot.MAX_RESULT_BYTES + 1})",
+    )
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "spaces"
+    result = pilot.runner.run(
+        command,
+        cwd=fixture.root,
+        # Coverage traces the byte-oriented streaming sanitizer and can make
+        # draining this stress payload much slower than the child itself.
+        timeout_seconds=30,
+        log_base=log_base,
+    )
+    assert not result.timed_out
+    assert result.stdout_overflow
+    assert result.human_stdout_non_whitespace is False
+
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    output_document = json.loads(output_path.read_text(encoding="ascii"))
+    output_document["stdout_non_whitespace"] = True
+    autopilot.atomic_write_json(output_path, output_document)
+    result_path = autopilot._command_evidence_paths(log_base)[1]  # noqa: SLF001
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    receipt["stdout_non_whitespace"] = True
+    receipt["output_sha256"] = hashlib.sha256(output_path.read_bytes()).hexdigest()
+    autopilot.atomic_write_json(result_path, receipt)
+
+    with pytest.raises(autopilot.StateError, match="contradictory"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+@pytest.mark.parametrize("mutation", ["extra-key", "boolean-version"])
+def test_command_output_sidecar_requires_a_strict_document(
+    repo_factory: Callable[..., RepositoryFixture],
+    mutation: str,
+) -> None:
+    """Unknown fields and JSON booleans cannot masquerade as schema data."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / mutation
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "original", "", 0.01),
+        log_base,
+    )
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    document = json.loads(output_path.read_text(encoding="ascii"))
+    if mutation == "extra-key":
+        document["extra"] = "unexpected"
+    else:
+        document["schema_version"] = True
+    autopilot.atomic_write_json(output_path, document)
+    _started, result_path, _stdout, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    receipt["output_sha256"] = hashlib.sha256(output_path.read_bytes()).hexdigest()
+    autopilot.atomic_write_json(result_path, receipt)
+
+    with pytest.raises(autopilot.StateError, match="contradictory"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+@pytest.mark.parametrize("failure", ["missing", "oversized"])
+def test_command_output_sidecar_refuses_missing_or_oversized_files(
+    repo_factory: Callable[..., RepositoryFixture],
+    failure: str,
+) -> None:
+    """Resume fails closed before parsing an absent or oversized sidecar."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / failure
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "original", "", 0.01),
+        log_base,
+    )
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    if failure == "missing":
+        output_path.unlink()
+    else:
+        output_path.write_bytes(
+            b"x" * (autopilot.MAX_COMMAND_OUTPUT_DOCUMENT_BYTES + 1)
+        )
+
+    with pytest.raises(autopilot.StateError, match="output evidence is unsafe"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is privileged on Windows")
+def test_command_output_sidecar_refuses_a_symlink(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A resumable machine-evidence path cannot redirect outside its run."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "symlink"
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "original", "", 0.01),
+        log_base,
+    )
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    target = fixture.root / "outside-output.json"
+    output_path.replace(target)
+    output_path.symlink_to(target)
+
+    with pytest.raises(autopilot.StateError, match="output evidence is unsafe"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+def test_command_output_sidecar_rejects_invalid_base64_with_matching_hash(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A recomputed receipt does not make malformed stream encoding valid."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "base64"
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "original", "", 0.01),
+        log_base,
+    )
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    autopilot.atomic_write_json(
+        output_path,
+        {
+            "schema_version": 2,
+            "stderr_base64": "",
+            "stderr_non_whitespace": False,
+            "stderr_overflow": False,
+            "stdout_base64": "not-base64!",
+            "stdout_non_whitespace": True,
+            "stdout_overflow": False,
+        },
+    )
+    _started, result_path, _stdout, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    receipt["output_sha256"] = hashlib.sha256(output_path.read_bytes()).hexdigest()
+    autopilot.atomic_write_json(result_path, receipt)
+
+    with pytest.raises(autopilot.StateError, match="stdout evidence is malformed"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+def test_command_output_sidecar_and_human_log_must_agree(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Individually hashed human and machine views cannot contradict each other."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "views"
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "machine\n", "", 0.01),
+        log_base,
+    )
+    _started, result_path, stdout_path, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    stdout_path.write_text("different", encoding="utf-8")
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    receipt["stdout_sha256"] = autopilot.sha256_text("different")
+    autopilot.atomic_write_json(result_path, receipt)
+
+    with pytest.raises(autopilot.StateError, match="contradictory"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+def test_command_output_sidecar_must_itself_be_redacted(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """A forged receipt cannot reintroduce a credential through resume parsing."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    token = "gh" + "p_" + ("a" * 24)
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "secret"
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "safe", "", 0.01),
+        log_base,
+    )
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    output_document = autopilot._command_output_document(token, "")  # noqa: SLF001
+    output_path.write_bytes(output_document)
+    visible = autopilot._safe_log_text(token)  # noqa: SLF001
+    _started, result_path, stdout_path, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    stdout_path.write_text(visible, encoding="utf-8")
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    receipt["output_sha256"] = hashlib.sha256(output_document).hexdigest()
+    receipt["stdout_sha256"] = autopilot.sha256_text(visible)
+    autopilot.atomic_write_json(result_path, receipt)
+
+    with pytest.raises(autopilot.StateError, match="contradictory"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001
+
+
+def test_command_output_sidecar_enforces_decoded_stream_limit(
+    repo_factory: Callable[..., RepositoryFixture],
+) -> None:
+    """Base64 expansion cannot bypass the established one-megabyte stream cap."""
+    fixture = repo_factory()
+    pilot = fixture.make_autopilot()
+    command = ("gh", "api", "fixture")
+    log_base = fixture.root / ".autopilot" / "runs" / "test" / "logs" / "oversized"
+    pilot.runner.write_logs(
+        autopilot.CommandResult(command, 0, "safe", "", 0.01),
+        log_base,
+    )
+    oversized = "x" * (autopilot.MAX_RESULT_BYTES + 1)
+    output_path = autopilot._command_output_path(log_base)  # noqa: SLF001
+    output_document = autopilot._command_output_document(oversized, "")  # noqa: SLF001
+    output_path.write_bytes(output_document)
+    visible = autopilot._safe_log_text(oversized)  # noqa: SLF001
+    _started, result_path, stdout_path, _stderr = autopilot._command_evidence_paths(  # noqa: SLF001
+        log_base
+    )
+    stdout_path.write_text(visible, encoding="utf-8")
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    receipt["output_sha256"] = hashlib.sha256(output_document).hexdigest()
+    receipt["stdout_sha256"] = autopilot.sha256_text(visible)
+    autopilot.atomic_write_json(result_path, receipt)
+
+    with pytest.raises(autopilot.StateError, match="stdout evidence is unsafe"):
+        pilot._read_command_evidence(log_base, command)  # noqa: SLF001

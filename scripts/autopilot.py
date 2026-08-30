@@ -9,6 +9,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import codecs
+import ctypes
 import hashlib
 import json
 import math
@@ -17,26 +21,40 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import uuid
-from contextlib import suppress
-from dataclasses import dataclass
+from bisect import bisect_right
+from contextlib import ExitStack, suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import IntEnum
 from pathlib import Path, PurePosixPath
 from string import Template
-from typing import TYPE_CHECKING, cast
+from threading import Event, Lock, Thread
+from typing import TYPE_CHECKING, Protocol, cast
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
-    from typing import NoReturn, Self, TextIO
+    from typing import BinaryIO, NoReturn, Self, TextIO
 
 STATE_SCHEMA_VERSION = 2
 MAX_RESULT_BYTES = 1024 * 1024
+# One single-byte control expands to six ASCII bytes as ``\uXXXX``. Two maximum
+# base64 streams plus canonical JSON remain below three times the stream limit.
+MAX_COMMAND_LOG_BYTES = MAX_RESULT_BYTES * 6
+MAX_COMMAND_OUTPUT_DOCUMENT_BYTES = MAX_RESULT_BYTES * 3
+# A failure document can contain both maximum raw streams after worst-case
+# six-byte control escaping, plus bounded command and structural metadata.
+MAX_FAILURE_DOCUMENT_BYTES = MAX_RESULT_BYTES * 13
+_CAPTURE_CHUNK_BYTES = 64 * 1024
+_PROCESS_SHUTDOWN_GRACE_SECONDS = 0.5
+_FAILURE_OMISSION = "\n[controller omitted additional bounded failure evidence]\n"
 WORKFLOW_RUN_LIST_LIMIT = 100
 CHILD_MARKER = "PYAHEAD_AUTOPILOT_CHILD"
 DEFAULT_CONFIG = Path("automation/milestones.toml")
@@ -94,12 +112,125 @@ _NON_GIT_REPOSITORY_SELECTORS = frozenset(
     }
 )
 _AUTOPILOT_DISPATCH_TITLE = "PyAhead autopilot "
+_UNICODE_BMP_MAX = 0xFFFF
+# Standalone copy of the Unicode 16.0.0 Cc/Cf/Cs/Zl/Zp merged range table in
+# ``pyahead._human_text``.  A controller bootstrap cannot import project code;
+# tests require these generated intervals to remain identical.
+_UNSAFE_CODEPOINT_RANGES = (
+    (0x0000, 0x001F),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xD800, 0xDFFF),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+)
+_UNSAFE_CODEPOINT_BOUNDARIES = tuple(
+    boundary for start, end in _UNSAFE_CODEPOINT_RANGES for boundary in (start, end + 1)
+)
+_REDACTED = "[REDACTED]"
+_CREDENTIAL_CONTROL_SENTINEL = "\0"
+
+
+def _control_flexible_literal(value: str) -> str:
+    """Return a regex literal that tolerates escaped controls between letters."""
+    gap = re.escape(_CREDENTIAL_CONTROL_SENTINEL) + "*"
+    return gap.join(re.escape(character) for character in value)
+
+
+_CANONICAL_CREDENTIAL_NAMES = (
+    "token",
+    "access_token",
+    "api_key",
+    "api-key",
+    "apikey",
+    "password",
+    "secret",
+    "auth",
+    "credential",
+)
+_CANONICAL_CREDENTIAL_NAME_PATTERN = (
+    "(?:"
+    + "|".join(_control_flexible_literal(name) for name in _CANONICAL_CREDENTIAL_NAMES)
+    + ")"
+)
+_CANONICAL_CONTROL_GAP = re.escape(_CREDENTIAL_CONTROL_SENTINEL) + "*"
+_CANONICAL_SCHEME = (
+    r"[a-z]" + _CANONICAL_CONTROL_GAP + rf"(?:[a-z0-9+.-]{_CANONICAL_CONTROL_GAP})*"
+)
+_CANONICAL_URL_USERINFO = re.compile(
+    rf"(?i)\b{_CANONICAL_SCHEME}:{_CANONICAL_CONTROL_GAP}/"
+    rf"{_CANONICAL_CONTROL_GAP}/{_CANONICAL_CONTROL_GAP}"
+    r"(?P<secret>[^/\\\s?#@]+)@"
+)
+_CANONICAL_UNFINISHED_URL = re.compile(
+    rf"(?i)\b{_CANONICAL_SCHEME}:{_CANONICAL_CONTROL_GAP}/"
+    rf"{_CANONICAL_CONTROL_GAP}/{_CANONICAL_CONTROL_GAP}"
+    r"(?P<secret>[^/\\\s?#@]*)\Z"
+)
+_CANONICAL_SECRET_QUERY = re.compile(
+    rf"(?i)[?&]{re.escape(_CREDENTIAL_CONTROL_SENTINEL)}*"
+    rf"{_CANONICAL_CREDENTIAL_NAME_PATTERN}"
+    rf"{re.escape(_CREDENTIAL_CONTROL_SENTINEL)}*="
+    rf"{re.escape(_CREDENTIAL_CONTROL_SENTINEL)}*(?P<secret>[^&#\s\"'\\]*)"
+)
+_CANONICAL_AUTHORIZATION = re.compile(
+    rf"(?i)(?<![a-z0-9_-])(?:{_control_flexible_literal('proxy-')})?"
+    rf"{_control_flexible_literal('authorization')}(?![a-z0-9_-])"
+)
+_CANONICAL_AUTHORIZATION_VALUE = re.compile(
+    rf"(?i)(?:basic|bearer|token)[ \t{_CREDENTIAL_CONTROL_SENTINEL}]+"
+    rf"[^ \t,;}}\]{_CREDENTIAL_CONTROL_SENTINEL}]+"
+)
+_CANONICAL_TOKEN_PATTERNS = (
+    re.compile(
+        rf"(?i)(?<![a-z0-9_])(?:{_control_flexible_literal('github_pat_')}|"
+        rf"{_control_flexible_literal('ghp_')}|"
+        rf"{_control_flexible_literal('gho_')}|"
+        rf"{_control_flexible_literal('ghu_')}|"
+        rf"{_control_flexible_literal('ghs_')}|"
+        rf"{_control_flexible_literal('ghr_')})"
+        rf"(?:[A-Za-z0-9_]{_CANONICAL_CONTROL_GAP}){{20,}}"
+        r"(?![A-Za-z0-9_])"
+    ),
+    re.compile(
+        rf"(?i)(?<![a-z0-9_-]){_control_flexible_literal('sk-')}"
+        rf"(?:[A-Za-z0-9_-]{_CANONICAL_CONTROL_GAP}){{20,}}"
+        r"(?![A-Za-z0-9_-])"
+    ),
+)
+_CANONICAL_FIELD_AFTER_DELIMITER = re.compile(
+    r"\s*[\"']?[a-z_][a-z0-9_-]*[\"']?\s*[:=]",
+    flags=re.IGNORECASE,
+)
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization:\s*(?:bearer|token)\s+)[^\s]+"),
+    re.compile(r"(?i)((?:proxy-)?authorization:\s*(?:basic|bearer|token)\s+)[^\s]+"),
     re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
-    re.compile(r"(https?://)[^/@:\s]+:[^/@\s]+@"),
+    re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\\\s?#]+(?=@)"),
+    re.compile(
+        r"(?i)([?&](?:token|access_token|api(?:_|-)?key|password|secret|auth|credential)=)"
+        r"""[^&#"'\\\s]*"""
+    ),
 )
+_COMMAND_LOG_STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _CODEX_PORTABLE_SCHEMA_UNSUPPORTED = frozenset(
     {
         "allOf",
@@ -174,6 +305,1213 @@ class AutopilotInterruptedError(AutopilotError):
 
 class _DuplicateJSONKeyError(ValueError):
     """Internal marker for an ambiguous JSON object."""
+
+
+def _is_unsafe_terminal_codepoint(codepoint: int) -> bool:
+    """Use the pinned Unicode contract instead of the host Unicode database."""
+    return bool(bisect_right(_UNSAFE_CODEPOINT_BOUNDARIES, codepoint) & 1)
+
+
+def _escape_terminal_text(value: str) -> str:
+    """Mirror the product boundary without importing mutable product code."""
+    rendered: list[str] = []
+    for character in value:
+        codepoint = ord(character)
+        if not _is_unsafe_terminal_codepoint(codepoint):
+            rendered.append(character)
+            continue
+        rendered.append(
+            f"\\u{codepoint:04x}"
+            if codepoint <= _UNICODE_BMP_MAX
+            else f"\\U{codepoint:08x}"
+        )
+    return "".join(rendered)
+
+
+class _SafeArgumentParser(argparse.ArgumentParser):
+    """Keep standalone-controller help and failures terminal-safe."""
+
+    def format_usage(self) -> str:
+        original = self.prog
+        self.prog = _escape_terminal_text(original)
+        try:
+            return super().format_usage()
+        finally:
+            self.prog = original
+
+    def format_help(self) -> str:
+        original = self.prog
+        self.prog = _escape_terminal_text(original)
+        try:
+            return super().format_help()
+        finally:
+            self.prog = original
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)
+        program = _escape_terminal_text(self.prog)
+        detail = _escape_terminal_text(message)
+        self.exit(2, f"{program}: error: {detail}\n")
+
+
+_PINNED_READ_CHUNK_BYTES = 64 * 1024
+_WINDOWS_HANDLE = ctypes.c_void_p
+_WINDOWS_DWORD = ctypes.c_uint32
+_WINDOWS_ULONG = ctypes.c_uint32
+_WINDOWS_USHORT = ctypes.c_uint16
+_WINDOWS_NTSTATUS = ctypes.c_int32
+_WINDOWS_DELETE = 0x00010000
+_WINDOWS_FILE_ADD_FILE = 0x00000002
+_WINDOWS_FILE_ADD_SUBDIRECTORY = 0x00000004
+_WINDOWS_FILE_LIST_DIRECTORY = 0x00000001
+_WINDOWS_FILE_READ_DATA = 0x00000001
+_WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
+_WINDOWS_FILE_TRAVERSE = 0x00000020
+_WINDOWS_FILE_WRITE_DATA = 0x00000002
+_WINDOWS_SYNCHRONIZE = 0x00100000
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_WRITE = 0x00000002
+_WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WINDOWS_FILE_ATTRIBUTE_TEMPORARY = 0x00000100
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_FILE_OPEN = 1
+_WINDOWS_FILE_CREATE = 2
+_WINDOWS_FILE_DIRECTORY_FILE = 0x00000001
+_WINDOWS_FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
+_WINDOWS_FILE_NON_DIRECTORY_FILE = 0x00000040
+_WINDOWS_FILE_OPEN_FOR_BACKUP_INTENT = 0x00004000
+_WINDOWS_FILE_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_OBJ_CASE_INSENSITIVE = 0x00000040
+_WINDOWS_FILE_BASIC_INFO_CLASS = 0
+_WINDOWS_FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+_WINDOWS_FILE_ID_INFO_CLASS = 18
+_WINDOWS_FILE_RENAME_INFORMATION_CLASS = 10
+_WINDOWS_FILE_DISPOSITION_INFO_CLASS = 4
+_WINDOWS_MAX_UNICODE_STRING_BYTES = 0xFFFC
+_WINDOWS_MISSING_LEAF_STATUSES = frozenset({0xC000000F, 0xC0000034})
+_WINDOWS_STATUS_OBJECT_NAME_COLLISION = 0xC0000035
+_WINDOWS_TEMPORARY_ATTEMPTS = 128
+_WINDOWS_WRITE_CHUNK_BYTES = 1024 * 1024
+
+
+class _PinnedFileMissingError(OSError):
+    """The requested leaf was absent at its initial pinned lookup."""
+
+
+class _PinnedFileTooLargeError(OSError):
+    """A pinned file exceeded its configured byte limit."""
+
+
+class _ControllerNtStatusError(OSError):
+    """One rooted Windows handle operation failed with a stable NT status."""
+
+    def __init__(self, operation: str, status: int) -> None:
+        self.status = status & 0xFFFFFFFF
+        super().__init__(f"{operation} failed with NTSTATUS 0x{self.status:08x}")
+
+
+def _raise_rooted_output_oserror(message: str) -> NoReturn:
+    """Raise one internal rooted-output failure outside cleanup try blocks."""
+    raise OSError(message)
+
+
+class _ControllerCFunction(Protocol):
+    argtypes: list[object]
+    restype: object
+
+    def __call__(self, *arguments: object) -> object: ...
+
+
+class _ControllerWinDLLFactory(Protocol):
+    def __call__(self, name: str, *, use_last_error: bool) -> object: ...
+
+
+class _ControllerUnicodeString(ctypes.Structure):
+    _fields_ = [
+        ("length", _WINDOWS_USHORT),
+        ("maximum_length", _WINDOWS_USHORT),
+        ("buffer", ctypes.c_wchar_p),
+    ]
+
+
+class _ControllerObjectAttributes(ctypes.Structure):
+    _fields_ = [
+        ("length", _WINDOWS_ULONG),
+        ("root_directory", _WINDOWS_HANDLE),
+        ("object_name", ctypes.POINTER(_ControllerUnicodeString)),
+        ("attributes", _WINDOWS_ULONG),
+        ("security_descriptor", ctypes.c_void_p),
+        ("security_quality_of_service", ctypes.c_void_p),
+    ]
+
+
+class _ControllerIoStatusBlock(ctypes.Structure):
+    _fields_ = [
+        ("status_or_pointer", ctypes.c_void_p),
+        ("information", ctypes.c_size_t),
+    ]
+
+
+class _ControllerFileAttributeTagInfo(ctypes.Structure):
+    _fields_ = [
+        ("file_attributes", _WINDOWS_DWORD),
+        ("reparse_tag", _WINDOWS_DWORD),
+    ]
+
+
+class _ControllerFileRenameInformation(ctypes.Structure):
+    _fields_ = [
+        ("replace_if_exists", ctypes.c_ubyte),
+        ("root_directory", _WINDOWS_HANDLE),
+        ("file_name_length", _WINDOWS_DWORD),
+        ("file_name", ctypes.c_wchar * 1),
+    ]
+
+
+class _ControllerFileDispositionInfo(ctypes.Structure):
+    _fields_ = [("delete_file", ctypes.c_ubyte)]
+
+
+class _ControllerFileTime(ctypes.Structure):
+    _fields_ = [
+        ("low", _WINDOWS_DWORD),
+        ("high", _WINDOWS_DWORD),
+    ]
+
+
+class _ControllerByHandleFileInformation(ctypes.Structure):
+    _fields_ = [
+        ("file_attributes", _WINDOWS_DWORD),
+        ("creation_time", _ControllerFileTime),
+        ("last_access_time", _ControllerFileTime),
+        ("last_write_time", _ControllerFileTime),
+        ("volume_serial_number", _WINDOWS_DWORD),
+        ("file_size_high", _WINDOWS_DWORD),
+        ("file_size_low", _WINDOWS_DWORD),
+        ("number_of_links", _WINDOWS_DWORD),
+        ("file_index_high", _WINDOWS_DWORD),
+        ("file_index_low", _WINDOWS_DWORD),
+    ]
+
+
+class _ControllerFileBasicInfo(ctypes.Structure):
+    _fields_ = [
+        ("creation_time", ctypes.c_int64),
+        ("last_access_time", ctypes.c_int64),
+        ("last_write_time", ctypes.c_int64),
+        ("change_time", ctypes.c_int64),
+        ("file_attributes", _WINDOWS_DWORD),
+    ]
+
+
+class _ControllerFileId128(ctypes.Structure):
+    _fields_ = [("identifier", ctypes.c_ubyte * 16)]
+
+
+class _ControllerFileIdInfo(ctypes.Structure):
+    _fields_ = [
+        ("volume_serial_number", ctypes.c_uint64),
+        ("file_id", _ControllerFileId128),
+    ]
+
+
+@dataclass(frozen=True)
+class _ControllerWindowsFileSnapshot:
+    attributes: int
+    volume_serial_number: int
+    file_id: bytes
+    file_size: int
+    creation_time: int
+    last_write_time: int
+    change_time: int
+
+
+@dataclass(frozen=True)
+class _ControllerWindowsAPI:
+    create_file: _ControllerCFunction
+    close_handle: _ControllerCFunction
+    flush_file_buffers: _ControllerCFunction
+    get_file_information_by_handle: _ControllerCFunction
+    get_file_information_ex: _ControllerCFunction
+    read_file: _ControllerCFunction
+    set_file_information: _ControllerCFunction
+    write_file: _ControllerCFunction
+    nt_create_file: _ControllerCFunction
+    nt_set_information: _ControllerCFunction
+
+
+@dataclass(frozen=True)
+class _ControllerNtCreateOptions:
+    desired_access: int
+    share_access: int
+    options: int
+    disposition: int = _WINDOWS_FILE_OPEN
+    attributes: int = 0
+
+
+@dataclass(frozen=True)
+class _ControllerWindowsDirectoryChain:
+    handles: tuple[int, ...]
+    identities: tuple[tuple[int, bytes, int], ...]
+
+    @property
+    def parent_handle(self) -> int:
+        return self.handles[-1]
+
+    def close(self, api: _ControllerWindowsAPI) -> None:
+        for handle in reversed(self.handles):
+            _controller_close_windows_handle(api, handle)
+
+    def validate(self, api: _ControllerWindowsAPI) -> None:
+        for handle, identity in zip(self.handles, self.identities, strict=True):
+            snapshot = _controller_windows_file_snapshot(api, handle)
+            current = (
+                snapshot.volume_serial_number,
+                snapshot.file_id,
+                snapshot.attributes,
+            )
+            if current != identity or not _controller_windows_is_real_directory(
+                api, handle
+            ):
+                raise OSError("pinned output directory identity changed")
+
+
+def _controller_windows_function(
+    library: object,
+    name: str,
+    argument_types: list[object],
+    result_type: object,
+) -> _ControllerCFunction:
+    function = cast("_ControllerCFunction", getattr(library, name))
+    function.argtypes = argument_types
+    function.restype = result_type
+    return function
+
+
+def _controller_windows_api() -> _ControllerWindowsAPI:
+    factory_value = getattr(ctypes, "WinDLL", None)
+    if factory_value is None:
+        raise OSError("secure pinned reads are unavailable on this platform")
+    factory = cast("_ControllerWinDLLFactory", factory_value)
+    try:
+        kernel32 = factory("kernel32", use_last_error=True)
+        ntdll = factory("ntdll", use_last_error=True)
+        return _ControllerWindowsAPI(
+            create_file=_controller_windows_function(
+                kernel32,
+                "CreateFileW",
+                [
+                    ctypes.c_wchar_p,
+                    _WINDOWS_DWORD,
+                    _WINDOWS_DWORD,
+                    ctypes.c_void_p,
+                    _WINDOWS_DWORD,
+                    _WINDOWS_DWORD,
+                    _WINDOWS_HANDLE,
+                ],
+                _WINDOWS_HANDLE,
+            ),
+            close_handle=_controller_windows_function(
+                kernel32, "CloseHandle", [_WINDOWS_HANDLE], ctypes.c_int
+            ),
+            flush_file_buffers=_controller_windows_function(
+                kernel32,
+                "FlushFileBuffers",
+                [_WINDOWS_HANDLE],
+                ctypes.c_int,
+            ),
+            get_file_information_by_handle=_controller_windows_function(
+                kernel32,
+                "GetFileInformationByHandle",
+                [
+                    _WINDOWS_HANDLE,
+                    ctypes.POINTER(_ControllerByHandleFileInformation),
+                ],
+                ctypes.c_int,
+            ),
+            get_file_information_ex=_controller_windows_function(
+                kernel32,
+                "GetFileInformationByHandleEx",
+                [_WINDOWS_HANDLE, ctypes.c_int, ctypes.c_void_p, _WINDOWS_DWORD],
+                ctypes.c_int,
+            ),
+            read_file=_controller_windows_function(
+                kernel32,
+                "ReadFile",
+                [
+                    _WINDOWS_HANDLE,
+                    ctypes.c_void_p,
+                    _WINDOWS_DWORD,
+                    ctypes.POINTER(_WINDOWS_DWORD),
+                    ctypes.c_void_p,
+                ],
+                ctypes.c_int,
+            ),
+            set_file_information=_controller_windows_function(
+                kernel32,
+                "SetFileInformationByHandle",
+                [_WINDOWS_HANDLE, ctypes.c_int, ctypes.c_void_p, _WINDOWS_DWORD],
+                ctypes.c_int,
+            ),
+            write_file=_controller_windows_function(
+                kernel32,
+                "WriteFile",
+                [
+                    _WINDOWS_HANDLE,
+                    ctypes.c_void_p,
+                    _WINDOWS_DWORD,
+                    ctypes.POINTER(_WINDOWS_DWORD),
+                    ctypes.c_void_p,
+                ],
+                ctypes.c_int,
+            ),
+            nt_create_file=_controller_windows_function(
+                ntdll,
+                "NtCreateFile",
+                [
+                    ctypes.POINTER(_WINDOWS_HANDLE),
+                    _WINDOWS_DWORD,
+                    ctypes.POINTER(_ControllerObjectAttributes),
+                    ctypes.POINTER(_ControllerIoStatusBlock),
+                    ctypes.c_void_p,
+                    _WINDOWS_DWORD,
+                    _WINDOWS_DWORD,
+                    _WINDOWS_DWORD,
+                    _WINDOWS_DWORD,
+                    ctypes.c_void_p,
+                    _WINDOWS_DWORD,
+                ],
+                _WINDOWS_NTSTATUS,
+            ),
+            nt_set_information=_controller_windows_function(
+                ntdll,
+                "NtSetInformationFile",
+                [
+                    _WINDOWS_HANDLE,
+                    ctypes.POINTER(_ControllerIoStatusBlock),
+                    ctypes.c_void_p,
+                    _WINDOWS_ULONG,
+                    ctypes.c_int,
+                ],
+                _WINDOWS_NTSTATUS,
+            ),
+        )
+    except (AttributeError, OSError) as error:
+        raise OSError("secure pinned read APIs are unavailable on Windows") from error
+
+
+def _controller_close_windows_handle(api: _ControllerWindowsAPI, handle: int) -> None:
+    with suppress(Exception):
+        api.close_handle(_WINDOWS_HANDLE(handle))
+
+
+def _controller_windows_extended_path(path: Path) -> str:
+    rendered = str(path)
+    if rendered.startswith("\\\\?\\"):
+        return rendered
+    if rendered.startswith("\\\\"):
+        return f"\\\\?\\UNC\\{rendered[2:]}"
+    return f"\\\\?\\{rendered}"
+
+
+def _controller_windows_file_information(
+    api: _ControllerWindowsAPI, handle: int
+) -> _ControllerFileAttributeTagInfo:
+    information = _ControllerFileAttributeTagInfo()
+    succeeded = api.get_file_information_ex(
+        _WINDOWS_HANDLE(handle),
+        _WINDOWS_FILE_ATTRIBUTE_TAG_INFO_CLASS,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    )
+    if not bool(succeeded):
+        raise OSError("GetFileInformationByHandleEx failed")
+    return information
+
+
+def _controller_file_time_value(value: _ControllerFileTime) -> int:
+    return (int(value.high) << 32) | int(value.low)
+
+
+def _controller_windows_file_snapshot(
+    api: _ControllerWindowsAPI, handle: int
+) -> _ControllerWindowsFileSnapshot:
+    information = _ControllerByHandleFileInformation()
+    succeeded = api.get_file_information_by_handle(
+        _WINDOWS_HANDLE(handle), ctypes.byref(information)
+    )
+    if not bool(succeeded):
+        raise OSError("GetFileInformationByHandle failed")
+    basic = _ControllerFileBasicInfo()
+    succeeded = api.get_file_information_ex(
+        _WINDOWS_HANDLE(handle),
+        _WINDOWS_FILE_BASIC_INFO_CLASS,
+        ctypes.byref(basic),
+        ctypes.sizeof(basic),
+    )
+    if not bool(succeeded):
+        raise OSError("GetFileInformationByHandleEx failed")
+    creation_time = _controller_file_time_value(information.creation_time)
+    last_write_time = _controller_file_time_value(information.last_write_time)
+    if (
+        information.file_attributes != basic.file_attributes
+        or creation_time != basic.creation_time
+        or last_write_time != basic.last_write_time
+    ):
+        raise OSError("pinned input metadata changed while being inspected")
+    file_id = _ControllerFileIdInfo()
+    succeeded = api.get_file_information_ex(
+        _WINDOWS_HANDLE(handle),
+        _WINDOWS_FILE_ID_INFO_CLASS,
+        ctypes.byref(file_id),
+        ctypes.sizeof(file_id),
+    )
+    if not bool(succeeded):
+        raise OSError("GetFileInformationByHandleEx failed")
+    return _ControllerWindowsFileSnapshot(
+        attributes=int(information.file_attributes),
+        volume_serial_number=int(file_id.volume_serial_number),
+        file_id=bytes(file_id.file_id.identifier),
+        file_size=(
+            (int(information.file_size_high) << 32) | int(information.file_size_low)
+        ),
+        creation_time=creation_time,
+        last_write_time=last_write_time,
+        change_time=int(basic.change_time),
+    )
+
+
+def _controller_windows_is_real_directory(
+    api: _ControllerWindowsAPI, handle: int
+) -> bool:
+    information = _controller_windows_file_information(api, handle)
+    return bool(
+        information.file_attributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY
+        and not information.file_attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def _controller_windows_is_real_file(api: _ControllerWindowsAPI, handle: int) -> bool:
+    information = _controller_windows_file_information(api, handle)
+    return not bool(
+        information.file_attributes
+        & (_WINDOWS_FILE_ATTRIBUTE_DIRECTORY | _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT)
+    )
+
+
+def _controller_require_windows_directory(
+    api: _ControllerWindowsAPI, handle: int, message: str
+) -> None:
+    if not _controller_windows_is_real_directory(api, handle):
+        raise OSError(message)
+
+
+def _controller_windows_unicode_string(
+    name: str,
+) -> tuple[_ControllerUnicodeString, ctypes.Array[ctypes.c_wchar]]:
+    encoded_length = len(name.encode("utf-16-le"))
+    if encoded_length > _WINDOWS_MAX_UNICODE_STRING_BYTES:
+        raise OSError("pinned read path component is too long")
+    buffer = ctypes.create_unicode_buffer(name)
+    value = _ControllerUnicodeString(
+        length=encoded_length,
+        maximum_length=encoded_length + 2,
+        buffer=ctypes.cast(buffer, ctypes.c_wchar_p),
+    )
+    return value, buffer
+
+
+def _controller_windows_open_relative(
+    api: _ControllerWindowsAPI,
+    parent_handle: int,
+    name: str,
+    creation: _ControllerNtCreateOptions,
+    *,
+    missing_leaf: bool = False,
+) -> int:
+    object_name, name_buffer = _controller_windows_unicode_string(name)
+    object_attributes = _ControllerObjectAttributes(
+        length=ctypes.sizeof(_ControllerObjectAttributes),
+        root_directory=_WINDOWS_HANDLE(parent_handle),
+        object_name=ctypes.pointer(object_name),
+        attributes=_WINDOWS_OBJ_CASE_INSENSITIVE,
+        security_descriptor=None,
+        security_quality_of_service=None,
+    )
+    status_block = _ControllerIoStatusBlock()
+    handle = _WINDOWS_HANDLE()
+    status = cast(
+        "int",
+        api.nt_create_file(
+            ctypes.byref(handle),
+            creation.desired_access,
+            ctypes.byref(object_attributes),
+            ctypes.byref(status_block),
+            None,
+            creation.attributes,
+            creation.share_access,
+            creation.disposition,
+            creation.options,
+            None,
+            0,
+        ),
+    )
+    del name_buffer
+    if status < 0:
+        if missing_leaf and status & 0xFFFFFFFF in _WINDOWS_MISSING_LEAF_STATUSES:
+            raise _PinnedFileMissingError("pinned input leaf is missing")
+        raise _ControllerNtStatusError("NtCreateFile", status)
+    if handle.value is None:
+        raise OSError("NtCreateFile returned an invalid handle")
+    return handle.value
+
+
+def _controller_windows_open_root(
+    api: _ControllerWindowsAPI,
+    root: Path,
+    *,
+    for_write: bool = False,
+) -> int:
+    desired_access = (
+        _WINDOWS_FILE_LIST_DIRECTORY
+        | _WINDOWS_FILE_TRAVERSE
+        | _WINDOWS_FILE_READ_ATTRIBUTES
+        | _WINDOWS_SYNCHRONIZE
+    )
+    if for_write:
+        desired_access |= _WINDOWS_FILE_ADD_FILE | _WINDOWS_FILE_ADD_SUBDIRECTORY
+    raw_handle = api.create_file(
+        _controller_windows_extended_path(root),
+        desired_access,
+        _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
+        None,
+        _WINDOWS_OPEN_EXISTING,
+        (_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS | _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT),
+        None,
+    )
+    handle = cast("int | None", raw_handle)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle is None or handle == invalid_handle:
+        raise OSError("unable to open the pinned read root")
+    try:
+        _controller_require_windows_directory(
+            api, handle, "pinned read root must be a real directory"
+        )
+    except BaseException:
+        _controller_close_windows_handle(api, handle)
+        raise
+    return handle
+
+
+def _controller_windows_open_directory_chain(
+    api: _ControllerWindowsAPI,
+    root: Path,
+    relative_parent: Path,
+    *,
+    for_write: bool = False,
+    create: bool = False,
+) -> _ControllerWindowsDirectoryChain:
+    handles = [_controller_windows_open_root(api, root, for_write=for_write)]
+    snapshots = [_controller_windows_file_snapshot(api, handles[0])]
+    try:
+        for name in relative_parent.parts:
+            options = _ControllerNtCreateOptions(
+                desired_access=(
+                    _WINDOWS_FILE_LIST_DIRECTORY
+                    | _WINDOWS_FILE_TRAVERSE
+                    | _WINDOWS_FILE_READ_ATTRIBUTES
+                    | _WINDOWS_SYNCHRONIZE
+                    | (
+                        _WINDOWS_FILE_ADD_FILE | _WINDOWS_FILE_ADD_SUBDIRECTORY
+                        if for_write
+                        else 0
+                    )
+                ),
+                share_access=(_WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE),
+                options=(
+                    _WINDOWS_FILE_DIRECTORY_FILE
+                    | _WINDOWS_FILE_SYNCHRONOUS_IO_NONALERT
+                    | _WINDOWS_FILE_OPEN_FOR_BACKUP_INTENT
+                    | _WINDOWS_FILE_OPEN_REPARSE_POINT
+                ),
+            )
+            try:
+                handle = _controller_windows_open_relative(
+                    api,
+                    handles[-1],
+                    name,
+                    options,
+                    missing_leaf=True,
+                )
+            except _PinnedFileMissingError:
+                if not create:
+                    raise
+                handle = _controller_windows_open_relative(
+                    api,
+                    handles[-1],
+                    name,
+                    _ControllerNtCreateOptions(
+                        desired_access=options.desired_access,
+                        share_access=options.share_access,
+                        disposition=_WINDOWS_FILE_CREATE,
+                        attributes=_WINDOWS_FILE_ATTRIBUTE_DIRECTORY,
+                        options=options.options,
+                    ),
+                )
+            handles.append(handle)
+            _controller_require_windows_directory(
+                api, handle, "pinned read parents must be real directories"
+            )
+            snapshots.append(_controller_windows_file_snapshot(api, handle))
+    except BaseException:
+        for handle in reversed(handles):
+            _controller_close_windows_handle(api, handle)
+        raise
+    identities = tuple(
+        (snapshot.volume_serial_number, snapshot.file_id, snapshot.attributes)
+        for snapshot in snapshots
+    )
+    return _ControllerWindowsDirectoryChain(tuple(handles), identities)
+
+
+def _controller_read_windows_pinned_file(
+    root: Path, relative: Path, limit: int
+) -> bytes:
+    api = _controller_windows_api()
+    chain = _controller_windows_open_directory_chain(api, root, relative.parent)
+    handle: int | None = None
+    try:
+        handle = _controller_windows_open_relative(
+            api,
+            chain.parent_handle,
+            relative.name,
+            _ControllerNtCreateOptions(
+                desired_access=(
+                    _WINDOWS_FILE_READ_DATA
+                    | _WINDOWS_FILE_READ_ATTRIBUTES
+                    | _WINDOWS_SYNCHRONIZE
+                ),
+                share_access=_WINDOWS_FILE_SHARE_READ,
+                options=(
+                    _WINDOWS_FILE_NON_DIRECTORY_FILE
+                    | _WINDOWS_FILE_SYNCHRONOUS_IO_NONALERT
+                    | _WINDOWS_FILE_OPEN_REPARSE_POINT
+                ),
+            ),
+            missing_leaf=True,
+        )
+        if not _controller_windows_is_real_file(api, handle):
+            raise OSError("pinned input must be a real regular file")
+        initial_snapshot = _controller_windows_file_snapshot(api, handle)
+        chunks: list[bytes] = []
+        remaining = limit + 1
+        while remaining:
+            requested = min(_PINNED_READ_CHUNK_BYTES, remaining)
+            buffer = ctypes.create_string_buffer(requested)
+            count = _WINDOWS_DWORD()
+            succeeded = api.read_file(
+                _WINDOWS_HANDLE(handle),
+                ctypes.byref(buffer),
+                requested,
+                ctypes.byref(count),
+                None,
+            )
+            if not bool(succeeded):
+                raise OSError("ReadFile failed")
+            if count.value > requested:
+                raise OSError("ReadFile returned an invalid byte count")
+            if count.value == 0:
+                break
+            chunks.append(buffer.raw[: count.value])
+            remaining -= count.value
+        content = b"".join(chunks)
+        final_snapshot = _controller_windows_file_snapshot(api, handle)
+        if (
+            initial_snapshot != final_snapshot
+            or not _controller_windows_is_real_file(api, handle)
+            or any(
+                not _controller_windows_is_real_directory(api, parent_handle)
+                for parent_handle in chain.handles
+            )
+        ):
+            raise OSError("pinned input changed while being read")
+        if len(content) > limit:
+            raise _PinnedFileTooLargeError("pinned input exceeds its byte limit")
+        return content
+    finally:
+        if handle is not None:
+            _controller_close_windows_handle(api, handle)
+        chain.close(api)
+
+
+def _supports_pinned_descriptor_reads() -> bool:
+    return bool(
+        os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+    )
+
+
+def _pinned_directory_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
+        flags |= getattr(os, name, 0)
+    return flags
+
+
+def _pinned_file_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        flags |= getattr(os, name, 0)
+    return flags
+
+
+def _same_stable_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return os.path.samestat(left, right) and all(
+        getattr(left, field) == getattr(right, field)
+        for field in ("st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+    )
+
+
+@dataclass(frozen=True)
+class _PinnedReadChain:
+    root: Path
+    descriptors: tuple[int, ...]
+    statuses: tuple[os.stat_result, ...]
+    names: tuple[str, ...]
+
+    def validate(
+        self,
+        leaf_name: str,
+        leaf_status: os.stat_result,
+        leaf_descriptor: int,
+    ) -> None:
+        current_root = self.root.lstat()
+        opened_root = os.fstat(self.descriptors[0])
+        if not stat.S_ISDIR(current_root.st_mode) or not (
+            os.path.samestat(current_root, self.statuses[0])
+            and os.path.samestat(opened_root, self.statuses[0])
+        ):
+            raise OSError("pinned input root changed while being read")
+        for index, name in enumerate(self.names, start=1):
+            current = os.stat(
+                name,
+                dir_fd=self.descriptors[index - 1],
+                follow_symlinks=False,
+            )
+            opened = os.fstat(self.descriptors[index])
+            if not stat.S_ISDIR(current.st_mode) or not (
+                os.path.samestat(current, self.statuses[index])
+                and os.path.samestat(opened, self.statuses[index])
+            ):
+                raise OSError("pinned input parent changed while being read")
+        current_leaf = os.stat(
+            leaf_name,
+            dir_fd=self.descriptors[-1],
+            follow_symlinks=False,
+        )
+        opened_leaf = os.fstat(leaf_descriptor)
+        if not stat.S_ISREG(current_leaf.st_mode) or not (
+            _same_stable_file(current_leaf, leaf_status)
+            and _same_stable_file(opened_leaf, leaf_status)
+        ):
+            raise OSError("pinned input file changed while being read")
+
+
+def _open_pinned_relative_directory(
+    name: str, parent_descriptor: int
+) -> tuple[int, os.stat_result]:
+    expected = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    if not stat.S_ISDIR(expected.st_mode):
+        raise OSError("pinned input parents must be real directories")
+    descriptor = os.open(name, _pinned_directory_flags(), dir_fd=parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    if not stat.S_ISDIR(opened.st_mode) or not os.path.samestat(expected, opened):
+        os.close(descriptor)
+        raise OSError("pinned input parent changed while being opened")
+    return descriptor, opened
+
+
+def _controller_read_posix_pinned_file(root: Path, relative: Path, limit: int) -> bytes:
+    if not _supports_pinned_descriptor_reads():
+        raise OSError("secure pinned reads are unavailable")
+    with ExitStack() as cleanup:
+        descriptors: list[int] = []
+        statuses: list[os.stat_result] = []
+        names: list[str] = []
+        expected_root = root.lstat()
+        root_descriptor = os.open(root, _pinned_directory_flags())
+        cleanup.callback(os.close, root_descriptor)
+        descriptors.append(root_descriptor)
+        opened_root = os.fstat(root_descriptor)
+        if not stat.S_ISDIR(opened_root.st_mode) or not os.path.samestat(
+            expected_root, opened_root
+        ):
+            raise OSError("pinned input root changed while being opened")
+        statuses.append(opened_root)
+        for name in relative.parent.parts:
+            descriptor, opened = _open_pinned_relative_directory(name, descriptors[-1])
+            cleanup.callback(os.close, descriptor)
+            descriptors.append(descriptor)
+            statuses.append(opened)
+            names.append(name)
+        try:
+            expected_leaf = os.stat(
+                relative.name,
+                dir_fd=descriptors[-1],
+                follow_symlinks=False,
+            )
+        except FileNotFoundError as error:
+            raise _PinnedFileMissingError("pinned input leaf is missing") from error
+        if not stat.S_ISREG(expected_leaf.st_mode):
+            raise OSError("pinned input must be a real regular file")
+        descriptor = os.open(
+            relative.name,
+            _pinned_file_flags(),
+            dir_fd=descriptors[-1],
+        )
+        cleanup.callback(os.close, descriptor)
+        opened_leaf = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_leaf.st_mode) or not os.path.samestat(
+            expected_leaf, opened_leaf
+        ):
+            raise OSError("pinned input file changed while being opened")
+        chain = _PinnedReadChain(
+            root=root,
+            descriptors=tuple(descriptors),
+            statuses=tuple(statuses),
+            names=tuple(names),
+        )
+        content = bytearray()
+        while len(content) <= limit:
+            chunk = os.read(
+                descriptor,
+                min(_PINNED_READ_CHUNK_BYTES, limit + 1 - len(content)),
+            )
+            if not chunk:
+                break
+            content.extend(chunk)
+        oversized = len(content) > limit
+        chain.validate(relative.name, opened_leaf, descriptor)
+        if oversized:
+            raise _PinnedFileTooLargeError("pinned input exceeds its byte limit")
+        return bytes(content)
+
+
+def _read_pinned_file_bytes(
+    root: Path,
+    path: Path,
+    limit: int,
+    *,
+    context: str,
+) -> bytes:
+    """Read one unchanged bounded regular file through a pinned directory chain."""
+    if type(limit) is not int or limit < 0:
+        raise StateError(f"{context} has an invalid byte limit")
+    absolute_root = Path(os.path.abspath(root))  # noqa: PTH100
+    selected = path if path.is_absolute() else absolute_root / path
+    absolute_selected = Path(os.path.abspath(selected))  # noqa: PTH100
+    try:
+        relative = absolute_selected.relative_to(absolute_root)
+    except ValueError as error:
+        raise StateError(f"{context} is outside the repository") from error
+    if relative == Path() or not relative.name or ".." in relative.parts:
+        raise StateError(f"{context} does not name a repository file")
+    if os.name == "nt" and any(":" in part for part in relative.parts):
+        raise StateError(f"{context} cannot use a Windows alternate data stream")
+    try:
+        if _supports_pinned_descriptor_reads():
+            return _controller_read_posix_pinned_file(absolute_root, relative, limit)
+        if os.name == "nt":
+            return _controller_read_windows_pinned_file(absolute_root, relative, limit)
+    except _PinnedFileMissingError:
+        raise
+    except OSError as error:
+        raise StateError(f"{context} is unsafe or unreadable") from error
+    raise StateError(f"secure {context} reads are unavailable")
+
+
+@dataclass(frozen=True)
+class _PinnedHumanLogInspection:
+    """Authenticated metadata for one complete terminal-safe human log."""
+
+    sha256: str
+    size: int
+    has_non_whitespace: bool
+
+
+class _TerminalSafeWhitespaceInspector:
+    """Conservatively classify visible human-log text across chunk boundaries."""
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self.has_non_whitespace = False
+
+    def update(self, value: str, *, final: bool = False) -> None:
+        if self.has_non_whitespace:
+            self._pending = ""
+            return
+        text = self._pending + value
+        self._pending = ""
+        cursor = 0
+        while cursor < len(text):
+            character = text[cursor]
+            if character.isspace():
+                cursor += 1
+                continue
+            if character != "\\":
+                self.has_non_whitespace = True
+                return
+            if cursor + 1 >= len(text):
+                if not final:
+                    self._pending = text[cursor:]
+                    return
+                self.has_non_whitespace = True
+                return
+            marker = text[cursor + 1]
+            digits = 4 if marker == "u" else 8 if marker == "U" else 0
+            width = digits + 2
+            if digits == 0:
+                self.has_non_whitespace = True
+                return
+            available = text[cursor + 2 : min(len(text), cursor + width)]
+            if len(available) < digits:
+                if not final and all(
+                    digit in "0123456789abcdefABCDEF" for digit in available
+                ):
+                    self._pending = text[cursor:]
+                    return
+                self.has_non_whitespace = True
+                return
+            if not all(digit in "0123456789abcdefABCDEF" for digit in available):
+                self.has_non_whitespace = True
+                return
+            codepoint = int(available, 16)
+            if (
+                codepoint <= sys.maxunicode
+                and _is_unsafe_terminal_codepoint(codepoint)
+                and chr(codepoint).isspace()
+            ):
+                # A literal spelling is indistinguishable from the controller's
+                # escape for whitespace. Treat that ambiguity as whitespace so
+                # hosted evidence cannot be promoted by a forged metadata bit.
+                cursor += width
+                continue
+            self.has_non_whitespace = True
+            return
+
+    def finish(self) -> bool:
+        self.update("", final=True)
+        return self.has_non_whitespace
+
+
+class _HumanLogInspector:
+    """Hash and validate a human log without retaining its unbounded content."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256()
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+        self._whitespace = _TerminalSafeWhitespaceInspector()
+        self.size = 0
+
+    def update(self, chunk: bytes) -> None:
+        self._digest.update(chunk)
+        self.size += len(chunk)
+        decoded = self._decoder.decode(chunk, final=False)
+        if any(_is_unsafe_terminal_codepoint(ord(character)) for character in decoded):
+            raise OSError("human log contains an unsafe terminal codepoint")
+        self._whitespace.update(decoded)
+
+    def finish(self) -> _PinnedHumanLogInspection:
+        decoded = self._decoder.decode(b"", final=True)
+        if any(_is_unsafe_terminal_codepoint(ord(character)) for character in decoded):
+            raise OSError("human log contains an unsafe terminal codepoint")
+        self._whitespace.update(decoded)
+        return _PinnedHumanLogInspection(
+            self._digest.hexdigest(),
+            self.size,
+            self._whitespace.finish(),
+        )
+
+
+def _inspect_posix_pinned_human_log(
+    root: Path,
+    relative: Path,
+) -> _PinnedHumanLogInspection:
+    if not _supports_pinned_descriptor_reads():
+        raise OSError("secure pinned reads are unavailable")
+    with ExitStack() as cleanup:
+        descriptors: list[int] = []
+        statuses: list[os.stat_result] = []
+        names: list[str] = []
+        expected_root = root.lstat()
+        root_descriptor = os.open(root, _pinned_directory_flags())
+        cleanup.callback(os.close, root_descriptor)
+        descriptors.append(root_descriptor)
+        opened_root = os.fstat(root_descriptor)
+        if not stat.S_ISDIR(opened_root.st_mode) or not os.path.samestat(
+            expected_root, opened_root
+        ):
+            raise OSError("pinned human-log root changed while being opened")
+        statuses.append(opened_root)
+        for name in relative.parent.parts:
+            descriptor, opened = _open_pinned_relative_directory(name, descriptors[-1])
+            cleanup.callback(os.close, descriptor)
+            descriptors.append(descriptor)
+            statuses.append(opened)
+            names.append(name)
+        try:
+            expected_leaf = os.stat(
+                relative.name,
+                dir_fd=descriptors[-1],
+                follow_symlinks=False,
+            )
+        except FileNotFoundError as error:
+            raise _PinnedFileMissingError("pinned human log is missing") from error
+        if not stat.S_ISREG(expected_leaf.st_mode):
+            raise OSError("pinned human log must be a real regular file")
+        descriptor = os.open(
+            relative.name,
+            _pinned_file_flags(),
+            dir_fd=descriptors[-1],
+        )
+        cleanup.callback(os.close, descriptor)
+        opened_leaf = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_leaf.st_mode) or not os.path.samestat(
+            expected_leaf, opened_leaf
+        ):
+            raise OSError("pinned human log changed while being opened")
+        chain = _PinnedReadChain(
+            root=root,
+            descriptors=tuple(descriptors),
+            statuses=tuple(statuses),
+            names=tuple(names),
+        )
+        inspector = _HumanLogInspector()
+        while chunk := os.read(descriptor, _PINNED_READ_CHUNK_BYTES):
+            inspector.update(chunk)
+        inspection = inspector.finish()
+        chain.validate(relative.name, opened_leaf, descriptor)
+        return inspection
+
+
+def _inspect_windows_pinned_human_log(
+    root: Path,
+    relative: Path,
+) -> _PinnedHumanLogInspection:
+    api = _controller_windows_api()
+    chain = _controller_windows_open_directory_chain(api, root, relative.parent)
+    handle: int | None = None
+    try:
+        handle = _controller_windows_open_relative(
+            api,
+            chain.parent_handle,
+            relative.name,
+            _ControllerNtCreateOptions(
+                desired_access=(
+                    _WINDOWS_FILE_READ_DATA
+                    | _WINDOWS_FILE_READ_ATTRIBUTES
+                    | _WINDOWS_SYNCHRONIZE
+                ),
+                share_access=_WINDOWS_FILE_SHARE_READ,
+                options=(
+                    _WINDOWS_FILE_NON_DIRECTORY_FILE
+                    | _WINDOWS_FILE_SYNCHRONOUS_IO_NONALERT
+                    | _WINDOWS_FILE_OPEN_REPARSE_POINT
+                ),
+            ),
+            missing_leaf=True,
+        )
+        if not _controller_windows_is_real_file(api, handle):
+            raise OSError("pinned human log must be a real regular file")
+        initial_snapshot = _controller_windows_file_snapshot(api, handle)
+        inspector = _HumanLogInspector()
+        while True:
+            buffer = ctypes.create_string_buffer(_PINNED_READ_CHUNK_BYTES)
+            count = _WINDOWS_DWORD()
+            succeeded = api.read_file(
+                _WINDOWS_HANDLE(handle),
+                ctypes.byref(buffer),
+                _PINNED_READ_CHUNK_BYTES,
+                ctypes.byref(count),
+                None,
+            )
+            if not bool(succeeded):
+                raise OSError("ReadFile failed")
+            if count.value > _PINNED_READ_CHUNK_BYTES:
+                raise OSError("ReadFile returned an invalid byte count")
+            if count.value == 0:
+                break
+            inspector.update(buffer.raw[: count.value])
+        inspection = inspector.finish()
+        final_snapshot = _controller_windows_file_snapshot(api, handle)
+        if (
+            initial_snapshot != final_snapshot
+            or not _controller_windows_is_real_file(api, handle)
+            or any(
+                not _controller_windows_is_real_directory(api, parent_handle)
+                for parent_handle in chain.handles
+            )
+        ):
+            raise OSError("pinned human log changed while being read")
+        return inspection
+    finally:
+        if handle is not None:
+            _controller_close_windows_handle(api, handle)
+        chain.close(api)
+
+
+def _inspect_pinned_human_log(
+    root: Path,
+    path: Path,
+    *,
+    expected_size: int,
+    expected_sha256: str,
+    context: str,
+) -> _PinnedHumanLogInspection:
+    """Authenticate one unbounded complete human log through pinned handles."""
+    if type(expected_size) is not int or expected_size < 0:
+        raise StateError(f"{context} has an invalid recorded size")
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise StateError(f"{context} has an invalid recorded hash")
+    absolute_root = Path(os.path.abspath(root))  # noqa: PTH100
+    selected = path if path.is_absolute() else absolute_root / path
+    absolute_selected = Path(os.path.abspath(selected))  # noqa: PTH100
+    try:
+        relative = absolute_selected.relative_to(absolute_root)
+    except ValueError as error:
+        raise StateError(f"{context} is outside the repository") from error
+    if relative == Path() or not relative.name or ".." in relative.parts:
+        raise StateError(f"{context} does not name a repository file")
+    if os.name == "nt" and any(":" in part for part in relative.parts):
+        raise StateError(f"{context} cannot use a Windows alternate data stream")
+    try:
+        inspection = (
+            _inspect_posix_pinned_human_log(absolute_root, relative)
+            if _supports_pinned_descriptor_reads()
+            else _inspect_windows_pinned_human_log(absolute_root, relative)
+            if os.name == "nt"
+            else None
+        )
+    except _PinnedFileMissingError as error:
+        raise StateError(f"{context} is unsafe or unreadable") from error
+    except (OSError, UnicodeError) as error:
+        raise StateError(f"{context} is unsafe or unreadable") from error
+    if inspection is None:
+        raise StateError(f"secure {context} reads are unavailable")
+    if inspection.size != expected_size or inspection.sha256 != expected_sha256:
+        raise StateError(f"{context} is contradictory")
+    return inspection
 
 
 @dataclass(frozen=True)
@@ -286,7 +1624,7 @@ class Config:
 
 @dataclass(frozen=True)
 class CommandResult:
-    """Complete separated output from one supervised subprocess."""
+    """Bounded machine output plus complete-human-log metadata for a process."""
 
     command: tuple[str, ...]
     returncode: int
@@ -295,6 +1633,14 @@ class CommandResult:
     duration_seconds: float
     timed_out: bool = False
     interrupted: bool = False
+    stdout_overflow: bool = False
+    stderr_overflow: bool = False
+    human_stdout_sha256: str | None = None
+    human_stderr_sha256: str | None = None
+    human_stdout_size: int | None = None
+    human_stderr_size: int | None = None
+    human_stdout_non_whitespace: bool | None = None
+    human_stderr_non_whitespace: bool | None = None
 
     @property
     def signal_number(self) -> int | None:
@@ -303,12 +1649,31 @@ class CommandResult:
 
     @property
     def succeeded(self) -> bool:
-        """Return whether the process completed normally with status zero."""
+        """Return whether bounded machine evidence proves normal completion."""
+        return self.process_succeeded and not (
+            self.stdout_overflow or self.stderr_overflow
+        )
+
+    @property
+    def process_succeeded(self) -> bool:
+        """Return whether the process itself completed normally with status zero."""
         return (
             self.returncode == 0
             and not self.timed_out
             and not self.interrupted
             and self.signal_number is None
+        )
+
+    @property
+    def human_logs_complete(self) -> bool:
+        """Return whether both complete sanitized human streams were finalized."""
+        return (
+            self.human_stdout_sha256 is not None
+            and self.human_stderr_sha256 is not None
+            and self.human_stdout_size is not None
+            and self.human_stderr_size is not None
+            and self.human_stdout_non_whitespace is not None
+            and self.human_stderr_non_whitespace is not None
         )
 
 
@@ -929,14 +2294,957 @@ def load_config(repo_root: Path, config_path: Path | None = None) -> Config:
     )
 
 
+@dataclass(frozen=True)
+class _CredentialMatchView:
+    """Canonical match text plus exact source spans for safe projection."""
+
+    text: str
+    starts: tuple[int, ...]
+    ends: tuple[int, ...]
+
+
+def _credential_match_view(text: str) -> _CredentialMatchView:
+    """Decode harmless JSON syntax and omit controls only in a match view."""
+    rendered: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    cursor = 0
+    while cursor < len(text):
+        character = text[cursor]
+        if _is_unsafe_terminal_codepoint(ord(character)):
+            rendered.append(_CREDENTIAL_CONTROL_SENTINEL)
+            starts.append(cursor)
+            cursor += 1
+            ends.append(cursor)
+            continue
+        if character != "\\":
+            rendered.append(character)
+            starts.append(cursor)
+            cursor += 1
+            ends.append(cursor)
+            continue
+
+        run_end = cursor
+        while run_end < len(text) and text[run_end] == "\\":
+            run_end += 1
+        decoded: str | None = None
+        decoded_end = run_end
+        if run_end < len(text):
+            escaped = text[run_end]
+            if escaped in "\\/\"'":
+                decoded = escaped
+                decoded_end += 1
+            elif (
+                escaped == "u"
+                and run_end + 5 <= len(text)
+                and all(
+                    digit in "0123456789abcdefABCDEF"
+                    for digit in text[run_end + 1 : run_end + 5]
+                )
+            ):
+                decoded = chr(int(text[run_end + 1 : run_end + 5], 16))
+                decoded_end = run_end + 5
+        if decoded is None:
+            rendered.append("\\")
+            starts.append(cursor)
+            ends.append(run_end)
+            cursor = run_end
+            continue
+        if _is_unsafe_terminal_codepoint(ord(decoded)):
+            rendered.append(_CREDENTIAL_CONTROL_SENTINEL)
+            starts.append(cursor)
+            ends.append(decoded_end)
+        else:
+            rendered.append(decoded)
+            starts.append(cursor)
+            ends.append(decoded_end)
+        cursor = decoded_end
+    return _CredentialMatchView("".join(rendered), tuple(starts), tuple(ends))
+
+
+def _canonical_assignment_value_start(
+    view: _CredentialMatchView,
+    name_end: int,
+) -> tuple[int, int] | None:
+    """Locate an authorization separator and value start without scanning it."""
+    text = view.text
+    cursor = name_end
+    if cursor < len(text) and text[cursor] in "\"'":
+        cursor += 1
+    while cursor < len(text) and (
+        text[cursor].isspace() or text[cursor] == _CREDENTIAL_CONTROL_SENTINEL
+    ):
+        cursor += 1
+    if cursor >= len(text) or text[cursor] not in "=:,":
+        return None
+    separator = cursor
+    cursor += 1
+    while cursor < len(text) and (
+        text[cursor].isspace() or text[cursor] == _CREDENTIAL_CONTROL_SENTINEL
+    ):
+        cursor += 1
+    return separator, cursor
+
+
+def _canonical_assignment_value_span(
+    view: _CredentialMatchView,
+    source: str,
+    value_start: int,
+) -> tuple[int, int]:
+    """Scan one authorization value from its already-located start."""
+    text = view.text
+    if value_start < len(text) and text[value_start] not in "\"'":
+        authorization = _CANONICAL_AUTHORIZATION_VALUE.match(text, value_start)
+        if authorization is not None:
+            candidate = authorization.end()
+            if candidate == len(text) or text[candidate] in (
+                " ",
+                "\t",
+                "\r",
+                "\n",
+                _CREDENTIAL_CONTROL_SENTINEL,
+            ):
+                return value_start, candidate
+    value_end = value_start
+    while value_end < len(text):
+        if text[value_end] == _CREDENTIAL_CONTROL_SENTINEL:
+            source_control = source[view.starts[value_end] : view.ends[value_end]]
+            if "\n" in source_control or "\r" in source_control:
+                break
+            value_end += 1
+            continue
+        if value_end > value_start:
+            source_gap = source[view.ends[value_end - 1] : view.starts[value_end]]
+            if "\n" in source_gap or "\r" in source_gap:
+                break
+        marker_start = value_end - len(_REDACTED) + 1
+        if (
+            text[value_end] == "]"
+            and marker_start >= value_start
+            and text.startswith(_REDACTED, marker_start, value_end + 1)
+        ):
+            value_end += 1
+            continue
+        if text[value_end] in "}]":
+            break
+        if text[value_end] in ",;" and _CANONICAL_FIELD_AFTER_DELIMITER.match(
+            text, value_end + 1
+        ):
+            break
+        value_end += 1
+    return value_start, value_end
+
+
+def _project_credential_span(
+    view: _CredentialMatchView,
+    start: int,
+    end: int,
+) -> tuple[int, int] | None:
+    """Project one non-empty canonical span back onto its original text."""
+    if start >= end or start < 0 or end > len(view.starts):
+        return None
+    return view.starts[start], view.ends[end - 1]
+
+
+def _structural_authorization_spans(
+    view: _CredentialMatchView,
+    source: str,
+) -> Iterable[tuple[int, int]]:
+    """Yield authorization values without rescanning values that contain names."""
+    search_from = 0
+    redacted_through = 0
+    while match := _CANONICAL_AUTHORIZATION.search(view.text, search_from):
+        search_from = match.end()
+        assignment = _canonical_assignment_value_start(
+            view,
+            match.end(),
+        )
+        if assignment is None:
+            continue
+        separator, value_start = assignment
+        # Inspect every name at one monotonically rising search position.  A
+        # nested assignment wholly inside an already-redacted value adds no
+        # information, but its name may begin inside that value while its value
+        # begins after a line boundary.  Skipping to ``value_end`` would miss
+        # that crossing assignment and expose its value.
+        if value_start < redacted_through or (
+            match.start() < redacted_through and separator == redacted_through
+        ):
+            # The delimiter that ended an outer value (for example its JSON
+            # field comma) cannot simultaneously assign a hidden name inside
+            # that value.  A later separator across LF/CRLF or whitespace is a
+            # genuine crossing assignment and remains eligible.
+            continue
+        _value_start, value_end = _canonical_assignment_value_span(
+            view,
+            source,
+            value_start,
+        )
+        normalized_value = (
+            view.text[value_start:value_end]
+            .replace(_CREDENTIAL_CONTROL_SENTINEL, "")
+            .strip(" \t\"'")
+        )
+        if normalized_value == _REDACTED or re.fullmatch(
+            rf"(?i)(?:basic|bearer|token)\s+{re.escape(_REDACTED)}",
+            normalized_value,
+        ):
+            continue
+        projected = _project_credential_span(view, value_start, value_end)
+        if projected is not None:
+            redacted_through = value_end
+            yield projected
+
+
+def _redact_structural_credentials(text: str) -> str:
+    """Redact serialized or control-split credentials without rewriting syntax."""
+    view = _credential_match_view(text)
+    spans: list[tuple[int, int]] = []
+    for pattern in (_CANONICAL_URL_USERINFO, _CANONICAL_SECRET_QUERY):
+        for match in pattern.finditer(view.text):
+            secret = match.group("secret")
+            if secret == _REDACTED:
+                continue
+            projected = _project_credential_span(
+                view,
+                match.start("secret"),
+                match.end("secret"),
+            )
+            if projected is not None:
+                spans.append(projected)
+    spans.extend(_structural_authorization_spans(view, text))
+    for pattern in _CANONICAL_TOKEN_PATTERNS:
+        for match in pattern.finditer(view.text):
+            projected = _project_credential_span(view, match.start(), match.end())
+            if projected is not None:
+                spans.append(projected)
+    if not spans:
+        return text
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    parts: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        parts.extend((text[cursor:start], _REDACTED))
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
 def _redact(text: str) -> str:
-    redacted = text
+    redacted = _redact_structural_credentials(text)
     for pattern in _SECRET_PATTERNS:
         if pattern.groups:
             redacted = pattern.sub(r"\1[REDACTED]", redacted)
         else:
             redacted = pattern.sub("[REDACTED]", redacted)
     return redacted
+
+
+def _safe_log_text(text: str) -> str:
+    """Redact secrets and visibly encode every child-controlled control."""
+    return _escape_terminal_text(_redact(text))
+
+
+@dataclass(frozen=True)
+class _StreamUnit:
+    """One raw spelling and its canonical character for credential matching."""
+
+    raw: str
+    canonical: str
+
+    @property
+    def is_control(self) -> bool:
+        return self.canonical == _CREDENTIAL_CONTROL_SENTINEL
+
+    @property
+    def is_line_break(self) -> bool:
+        return "\n" in self.raw or "\r" in self.raw
+
+
+_STREAM_CANDIDATE_BYTES = 8 * 1024
+_STREAM_AUTHORIZATION_TARGETS = ("authorization", "proxy-authorization")
+_STREAM_TOKEN_PREFIXES = {
+    "github_pat_": "github",
+    "ghp_": "github",
+    "gho_": "github",
+    "ghu_": "github",
+    "ghs_": "github",
+    "ghr_": "github",
+    "sk-": "openai",
+}
+
+
+class _StreamingRedactor:
+    """One-pass bounded credential transducer over arbitrary byte chunks."""
+
+    def __init__(self) -> None:
+        decoder_type = codecs.getincrementaldecoder("utf-8")
+        self._decoder = decoder_type(errors="surrogateescape")
+        self._escape_pending = ""
+        self._rendered: list[str] = []
+        self._previous_canonical: str | None = None
+        self._active_kind: str | None = None
+        self._active_recognized_form: str | None = None
+        self._auth_quote: str | None = None
+        self._auth_scheme: str | None = ""
+        self._auth_standard = False
+        self._auth_token_started = False
+        self._auth_marker_progress: int | None = None
+        self._auth_boundary: list[_StreamUnit] | None = None
+        self._auth_boundary_bytes = 0
+        self._auth_boundary_stage: str | None = None
+        self._auth_boundary_quote_seen = False
+        self._query_stage: str | None = None
+        self._query_name = ""
+        self._auth_stage: str | None = None
+        self._auth_key_quote_seen = False
+        self._auth_progress: set[tuple[str, int]] = set()
+        self._url_stage: str | None = None
+        self._url_authority: list[_StreamUnit] | None = None
+        self._url_authority_bytes = 0
+        self._token_units: list[_StreamUnit] | None = None
+        self._token_bytes = 0
+        self._token_progress: set[tuple[str, int]] = set()
+        self._recognized_form: str | None = None
+        self._token_characters = 0
+
+    @staticmethod
+    def _raw_size(value: str) -> int:
+        return len(value.encode("utf-8", errors="surrogateescape"))
+
+    @staticmethod
+    def _canonical_unit(raw: str, canonical: str | None = None) -> _StreamUnit:
+        selected = raw if canonical is None else canonical
+        if _is_unsafe_terminal_codepoint(ord(selected)):
+            selected = _CREDENTIAL_CONTROL_SENTINEL
+        return _StreamUnit(raw, selected)
+
+    def _tokenize(self, value: str, *, final: bool) -> list[_StreamUnit]:
+        """Decode JSON escapes without retaining an unbounded backslash run."""
+        text = self._escape_pending + value
+        self._escape_pending = ""
+        units: list[_StreamUnit] = []
+        cursor = 0
+        while cursor < len(text):
+            character = text[cursor]
+            if character != "\\":
+                units.append(self._canonical_unit(character))
+                cursor += 1
+                continue
+            if cursor + 1 >= len(text):
+                if not final:
+                    self._escape_pending = "\\"
+                    break
+                units.append(self._canonical_unit("\\"))
+                cursor += 1
+                continue
+            escaped = text[cursor + 1]
+            if escaped == "\\":
+                # Treat the first slash as a harmless gap and retain the second
+                # as a possible escape introducer. This stays bounded even for
+                # an attacker-controlled run of backslashes.
+                units.append(_StreamUnit("\\", _CREDENTIAL_CONTROL_SENTINEL))
+                cursor += 1
+                continue
+            if escaped in "/\"'":
+                units.append(self._canonical_unit(text[cursor : cursor + 2], escaped))
+                cursor += 2
+                continue
+            if escaped == "u":
+                if cursor + 6 > len(text):
+                    if not final:
+                        self._escape_pending = text[cursor:]
+                        break
+                elif all(
+                    digit in "0123456789abcdefABCDEF"
+                    for digit in text[cursor + 2 : cursor + 6]
+                ):
+                    units.append(
+                        self._canonical_unit(
+                            text[cursor : cursor + 6],
+                            chr(int(text[cursor + 2 : cursor + 6], 16)),
+                        )
+                    )
+                    cursor += 6
+                    continue
+            units.append(self._canonical_unit("\\"))
+            cursor += 1
+        return units
+
+    def _reset_query(self) -> None:
+        self._query_stage = None
+        self._query_name = ""
+
+    def _reset_authorization_matcher(self) -> None:
+        self._auth_stage = None
+        self._auth_key_quote_seen = False
+        self._auth_progress.clear()
+
+    def _reset_prefix_matchers(self) -> None:
+        self._reset_query()
+        self._reset_authorization_matcher()
+        self._url_stage = None
+
+    def _emit_marker(self) -> None:
+        self._rendered.append(_REDACTED)
+
+    def _begin_active(self, kind: str) -> None:
+        self._active_kind = kind
+        if kind == "authorization":
+            self._auth_scheme = ""
+            self._auth_standard = False
+            self._auth_token_started = False
+            self._auth_marker_progress = 0
+        self._reset_prefix_matchers()
+        self._emit_marker()
+
+    def _advance_query(self, unit: _StreamUnit) -> bool:
+        character = unit.canonical
+        if self._query_stage == "before-value":
+            if unit.is_control:
+                return False
+            if character in "&#\"'\\" or character.isspace():
+                self._reset_query()
+                if character in "?&":
+                    self._query_stage = "name"
+                return False
+            self._reset_query()
+            self._begin_active("query")
+            return True
+        if self._query_stage == "after-name":
+            if unit.is_control:
+                return False
+            if character == "=":
+                self._query_stage = "before-value"
+                return False
+            self._reset_query()
+        elif self._query_stage == "name":
+            if unit.is_control:
+                return False
+            candidate = self._query_name + character.lower()
+            if any(name.startswith(candidate) for name in _CANONICAL_CREDENTIAL_NAMES):
+                self._query_name = candidate
+                if candidate in _CANONICAL_CREDENTIAL_NAMES:
+                    self._query_stage = "after-name"
+                return False
+            self._reset_query()
+        if character in "?&":
+            self._query_stage = "name"
+            self._query_name = ""
+        return False
+
+    @staticmethod
+    def _authorization_boundary(character: str | None) -> bool:
+        return character is None or not (
+            character.isascii() and (character.isalnum() or character in "_-")
+        )
+
+    def _advance_authorization_name(self, unit: _StreamUnit) -> None:
+        if unit.is_control:
+            return
+        character = unit.canonical.lower()
+        advanced: set[tuple[str, int]] = set()
+        for target, index in self._auth_progress:
+            if index < len(target) and character == target[index]:
+                advanced.add((target, index + 1))
+        if self._authorization_boundary(self._previous_canonical):
+            for target in _STREAM_AUTHORIZATION_TARGETS:
+                if character == target[0]:
+                    advanced.add((target, 1))
+        if any(index == len(target) for target, index in advanced):
+            self._auth_stage = "after-name"
+            self._auth_key_quote_seen = False
+            self._auth_progress.clear()
+        else:
+            self._auth_progress = advanced
+
+    def _advance_authorization(
+        self,
+        unit: _StreamUnit,
+        *,
+        activate_value: bool = True,
+    ) -> bool:
+        character = unit.canonical
+        if self._auth_stage == "before-value":
+            if unit.is_control or character.isspace():
+                return False
+            self._reset_authorization_matcher()
+            if character in "}]" or unit.is_line_break:
+                return False
+            if not activate_value:
+                self._advance_authorization_name(unit)
+                return False
+            if character in "\"'":
+                self._rendered.append(unit.raw)
+                self._previous_canonical = character
+                self._auth_quote = character
+                self._begin_active("authorization")
+                return True
+            self._auth_quote = None
+            self._begin_active("authorization")
+            self._process_active_authorization(unit)
+            return True
+        if self._auth_stage == "after-name":
+            if unit.is_control or character.isspace():
+                return False
+            if character in "\"'" and not self._auth_key_quote_seen:
+                self._auth_key_quote_seen = True
+                return False
+            if character in "=:,":
+                self._auth_stage = "before-value"
+                return False
+            self._reset_authorization_matcher()
+        self._advance_authorization_name(unit)
+        return False
+
+    def _swallow_active_authorization_unit(self, unit: _StreamUnit) -> None:
+        """Retain nested-name state while an outer value hides this unit."""
+        self._advance_authorization(unit, activate_value=False)
+        self._previous_canonical = unit.canonical
+
+    @staticmethod
+    def _token_start_boundary(character: str | None, *, openai: bool) -> bool:
+        if character is None:
+            return True
+        if not character.isascii():
+            return True
+        disallowed = "_-" if openai else "_"
+        return not (character.isalnum() or character in disallowed)
+
+    def _maybe_start_token(self, unit: _StreamUnit) -> bool:
+        character = unit.canonical.lower()
+        candidates = {
+            (prefix, 1)
+            for prefix, kind in _STREAM_TOKEN_PREFIXES.items()
+            if character == prefix[0]
+            and self._token_start_boundary(
+                self._previous_canonical, openai=kind == "openai"
+            )
+        }
+        if not candidates:
+            return False
+        self._token_units = [unit]
+        self._token_bytes = self._raw_size(unit.raw)
+        self._token_progress = candidates
+        self._recognized_form = None
+        self._token_characters = 0
+        return True
+
+    def _confirm_token(self, kind: str) -> None:
+        units = self._token_units or []
+        self._token_units = None
+        self._token_bytes = 0
+        self._token_progress.clear()
+        self._recognized_form = None
+        self._token_characters = 0
+        self._active_recognized_form = kind
+        self._begin_active("token")
+        for unit in units:
+            self._advance_hidden_token_unit(unit)
+
+    def _advance_hidden_token_unit(self, unit: _StreamUnit) -> None:
+        """Retain overlapping credential-prefix state inside a redacted token."""
+        self._advance_query(unit)
+        self._advance_authorization(unit)
+        self._advance_url_scheme(unit)
+        self._previous_canonical = unit.canonical
+
+    def _flush_token_candidate(self) -> None:
+        units = self._token_units or []
+        self._token_units = None
+        self._token_bytes = 0
+        self._token_progress.clear()
+        self._recognized_form = None
+        self._token_characters = 0
+        if not units:
+            return
+        self._process_normal(units[0], allow_token=False)
+        for unit in units[1:]:
+            self._process_unit(unit)
+
+    def _process_token_candidate(self, unit: _StreamUnit) -> None:
+        if self._token_units is None:  # pragma: no cover - caller owns the state.
+            return
+        self._token_units.append(unit)
+        self._token_bytes += self._raw_size(unit.raw)
+        if self._token_bytes > _STREAM_CANDIDATE_BYTES:
+            self._confirm_token(self._recognized_form or "generic")
+            return
+        if unit.is_control:
+            return
+        character = unit.canonical
+        if self._recognized_form is None:
+            lowered = character.lower()
+            advanced = {
+                (prefix, index + 1)
+                for prefix, index in self._token_progress
+                if index < len(prefix) and lowered == prefix[index]
+            }
+            completed = [prefix for prefix, index in advanced if index == len(prefix)]
+            if completed:
+                self._recognized_form = _STREAM_TOKEN_PREFIXES[completed[0]]
+                self._token_progress.clear()
+                return
+            self._token_progress = advanced
+            if not advanced:
+                self._flush_token_candidate()
+            return
+        allowed = character.isascii() and (
+            character.isalnum()
+            or character == "_"
+            or (self._recognized_form == "openai" and character == "-")
+        )
+        if not allowed:
+            self._flush_token_candidate()
+            return
+        self._token_characters += 1
+        if self._token_characters >= 20:
+            self._confirm_token(self._recognized_form)
+
+    def _start_url_authority(self) -> None:
+        self._url_stage = None
+        self._url_authority = []
+        self._url_authority_bytes = 0
+        self._reset_query()
+        self._reset_authorization_matcher()
+
+    def _advance_url_scheme(self, unit: _StreamUnit) -> None:
+        character = unit.canonical
+        if unit.is_control:
+            return
+
+        def can_start() -> bool:
+            previous = self._previous_canonical
+            return (
+                character.isascii()
+                and character.isalpha()
+                and (previous is None or not (previous.isalnum() or previous == "_"))
+            )
+
+        if self._url_stage == "scheme":
+            if character.isascii() and (character.isalnum() or character in "+.-"):
+                return
+            if character == ":":
+                self._url_stage = "colon"
+                return
+            self._url_stage = "scheme" if can_start() else None
+            return
+        if self._url_stage == "colon":
+            if character == "/":
+                self._url_stage = "slash"
+                return
+            self._url_stage = "scheme" if can_start() else None
+            return
+        if self._url_stage == "slash":
+            if character == "/":
+                self._start_url_authority()
+                return
+            self._url_stage = "scheme" if can_start() else None
+            return
+        if can_start():
+            self._url_stage = "scheme"
+
+    def _flush_url_authority(self) -> None:
+        units = self._url_authority or []
+        self._url_authority = None
+        self._url_authority_bytes = 0
+        for unit in units:
+            self._process_unit(unit)
+
+    def _process_url_authority(self, unit: _StreamUnit) -> None:
+        character = unit.canonical
+        if character == "@":
+            if self._url_authority:
+                self._emit_marker()
+            self._url_authority = None
+            self._url_authority_bytes = 0
+            self._process_normal(unit)
+            return
+        if not unit.is_control and (character in "/\\?#" or character.isspace()):
+            self._flush_url_authority()
+            self._process_unit(unit)
+            return
+        if self._url_authority is None:  # pragma: no cover - caller owns state.
+            return
+        self._url_authority.append(unit)
+        self._url_authority_bytes += self._raw_size(unit.raw)
+        if self._url_authority_bytes > _STREAM_CANDIDATE_BYTES:
+            self._url_authority = None
+            self._url_authority_bytes = 0
+            self._begin_active("url")
+
+    def _start_auth_boundary(self, unit: _StreamUnit, stage: str) -> None:
+        self._auth_boundary = [unit]
+        self._auth_boundary_bytes = self._raw_size(unit.raw)
+        self._auth_boundary_stage = stage
+        self._auth_boundary_quote_seen = False
+
+    def _clear_auth_boundary(self) -> list[_StreamUnit]:
+        units = self._auth_boundary or []
+        self._auth_boundary = None
+        self._auth_boundary_bytes = 0
+        self._auth_boundary_stage = None
+        self._auth_boundary_quote_seen = False
+        return units
+
+    def _confirm_auth_boundary(self, current: _StreamUnit | None = None) -> None:
+        units = self._clear_auth_boundary()
+        self._active_kind = None
+        self._auth_quote = None
+        self._auth_marker_progress = None
+        # A confirmed quote/comma/next-field sequence is the outer value's own
+        # structural boundary, not an assignment delimiter for a name hidden
+        # inside that value.  Non-structural exits such as LF/CRLF and standard
+        # authorization-token whitespace deliberately retain the nested state.
+        self._reset_authorization_matcher()
+        if current is not None:
+            units.append(current)
+        for unit in units:
+            self._process_unit(unit)
+
+    def _reject_auth_boundary(self, current: _StreamUnit) -> None:
+        for unit in self._clear_auth_boundary():
+            self._swallow_active_authorization_unit(unit)
+        self._process_active_authorization(current)
+
+    def _process_auth_boundary(self, unit: _StreamUnit) -> None:
+        if self._auth_boundary is None:  # pragma: no cover - caller owns state.
+            return
+        stage = self._auth_boundary_stage
+        character = unit.canonical
+        if stage == "after-quote":
+            if unit.is_control or character.isspace():
+                self._auth_boundary.append(unit)
+            elif character in "}]" or unit.is_line_break:
+                self._confirm_auth_boundary(unit)
+                return
+            elif character in ",;":
+                self._auth_boundary.append(unit)
+                self._auth_boundary_stage = "field-start"
+            else:
+                self._reject_auth_boundary(unit)
+                return
+        elif stage == "field-start":
+            if unit.is_control or character.isspace():
+                self._auth_boundary.append(unit)
+            elif character in "\"'" and not self._auth_boundary_quote_seen:
+                self._auth_boundary.append(unit)
+                self._auth_boundary_quote_seen = True
+                self._auth_boundary_stage = "field-name-start"
+            elif character.isascii() and (character.isalpha() or character == "_"):
+                self._auth_boundary.append(unit)
+                self._auth_boundary_stage = "field-name"
+            else:
+                self._reject_auth_boundary(unit)
+                return
+        elif stage == "field-name-start":
+            if unit.is_control:
+                self._auth_boundary.append(unit)
+            elif character.isascii() and (character.isalpha() or character == "_"):
+                self._auth_boundary.append(unit)
+                self._auth_boundary_stage = "field-name"
+            else:
+                self._reject_auth_boundary(unit)
+                return
+        elif stage == "field-name":
+            if unit.is_control or (
+                character.isascii() and (character.isalnum() or character in "_-")
+            ):
+                self._auth_boundary.append(unit)
+            elif character in "\"'" and self._auth_boundary_quote_seen:
+                self._auth_boundary.append(unit)
+                self._auth_boundary_quote_seen = False
+                self._auth_boundary_stage = "after-field-name"
+            elif character.isspace():
+                self._auth_boundary.append(unit)
+                self._auth_boundary_stage = "after-field-name"
+            elif character in ":=":
+                self._auth_boundary.append(unit)
+                self._confirm_auth_boundary()
+                return
+            else:
+                self._reject_auth_boundary(unit)
+                return
+        elif stage == "after-field-name":
+            if unit.is_control or character.isspace():
+                self._auth_boundary.append(unit)
+            elif character in ":=":
+                self._auth_boundary.append(unit)
+                self._confirm_auth_boundary()
+                return
+            else:
+                self._reject_auth_boundary(unit)
+                return
+        self._auth_boundary_bytes += self._raw_size(unit.raw)
+        if self._auth_boundary_bytes > _STREAM_CANDIDATE_BYTES:
+            for buffered in self._clear_auth_boundary():
+                self._swallow_active_authorization_unit(buffered)
+
+    def _process_active_authorization(self, unit: _StreamUnit) -> None:
+        character = unit.canonical
+        if self._auth_marker_progress is not None:
+            expected = _REDACTED[self._auth_marker_progress]
+            if character == expected:
+                self._auth_marker_progress += 1
+                if self._auth_marker_progress == len(_REDACTED):
+                    self._auth_marker_progress = None
+                self._swallow_active_authorization_unit(unit)
+                return
+            self._auth_marker_progress = None
+        if unit.is_line_break:
+            self._active_kind = None
+            self._auth_quote = None
+            self._process_normal(unit)
+            return
+        if self._auth_quote is not None:
+            if character == self._auth_quote:
+                self._start_auth_boundary(unit, "after-quote")
+            else:
+                self._swallow_active_authorization_unit(unit)
+            return
+        if character in "}]":
+            self._active_kind = None
+            self._process_normal(unit)
+            return
+        if character in ",;":
+            self._start_auth_boundary(unit, "field-start")
+            return
+        if unit.is_control:
+            if not self._auth_standard and self._auth_scheme in {
+                "basic",
+                "bearer",
+                "token",
+            }:
+                self._auth_standard = True
+                self._auth_token_started = False
+            self._swallow_active_authorization_unit(unit)
+            return
+        if self._auth_standard:
+            if character.isspace() and self._auth_token_started:
+                self._active_kind = None
+                self._process_normal(unit)
+                return
+            if not character.isspace():
+                self._auth_token_started = True
+            self._swallow_active_authorization_unit(unit)
+            return
+        if character.isspace():
+            if self._auth_scheme in {"basic", "bearer", "token"}:
+                self._auth_standard = True
+                self._auth_token_started = False
+            else:
+                self._auth_scheme = None
+            self._swallow_active_authorization_unit(unit)
+            return
+        if self._auth_scheme is not None:
+            candidate = self._auth_scheme + character.lower()
+            if any(
+                scheme.startswith(candidate) for scheme in ("basic", "bearer", "token")
+            ):
+                self._auth_scheme = candidate
+            else:
+                self._auth_scheme = None
+        self._swallow_active_authorization_unit(unit)
+
+    def _process_active(self, unit: _StreamUnit) -> None:
+        kind = self._active_kind
+        character = unit.canonical
+        if kind == "authorization":
+            self._process_active_authorization(unit)
+            return
+        if kind == "query":
+            if not unit.is_control and (character in "&#\"'\\" or character.isspace()):
+                self._active_kind = None
+                self._process_normal(unit)
+            return
+        if kind == "url":
+            url_boundary = not unit.is_control and (
+                character in "/\\?#" or character.isspace()
+            )
+            if character == "@" or url_boundary:
+                self._active_kind = None
+                self._process_normal(unit)
+            return
+        if kind == "token":
+            allowed = unit.is_control or (
+                character.isascii()
+                and (
+                    character.isalnum()
+                    or character == "_"
+                    or (self._active_recognized_form != "github" and character == "-")
+                )
+            )
+            if not allowed:
+                self._active_kind = None
+                self._active_recognized_form = None
+                self._process_normal(unit)
+            else:
+                self._advance_hidden_token_unit(unit)
+
+    def _process_normal(self, unit: _StreamUnit, *, allow_token: bool = True) -> None:
+        query_advanced = self._query_stage == "before-value"
+        if query_advanced and self._advance_query(unit):
+            return
+        authorization_advanced = self._auth_stage == "before-value"
+        if authorization_advanced and self._advance_authorization(unit):
+            return
+        if allow_token and self._maybe_start_token(unit):
+            return
+        if not query_advanced and self._advance_query(unit):
+            return
+        if not authorization_advanced and self._advance_authorization(unit):
+            return
+        self._advance_url_scheme(unit)
+        self._rendered.append(unit.raw)
+        self._previous_canonical = unit.canonical
+
+    def _process_unit(self, unit: _StreamUnit) -> None:
+        if self._auth_boundary is not None:
+            self._process_auth_boundary(unit)
+        elif self._active_kind is not None:
+            self._process_active(unit)
+        elif self._url_authority is not None:
+            self._process_url_authority(unit)
+        elif self._token_units is not None:
+            self._process_token_candidate(unit)
+        else:
+            self._process_normal(unit)
+
+    def _transform(self, value: str, *, final: bool) -> str:
+        self._rendered = []
+        for unit in self._tokenize(value, final=final):
+            self._process_unit(unit)
+        if final:
+            while self._url_authority is not None or self._token_units is not None:
+                if self._url_authority is not None:
+                    self._flush_url_authority()
+                if self._token_units is not None:
+                    self._flush_token_candidate()
+            if self._auth_boundary is not None:
+                if self._auth_boundary_stage == "after-quote":
+                    self._confirm_auth_boundary()
+                else:
+                    self._clear_auth_boundary()
+            self._active_kind = None
+            self._active_recognized_form = None
+        rendered = "".join(self._rendered)
+        self._rendered = []
+        return rendered
+
+    def feed(self, content: bytes) -> str:
+        """Return newly decided redacted text for one raw byte chunk."""
+        decoded = self._decoder.decode(content, final=False)
+        return self._transform(decoded, final=False)
+
+    def finish(self) -> str:
+        """Flush decoder and finite redaction state at end-of-stream."""
+        decoded = self._decoder.decode(b"", final=True)
+        return self._transform(decoded, final=True)
 
 
 def _redact_structure(value: object) -> object:
@@ -947,6 +3255,20 @@ def _redact_structure(value: object) -> object:
         return [_redact_structure(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _redact_structure(item) for key, item in value.items()}
+    return value
+
+
+def _safe_human_structure(value: object) -> object:
+    """Copy nested evidence with every human-rendered string made terminal-safe."""
+    if isinstance(value, str):
+        return _safe_log_text(value)
+    if isinstance(value, list):
+        return [_safe_human_structure(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            _safe_log_text(str(key)): _safe_human_structure(item)
+            for key, item in value.items()
+        }
     return value
 
 
@@ -975,34 +3297,853 @@ def _repository_environment() -> dict[str, str]:
     return environment
 
 
-def _atomic_write_bytes(path: Path, content: bytes) -> None:
-    if any(parent.is_symlink() for parent in path.parents):
-        raise StateError("refusing an atomic write through a symlinked directory")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    descriptor = -1
+def _rooted_output_relative(root: Path, path: Path, context: str) -> tuple[Path, Path]:
+    """Return a lexical repository-relative output without following its path."""
+    absolute_root = Path(os.path.abspath(root))  # noqa: PTH100
+    selected = path if path.is_absolute() else absolute_root / path
+    absolute_selected = Path(os.path.abspath(selected))  # noqa: PTH100
     try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "wb", closefd=True) as output:
-            descriptor = -1
-            output.write(content)
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(path)
-        if os.name != "nt" and hasattr(os, "O_DIRECTORY"):
-            directory_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        relative = absolute_selected.relative_to(absolute_root)
+    except ValueError as error:
+        raise StateError(f"{context} is outside the trusted root") from error
+    if relative == Path() or not relative.name or ".." in relative.parts:
+        raise StateError(f"{context} does not name a rooted file")
+    if os.name == "nt" and any(":" in part for part in relative.parts):
+        raise StateError(f"{context} cannot use a Windows alternate data stream")
+    return absolute_root, relative
+
+
+def _supports_rooted_descriptor_writes() -> bool:
+    return bool(
+        os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+        and os.unlink in os.supports_dir_fd
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+    )
+
+
+@dataclass(frozen=True)
+class _PinnedWriteChain:
+    root: Path
+    descriptors: tuple[int, ...]
+    statuses: tuple[os.stat_result, ...]
+    names: tuple[str, ...]
+
+    @property
+    def parent_descriptor(self) -> int:
+        return self.descriptors[-1]
+
+    def validate(self) -> None:
+        current_root = self.root.lstat()
+        opened_root = os.fstat(self.descriptors[0])
+        if not stat.S_ISDIR(current_root.st_mode) or not (
+            os.path.samestat(current_root, self.statuses[0])
+            and os.path.samestat(opened_root, self.statuses[0])
+        ):
+            raise OSError("pinned output root identity changed")
+        for index, name in enumerate(self.names, start=1):
+            current = os.stat(
+                name,
+                dir_fd=self.descriptors[index - 1],
+                follow_symlinks=False,
+            )
+            opened = os.fstat(self.descriptors[index])
+            if not stat.S_ISDIR(current.st_mode) or not (
+                os.path.samestat(current, self.statuses[index])
+                and os.path.samestat(opened, self.statuses[index])
+            ):
+                raise OSError("pinned output parent identity changed")
+
+
+def _open_pinned_write_chain(
+    root: Path,
+    relative_parent: Path,
+    *,
+    create: bool = False,
+) -> _PinnedWriteChain:
+    descriptors: list[int] = []
+    statuses: list[os.stat_result] = []
+    names: list[str] = []
+    try:
+        expected_root = root.lstat()
+        if not stat.S_ISDIR(expected_root.st_mode):
+            _raise_rooted_output_oserror("trusted output root must be a real directory")
+        root_descriptor = os.open(root, _pinned_directory_flags())
+        descriptors.append(root_descriptor)
+        opened_root = os.fstat(root_descriptor)
+        if not stat.S_ISDIR(opened_root.st_mode) or not os.path.samestat(
+            expected_root, opened_root
+        ):
+            _raise_rooted_output_oserror(
+                "trusted output root changed while being opened"
+            )
+        statuses.append(opened_root)
+        for name in relative_parent.parts:
             try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
-    finally:
-        if descriptor >= 0:
+                descriptor, opened = _open_pinned_relative_directory(
+                    name, descriptors[-1]
+                )
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(name, mode=0o700, dir_fd=descriptors[-1])
+                os.fsync(descriptors[-1])
+                descriptor, opened = _open_pinned_relative_directory(
+                    name, descriptors[-1]
+                )
+            descriptors.append(descriptor)
+            statuses.append(opened)
+            names.append(name)
+    except BaseException:
+        for descriptor in reversed(descriptors):
             os.close(descriptor)
-        with suppress(FileNotFoundError):
-            temporary.unlink()
+        raise
+    return _PinnedWriteChain(root, tuple(descriptors), tuple(statuses), tuple(names))
 
 
-def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
+def _close_pinned_write_chain(chain: _PinnedWriteChain) -> None:
+    for descriptor in reversed(chain.descriptors):
+        os.close(descriptor)
+
+
+def _posix_atomic_write(chain: _PinnedWriteChain, name: str, content: bytes) -> None:
+    parent_descriptor = chain.parent_descriptor
+    temporary = f".{name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor: int | None = None
+    temporary_status: os.stat_result | None = None
+    replaced = False
+    try:
+        chain.validate()
+        try:
+            destination_status = os.stat(
+                name, dir_fd=parent_descriptor, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            destination_status = None
+        if destination_status is not None and not stat.S_ISREG(
+            destination_status.st_mode
+        ):
+            raise OSError("rooted output destination must be a regular file")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_descriptor)
+        temporary_status = os.fstat(descriptor)
+        if not stat.S_ISREG(temporary_status.st_mode):
+            raise OSError("rooted output temporary is not a regular file")
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("rooted output performed a partial write")
+            view = view[written:]
+        os.fsync(descriptor)
+        chain.validate()
+        current_temporary = os.stat(
+            temporary, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if not stat.S_ISREG(current_temporary.st_mode) or not os.path.samestat(
+            temporary_status, current_temporary
+        ):
+            raise OSError("rooted output temporary identity changed")
+        try:
+            current_destination = os.stat(
+                name, dir_fd=parent_descriptor, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            current_destination = None
+        if current_destination is not None and not stat.S_ISREG(
+            current_destination.st_mode
+        ):
+            raise OSError("rooted output destination changed to an unsafe file")
+        if (destination_status is None) != (current_destination is None) or (
+            destination_status is not None
+            and current_destination is not None
+            and not os.path.samestat(destination_status, current_destination)
+        ):
+            raise OSError("rooted output destination identity changed")
+        os.replace(
+            temporary,
+            name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        replaced = True
+        final_status = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(final_status.st_mode) or not os.path.samestat(
+            temporary_status, final_status
+        ):
+            raise OSError("rooted output replacement identity is contradictory")
+        os.fsync(parent_descriptor)
+        chain.validate()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if not replaced:
+            with suppress(FileNotFoundError):
+                current = os.stat(
+                    temporary, dir_fd=parent_descriptor, follow_symlinks=False
+                )
+                if (
+                    stat.S_ISREG(current.st_mode)
+                    and temporary_status is not None
+                    and (os.path.samestat(current, temporary_status))
+                ):
+                    os.unlink(temporary, dir_fd=parent_descriptor)
+
+
+def _controller_windows_success(result: object, operation: str) -> None:
+    if not bool(result):
+        raise OSError(f"{operation} failed")
+
+
+def _controller_windows_create_temporary(
+    api: _ControllerWindowsAPI,
+    parent_handle: int,
+    destination_name: str,
+) -> int:
+    for _ in range(_WINDOWS_TEMPORARY_ATTEMPTS):
+        temporary = f".{destination_name}.{uuid.uuid4().hex}.tmp"
+        try:
+            return _controller_windows_open_relative(
+                api,
+                parent_handle,
+                temporary,
+                _ControllerNtCreateOptions(
+                    desired_access=(
+                        _WINDOWS_FILE_WRITE_DATA
+                        | _WINDOWS_DELETE
+                        | _WINDOWS_SYNCHRONIZE
+                    ),
+                    share_access=0,
+                    disposition=_WINDOWS_FILE_CREATE,
+                    attributes=_WINDOWS_FILE_ATTRIBUTE_TEMPORARY,
+                    options=(
+                        _WINDOWS_FILE_NON_DIRECTORY_FILE
+                        | _WINDOWS_FILE_SYNCHRONOUS_IO_NONALERT
+                        | _WINDOWS_FILE_OPEN_REPARSE_POINT
+                    ),
+                ),
+            )
+        except _ControllerNtStatusError as error:
+            if error.status != _WINDOWS_STATUS_OBJECT_NAME_COLLISION:
+                raise
+    raise OSError("unable to allocate a unique rooted output temporary")
+
+
+def _controller_windows_write_handle(
+    api: _ControllerWindowsAPI, handle: int, content: bytes
+) -> None:
+    for start in range(0, len(content), _WINDOWS_WRITE_CHUNK_BYTES):
+        chunk = content[start : start + _WINDOWS_WRITE_CHUNK_BYTES]
+        buffer = ctypes.create_string_buffer(chunk, len(chunk))
+        written = _WINDOWS_DWORD()
+        _controller_windows_success(
+            api.write_file(
+                _WINDOWS_HANDLE(handle),
+                ctypes.byref(buffer),
+                len(chunk),
+                ctypes.byref(written),
+                None,
+            ),
+            "WriteFile",
+        )
+        if written.value != len(chunk):
+            raise OSError("WriteFile performed a partial rooted output write")
+    _controller_windows_success(
+        api.flush_file_buffers(_WINDOWS_HANDLE(handle)), "FlushFileBuffers"
+    )
+
+
+def _controller_windows_replace_handle(
+    api: _ControllerWindowsAPI,
+    temporary_handle: int,
+    parent_handle: int,
+    destination_name: str,
+) -> None:
+    encoded_name = destination_name.encode("utf-16-le")
+    name_offset = _ControllerFileRenameInformation.file_name.offset
+    buffer = ctypes.create_string_buffer(
+        max(
+            ctypes.sizeof(_ControllerFileRenameInformation),
+            name_offset + len(encoded_name),
+        )
+    )
+    information = _ControllerFileRenameInformation.from_buffer(buffer)
+    information.replace_if_exists = 1
+    information.root_directory = _WINDOWS_HANDLE(parent_handle)
+    information.file_name_length = len(encoded_name)
+    ctypes.memmove(
+        ctypes.addressof(buffer) + name_offset, encoded_name, len(encoded_name)
+    )
+    status_block = _ControllerIoStatusBlock()
+    status = cast(
+        "int",
+        api.nt_set_information(
+            _WINDOWS_HANDLE(temporary_handle),
+            ctypes.byref(status_block),
+            ctypes.byref(buffer),
+            len(buffer),
+            _WINDOWS_FILE_RENAME_INFORMATION_CLASS,
+        ),
+    )
+    if status < 0:
+        raise _ControllerNtStatusError(
+            "NtSetInformationFile(FileRenameInformation)", status
+        )
+
+
+def _controller_windows_delete_handle(api: _ControllerWindowsAPI, handle: int) -> None:
+    information = _ControllerFileDispositionInfo(delete_file=1)
+    _controller_windows_success(
+        api.set_file_information(
+            _WINDOWS_HANDLE(handle),
+            _WINDOWS_FILE_DISPOSITION_INFO_CLASS,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        ),
+        "SetFileInformationByHandle(FileDispositionInfo)",
+    )
+
+
+def _controller_windows_existing_destination(
+    api: _ControllerWindowsAPI, parent_handle: int, name: str
+) -> _ControllerWindowsFileSnapshot | None:
+    handle: int | None = None
+    try:
+        try:
+            handle = _controller_windows_open_relative(
+                api,
+                parent_handle,
+                name,
+                _ControllerNtCreateOptions(
+                    desired_access=(
+                        _WINDOWS_FILE_READ_ATTRIBUTES | _WINDOWS_SYNCHRONIZE
+                    ),
+                    share_access=(_WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE),
+                    options=(
+                        _WINDOWS_FILE_NON_DIRECTORY_FILE
+                        | _WINDOWS_FILE_SYNCHRONOUS_IO_NONALERT
+                        | _WINDOWS_FILE_OPEN_REPARSE_POINT
+                    ),
+                ),
+                missing_leaf=True,
+            )
+        except _PinnedFileMissingError:
+            return None
+        if not _controller_windows_is_real_file(api, handle):
+            raise OSError("rooted output destination must be a real file")
+        return _controller_windows_file_snapshot(api, handle)
+    finally:
+        if handle is not None:
+            _controller_close_windows_handle(api, handle)
+
+
+def _controller_windows_atomic_write(
+    api: _ControllerWindowsAPI,
+    chain: _ControllerWindowsDirectoryChain,
+    name: str,
+    content: bytes,
+) -> None:
+    chain.validate(api)
+    destination_snapshot = _controller_windows_existing_destination(
+        api, chain.parent_handle, name
+    )
+    temporary_handle: int | None = None
+    replaced = False
+    try:
+        temporary_handle = _controller_windows_create_temporary(
+            api, chain.parent_handle, name
+        )
+        if not _controller_windows_is_real_file(api, temporary_handle):
+            raise OSError("rooted output temporary must be a real file")
+        temporary_snapshot = _controller_windows_file_snapshot(api, temporary_handle)
+        _controller_windows_write_handle(api, temporary_handle, content)
+        chain.validate(api)
+        current_destination = _controller_windows_existing_destination(
+            api, chain.parent_handle, name
+        )
+        if (destination_snapshot is None) != (current_destination is None) or (
+            destination_snapshot is not None
+            and current_destination is not None
+            and (
+                destination_snapshot.volume_serial_number
+                != current_destination.volume_serial_number
+                or destination_snapshot.file_id != current_destination.file_id
+            )
+        ):
+            raise OSError("rooted output destination identity changed")
+        current_temporary = _controller_windows_file_snapshot(api, temporary_handle)
+        if (
+            current_temporary.volume_serial_number
+            != temporary_snapshot.volume_serial_number
+            or current_temporary.file_id != temporary_snapshot.file_id
+            or not _controller_windows_is_real_file(api, temporary_handle)
+        ):
+            raise OSError("rooted output temporary identity changed")
+        _controller_windows_replace_handle(
+            api, temporary_handle, chain.parent_handle, name
+        )
+        replaced = True
+        final_snapshot = _controller_windows_existing_destination(
+            api, chain.parent_handle, name
+        )
+        if final_snapshot is None or (
+            final_snapshot.volume_serial_number
+            != temporary_snapshot.volume_serial_number
+            or final_snapshot.file_id != temporary_snapshot.file_id
+        ):
+            raise OSError("rooted output replacement identity is contradictory")
+        chain.validate(api)
+    finally:
+        if temporary_handle is not None:
+            try:
+                if not replaced:
+                    _controller_windows_delete_handle(api, temporary_handle)
+            finally:
+                _controller_close_windows_handle(api, temporary_handle)
+
+
+@dataclass(frozen=True)
+class _RootedStreamEvidence:
+    """Hash and byte size of one completely finalized sanitized stream."""
+
+    sha256: str
+    size: int
+
+
+class _RootedStreamingFile:
+    """Write sanitized bytes incrementally to one pinned atomic temporary."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        posix_chain: _PinnedWriteChain | None,
+        windows_api: _ControllerWindowsAPI | None,
+        windows_chain: _ControllerWindowsDirectoryChain | None,
+    ) -> None:
+        self.path = path
+        self._posix_chain = posix_chain
+        self._windows_api = windows_api
+        self._windows_chain = windows_chain
+        self._digest = hashlib.sha256()
+        self._size = 0
+        self._closed = False
+        self._replaced = False
+        self._destination_status: os.stat_result | None = None
+        self._temporary_name: str | None = None
+        self._temporary_status: os.stat_result | None = None
+        self._descriptor: int | None = None
+        self._destination_snapshot: _ControllerWindowsFileSnapshot | None = None
+        self._temporary_snapshot: _ControllerWindowsFileSnapshot | None = None
+        self._handle: int | None = None
+        if posix_chain is not None:
+            self._open_posix()
+        elif windows_api is not None and windows_chain is not None:
+            self._open_windows()
+        else:  # pragma: no cover - the rooted writer establishes one backend.
+            _raise_rooted_output_oserror("secure rooted streaming is unavailable")
+
+    def _open_posix(self) -> None:
+        chain = self._posix_chain
+        if chain is None:  # pragma: no cover - narrowed by caller.
+            raise OSError("missing POSIX output chain")
+        chain.validate()
+        parent = chain.parent_descriptor
+        try:
+            destination = os.stat(
+                self.path.name,
+                dir_fd=parent,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            destination = None
+        if destination is not None and not stat.S_ISREG(destination.st_mode):
+            raise OSError("rooted output destination must be a regular file")
+        temporary = f".{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            os.close(descriptor)
+            with suppress(FileNotFoundError):
+                os.unlink(temporary, dir_fd=parent)
+            raise OSError("rooted output temporary is not a regular file")
+        self._destination_status = destination
+        self._temporary_name = temporary
+        self._temporary_status = opened
+        self._descriptor = descriptor
+
+    def _open_windows(self) -> None:
+        api = self._windows_api
+        chain = self._windows_chain
+        if api is None or chain is None:  # pragma: no cover - narrowed by caller.
+            raise OSError("missing Windows output chain")
+        chain.validate(api)
+        destination = _controller_windows_existing_destination(
+            api, chain.parent_handle, self.path.name
+        )
+        handle = _controller_windows_create_temporary(
+            api, chain.parent_handle, self.path.name
+        )
+        if not _controller_windows_is_real_file(api, handle):
+            _controller_close_windows_handle(api, handle)
+            raise OSError("rooted output temporary must be a real file")
+        self._destination_snapshot = destination
+        self._temporary_snapshot = _controller_windows_file_snapshot(api, handle)
+        self._handle = handle
+
+    def write(self, content: bytes) -> None:
+        """Write only already-sanitized bytes to the pinned temporary."""
+        if self._closed:
+            raise OSError("rooted streaming output is closed")
+        if not content:
+            return
+        if self._descriptor is not None:
+            view = memoryview(content)
+            while view:
+                written = os.write(self._descriptor, view)
+                if written <= 0:
+                    raise OSError("rooted streaming output performed a partial write")
+                view = view[written:]
+        elif self._windows_api is not None and self._handle is not None:
+            for start in range(0, len(content), _WINDOWS_WRITE_CHUNK_BYTES):
+                chunk = content[start : start + _WINDOWS_WRITE_CHUNK_BYTES]
+                buffer = ctypes.create_string_buffer(chunk, len(chunk))
+                written_count = _WINDOWS_DWORD()
+                _controller_windows_success(
+                    self._windows_api.write_file(
+                        _WINDOWS_HANDLE(self._handle),
+                        ctypes.byref(buffer),
+                        len(chunk),
+                        ctypes.byref(written_count),
+                        None,
+                    ),
+                    "WriteFile",
+                )
+                if written_count.value != len(chunk):
+                    raise OSError("WriteFile performed a partial streaming write")
+        else:  # pragma: no cover - construction establishes one backend.
+            raise OSError("rooted streaming output lost its native handle")
+        self._digest.update(content)
+        self._size += len(content)
+
+    def _validate_posix_destination(self) -> None:
+        chain = self._posix_chain
+        if chain is None or self._temporary_name is None:
+            raise OSError("rooted POSIX streaming state is incomplete")
+        parent = chain.parent_descriptor
+        chain.validate()
+        current_temporary = os.stat(
+            self._temporary_name,
+            dir_fd=parent,
+            follow_symlinks=False,
+        )
+        if (
+            self._temporary_status is None
+            or not stat.S_ISREG(current_temporary.st_mode)
+            or not os.path.samestat(self._temporary_status, current_temporary)
+        ):
+            raise OSError("rooted streaming temporary identity changed")
+        try:
+            current_destination = os.stat(
+                self.path.name,
+                dir_fd=parent,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            current_destination = None
+        if current_destination is not None and not stat.S_ISREG(
+            current_destination.st_mode
+        ):
+            raise OSError("rooted streaming destination became unsafe")
+        if (self._destination_status is None) != (current_destination is None) or (
+            self._destination_status is not None
+            and current_destination is not None
+            and not os.path.samestat(self._destination_status, current_destination)
+        ):
+            raise OSError("rooted streaming destination identity changed")
+
+    def _finalize_posix(self) -> None:
+        chain = self._posix_chain
+        descriptor = self._descriptor
+        temporary = self._temporary_name
+        if chain is None or descriptor is None or temporary is None:
+            raise OSError("rooted POSIX streaming state is incomplete")
+        os.fsync(descriptor)
+        self._validate_posix_destination()
+        os.replace(
+            temporary,
+            self.path.name,
+            src_dir_fd=chain.parent_descriptor,
+            dst_dir_fd=chain.parent_descriptor,
+        )
+        self._replaced = True
+        final_status = os.stat(
+            self.path.name,
+            dir_fd=chain.parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            self._temporary_status is None
+            or not stat.S_ISREG(final_status.st_mode)
+            or not os.path.samestat(self._temporary_status, final_status)
+        ):
+            raise OSError("rooted streaming replacement is contradictory")
+        os.fsync(chain.parent_descriptor)
+        chain.validate()
+
+    def _finalize_windows(self) -> None:
+        api = self._windows_api
+        chain = self._windows_chain
+        handle = self._handle
+        if api is None or chain is None or handle is None:
+            raise OSError("rooted Windows streaming state is incomplete")
+        _controller_windows_success(
+            api.flush_file_buffers(_WINDOWS_HANDLE(handle)), "FlushFileBuffers"
+        )
+        chain.validate(api)
+        current_destination = _controller_windows_existing_destination(
+            api, chain.parent_handle, self.path.name
+        )
+        if (self._destination_snapshot is None) != (current_destination is None) or (
+            self._destination_snapshot is not None
+            and current_destination is not None
+            and (
+                self._destination_snapshot.volume_serial_number
+                != current_destination.volume_serial_number
+                or self._destination_snapshot.file_id != current_destination.file_id
+            )
+        ):
+            raise OSError("rooted streaming destination identity changed")
+        current_temporary = _controller_windows_file_snapshot(api, handle)
+        if self._temporary_snapshot is None or (
+            current_temporary.volume_serial_number
+            != self._temporary_snapshot.volume_serial_number
+            or current_temporary.file_id != self._temporary_snapshot.file_id
+            or not _controller_windows_is_real_file(api, handle)
+        ):
+            raise OSError("rooted streaming temporary identity changed")
+        _controller_windows_replace_handle(
+            api, handle, chain.parent_handle, self.path.name
+        )
+        self._replaced = True
+        final_snapshot = _controller_windows_existing_destination(
+            api, chain.parent_handle, self.path.name
+        )
+        if final_snapshot is None or (
+            final_snapshot.volume_serial_number
+            != current_temporary.volume_serial_number
+            or final_snapshot.file_id != current_temporary.file_id
+        ):
+            raise OSError("rooted streaming replacement is contradictory")
+        chain.validate(api)
+
+    def finalize(self) -> _RootedStreamEvidence:
+        """Flush and atomically publish the complete sanitized stream."""
+        if self._closed:
+            raise OSError("rooted streaming output is already closed")
+        try:
+            if self._descriptor is not None:
+                self._finalize_posix()
+            else:
+                self._finalize_windows()
+        except BaseException:
+            self.abort()
+            raise
+        else:
+            self._close_native()
+        return _RootedStreamEvidence(self._digest.hexdigest(), self._size)
+
+    def _close_native(self) -> None:
+        if self._descriptor is not None:
+            os.close(self._descriptor)
+            self._descriptor = None
+        if self._windows_api is not None and self._handle is not None:
+            _controller_close_windows_handle(self._windows_api, self._handle)
+            self._handle = None
+        self._closed = True
+
+    def abort(self) -> None:
+        """Delete an unpublished temporary without following its pathname."""
+        if self._closed:
+            return
+        if self._descriptor is not None and self._posix_chain is not None:
+            descriptor = self._descriptor
+            parent = self._posix_chain.parent_descriptor
+            temporary = self._temporary_name
+            opened = self._temporary_status
+            os.close(descriptor)
+            self._descriptor = None
+            if not self._replaced and temporary is not None and opened is not None:
+                with suppress(FileNotFoundError, OSError):
+                    current = os.stat(temporary, dir_fd=parent, follow_symlinks=False)
+                    if stat.S_ISREG(current.st_mode) and os.path.samestat(
+                        opened, current
+                    ):
+                        os.unlink(temporary, dir_fd=parent)
+        elif self._windows_api is not None and self._handle is not None:
+            try:
+                if not self._replaced:
+                    with suppress(OSError):
+                        _controller_windows_delete_handle(
+                            self._windows_api, self._handle
+                        )
+            finally:
+                _controller_close_windows_handle(self._windows_api, self._handle)
+                self._handle = None
+        self._closed = True
+
+
+class _RootedAtomicWriter:
+    """Pin one existing parent chain for a sequence of atomic file replacements."""
+
+    def __init__(
+        self,
+        root: Path,
+        parent: Path,
+        *,
+        create_parents: bool = False,
+    ) -> None:
+        absolute_parent = Path(os.path.abspath(parent))  # noqa: PTH100
+        absolute_root, relative_parent_file = _rooted_output_relative(
+            root, absolute_parent / ".pyahead-parent", "rooted output parent"
+        )
+        self.root = absolute_root
+        self.parent = absolute_root / relative_parent_file.parent
+        self._posix_chain: _PinnedWriteChain | None = None
+        self._windows_api: _ControllerWindowsAPI | None = None
+        self._windows_chain: _ControllerWindowsDirectoryChain | None = None
+        self._streams: list[_RootedStreamingFile] = []
+        try:
+            if _supports_rooted_descriptor_writes():
+                self._posix_chain = _open_pinned_write_chain(
+                    self.root,
+                    relative_parent_file.parent,
+                    create=create_parents,
+                )
+            elif os.name == "nt":
+                self._windows_api = _controller_windows_api()
+                self._windows_chain = _controller_windows_open_directory_chain(
+                    self._windows_api,
+                    self.root,
+                    relative_parent_file.parent,
+                    for_write=True,
+                    create=create_parents,
+                )
+            else:
+                _raise_rooted_output_oserror(
+                    "secure rooted atomic writes are unavailable"
+                )
+        except OSError as error:
+            raise StateError("rooted output parent is unsafe or unavailable") from error
+
+    def write(self, path: Path, content: bytes) -> None:
+        absolute_root, relative = _rooted_output_relative(
+            self.root, path, "atomic output path"
+        )
+        if absolute_root != self.root or absolute_root / relative.parent != self.parent:
+            raise StateError("atomic output escaped its pinned parent")
+        try:
+            if self._posix_chain is not None:
+                _posix_atomic_write(self._posix_chain, relative.name, content)
+            elif self._windows_api is not None and self._windows_chain is not None:
+                _controller_windows_atomic_write(
+                    self._windows_api, self._windows_chain, relative.name, content
+                )
+            else:  # pragma: no cover - construction establishes one backend.
+                _raise_rooted_output_oserror("secure rooted atomic writer is closed")
+        except OSError as error:
+            raise StateError("atomic output path changed or is unsafe") from error
+
+    def open_stream(self, path: Path) -> _RootedStreamingFile:
+        """Open one sanitized streaming temporary under the pinned parent."""
+        absolute_root, relative = _rooted_output_relative(
+            self.root, path, "streaming output path"
+        )
+        if absolute_root != self.root or absolute_root / relative.parent != self.parent:
+            raise StateError("streaming output escaped its pinned parent")
+        try:
+            stream = _RootedStreamingFile(
+                self.root / relative,
+                posix_chain=self._posix_chain,
+                windows_api=self._windows_api,
+                windows_chain=self._windows_chain,
+            )
+        except OSError as error:
+            raise StateError("atomic output path changed or is unsafe") from error
+        self._streams.append(stream)
+        return stream
+
+    def close(self) -> None:
+        for stream in self._streams:
+            stream.abort()
+        self._streams.clear()
+        if self._posix_chain is not None:
+            _close_pinned_write_chain(self._posix_chain)
+            self._posix_chain = None
+        if self._windows_api is not None and self._windows_chain is not None:
+            self._windows_chain.close(self._windows_api)
+            self._windows_chain = None
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+def _default_atomic_root(path: Path) -> Path:
+    """Select an existing trusted root for compatibility-only direct callers."""
+    absolute = Path(os.path.abspath(path))  # noqa: PTH100
+    parts = absolute.parts
+    if ".autopilot" in parts:
+        index = parts.index(".autopilot")
+        if index > 0:
+            return Path(*parts[:index])
+    candidate = absolute.parent
+    while True:
+        try:
+            status = candidate.lstat()
+        except FileNotFoundError:
+            parent = candidate.parent
+            if parent == candidate:
+                raise StateError("atomic output has no existing trusted root") from None
+            candidate = parent
+            continue
+        if not stat.S_ISDIR(status.st_mode):
+            raise StateError("atomic output trusted root is not a real directory")
+        return candidate
+
+
+def _atomic_write_bytes(
+    path: Path,
+    content: bytes,
+    *,
+    root: Path | None = None,
+    writer: _RootedAtomicWriter | None = None,
+) -> None:
+    selected_root = _default_atomic_root(path) if root is None else root
+    if writer is not None:
+        writer.write(path, content)
+        return
+    with _RootedAtomicWriter(
+        selected_root, path.parent, create_parents=True
+    ) as rooted_writer:
+        rooted_writer.write(path, content)
+
+
+def atomic_write_json(
+    path: Path,
+    value: Mapping[str, object],
+    *,
+    root: Path | None = None,
+    writer: _RootedAtomicWriter | None = None,
+    max_bytes: int | None = None,
+) -> None:
     """Write canonical state without exposing a partially written document."""
     try:
         content = (
@@ -1017,7 +4158,9 @@ def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
         ).encode("utf-8")
     except (TypeError, ValueError, UnicodeError) as error:
         raise StateError("state is not JSON serializable") from error
-    _atomic_write_bytes(path, content)
+    if max_bytes is not None and len(content) > max_bytes:
+        raise StateError("serialized state exceeds its safe size limit")
+    _atomic_write_bytes(path, content, root=root, writer=writer)
 
 
 def _command_sha256(command: Sequence[str]) -> str:
@@ -1030,18 +4173,132 @@ def _command_sha256(command: Sequence[str]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _append_path_suffix(path: Path, suffix: str) -> Path:
+    """Append an evidence suffix without replacing a dotted basename."""
+    return path.with_name(f"{path.name}{suffix}")
+
+
 def _command_evidence_paths(log_base: Path) -> tuple[Path, Path, Path, Path]:
     """Return the durable start, result, stdout, and stderr evidence paths."""
     return (
-        log_base.with_suffix(".started.json"),
-        log_base.with_suffix(".result.json"),
-        log_base.with_suffix(".stdout.log"),
-        log_base.with_suffix(".stderr.log"),
+        _append_path_suffix(log_base, ".started.json"),
+        _append_path_suffix(log_base, ".result.json"),
+        _append_path_suffix(log_base, ".stdout.log"),
+        _append_path_suffix(log_base, ".stderr.log"),
     )
 
 
+def _command_intent_path(log_base: Path) -> Path:
+    """Return the durable pre-process-creation intent evidence path."""
+    return _append_path_suffix(log_base, ".intent.json")
+
+
+def _command_output_path(log_base: Path) -> Path:
+    """Return the integrity-protected machine-output sidecar path."""
+    return _append_path_suffix(log_base, ".output.json")
+
+
+def _validate_command_log_base(root: Path, log_base: Path) -> None:
+    """Keep controller run evidence in one immediate rooted logs directory."""
+    _absolute_root, relative = _rooted_output_relative(
+        root, log_base, "command log base"
+    )
+    if ".autopilot" not in relative.parts:
+        return
+    if (
+        len(relative.parts) != 5
+        or relative.parts[0] != ".autopilot"
+        or relative.parts[1] != "runs"
+        or not relative.parts[2]
+        or relative.parts[3] != "logs"
+        or _COMMAND_LOG_STEM.fullmatch(relative.parts[4]) is None
+        or relative.parts[4] in {".", ".."}
+    ):
+        raise StateError("command evidence path is outside its run logs directory")
+
+
+def _command_output_document(
+    stdout: str | bytes,
+    stderr: str | bytes,
+    *,
+    stdout_overflow: bool = False,
+    stderr_overflow: bool = False,
+    stdout_non_whitespace: bool | None = None,
+    stderr_non_whitespace: bool | None = None,
+    schema_version: int = 2,
+) -> bytes:
+    """Encode bounded redacted machine streams and explicit completeness flags."""
+
+    def encoded(value: str | bytes) -> str:
+        raw = (
+            value.encode("utf-8", errors="surrogateescape")
+            if isinstance(value, str)
+            else value
+        )
+        return base64.b64encode(raw).decode("ascii")
+
+    def has_non_whitespace(value: str | bytes) -> bool:
+        text = (
+            value.decode("utf-8", errors="surrogateescape")
+            if isinstance(value, bytes)
+            else value
+        )
+        return any(not character.isspace() for character in text)
+
+    document: dict[str, object] = {
+        "schema_version": schema_version,
+        "stderr_base64": encoded(stderr),
+        "stdout_base64": encoded(stdout),
+    }
+    if schema_version == 2:
+        document.update(
+            {
+                "stderr_overflow": stderr_overflow,
+                "stderr_non_whitespace": (
+                    has_non_whitespace(stderr)
+                    if stderr_non_whitespace is None
+                    else stderr_non_whitespace
+                ),
+                "stdout_overflow": stdout_overflow,
+                "stdout_non_whitespace": (
+                    has_non_whitespace(stdout)
+                    if stdout_non_whitespace is None
+                    else stdout_non_whitespace
+                ),
+            }
+        )
+    elif schema_version != 1:
+        raise StateError("unsupported command output sidecar schema")
+    return (
+        json.dumps(
+            document,
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("ascii")
+
+
+def _decode_command_output(value: object, *, stream: str) -> str:
+    """Strictly decode one bounded canonical machine-output stream."""
+    if not isinstance(value, str):
+        raise StateError(f"candidate command {stream} evidence is malformed")
+    try:
+        encoded = value.encode("ascii")
+        raw = base64.b64decode(encoded, validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError) as error:
+        raise StateError(f"candidate command {stream} evidence is malformed") from error
+    if len(raw) > MAX_RESULT_BYTES or base64.b64encode(raw).decode("ascii") != value:
+        raise StateError(f"candidate command {stream} evidence is unsafe")
+    try:
+        return raw.decode("utf-8", errors="surrogateescape")
+    except UnicodeDecodeError as error:
+        raise StateError(f"candidate command {stream} evidence is malformed") from error
+
+
 def _terminate_process_tree(
-    process: subprocess.Popen[str],
+    process: subprocess.Popen[bytes],
     *,
     force: bool,
 ) -> None:
@@ -1073,16 +4330,174 @@ def _terminate_process_tree(
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=5,
+                    timeout=_PROCESS_SHUTDOWN_GRACE_SECONDS,
                 )
                 if termination.returncode == 0:
                     return
             except (OSError, subprocess.TimeoutExpired):
                 pass
-    if force:
-        process.kill()
-    else:
-        process.terminate()
+    with suppress(OSError):
+        if force:
+            process.kill()
+        else:
+            process.terminate()
+
+
+def _bounded_reap_terminated_process(process: subprocess.Popen[bytes]) -> None:
+    """Give a terminated direct child one bounded chance to publish its status."""
+    with suppress(OSError, subprocess.TimeoutExpired):
+        process.wait(timeout=_PROCESS_SHUTDOWN_GRACE_SECONDS)
+
+
+@dataclass
+class _BoundedMachineCapture:
+    """Retain one exact bounded redacted prefix while continuing to drain."""
+
+    content: bytearray
+    overflow: bool = False
+    failed: bool = False
+    has_non_whitespace: bool = False
+    _whitespace: _TerminalSafeWhitespaceInspector = field(
+        default_factory=_TerminalSafeWhitespaceInspector,
+        init=False,
+        repr=False,
+    )
+
+    def append(self, value: str, *, visible: str | None = None) -> None:
+        self._whitespace.update(
+            _escape_terminal_text(value) if visible is None else visible
+        )
+        self.has_non_whitespace = self._whitespace.has_non_whitespace
+        encoded = value.encode("utf-8", errors="surrogateescape")
+        remaining = MAX_RESULT_BYTES - len(self.content)
+        if len(encoded) <= remaining:
+            self.content.extend(encoded)
+            return
+        if remaining:
+            self.content.extend(encoded[:remaining])
+        self.overflow = True
+
+    def finish(self) -> None:
+        self.has_non_whitespace = self._whitespace.finish()
+
+
+class _StreamDrainControl:
+    """Serialize cancellation against the last mutation of one captured stream."""
+
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.cancelled = Event()
+
+    def request_cancel(self) -> None:
+        """Tell a worker to stop before its next read or retained write."""
+        self.cancelled.set()
+
+    def freeze(self, capture: _BoundedMachineCapture) -> bool:
+        """Freeze a decided prefix only when no worker mutation is in flight."""
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
+            capture.finish()
+        finally:
+            self.lock.release()
+        return True
+
+
+def _drain_streaming_pipe(
+    stream: BinaryIO,
+    capture: _BoundedMachineCapture,
+    human_output: _RootedStreamingFile | None,
+    control: _StreamDrainControl,
+) -> None:
+    redactor = _StreamingRedactor()
+
+    def retain(value: str) -> None:
+        visible_text = _escape_terminal_text(value)
+        capture.append(value, visible=visible_text)
+        if human_output is not None:
+            visible = visible_text.encode("utf-8", errors="backslashreplace")
+            human_output.write(visible)
+
+    try:
+        while not control.cancelled.is_set():
+            chunk = stream.read(_CAPTURE_CHUNK_BYTES)
+            if not chunk:
+                break
+            with control.lock:
+                if control.cancelled.is_set():
+                    return
+                if capture.failed:
+                    continue
+                try:
+                    retain(redactor.feed(chunk))
+                except BaseException:  # noqa: BLE001 - worker failure is evidence.
+                    capture.content.clear()
+                    capture.failed = True
+        with control.lock:
+            if control.cancelled.is_set() or capture.failed:
+                return
+            try:
+                retain(redactor.finish())
+                capture.finish()
+            except BaseException:  # noqa: BLE001 - classify incomplete evidence.
+                capture.content.clear()
+                capture.failed = True
+    except BaseException:  # noqa: BLE001 - always drain/classify a broken worker.
+        with control.lock:
+            if not control.cancelled.is_set():
+                capture.content.clear()
+                capture.failed = True
+    finally:
+        with suppress(OSError):
+            stream.close()
+
+
+def _stage_process_input(value: str) -> tuple[BinaryIO, int]:
+    """Preload immutable child input without a deadline-sensitive pipe writer."""
+    stream = cast(
+        "BinaryIO",
+        tempfile.TemporaryFile(mode="w+b"),  # noqa: SIM115 - caller owns lifetime.
+    )
+    try:
+        data = value.encode("utf-8", errors="surrogateescape")
+        view = memoryview(data)
+        while view:
+            written = stream.write(view[:_CAPTURE_CHUNK_BYTES])
+            if written is None or written <= 0:
+                raise OSError(  # noqa: TRY301 - closes the owned stream below.
+                    "temporary process input performed a partial write"
+                )
+            view = view[written:]
+        stream.flush()
+        stream.seek(0)
+    except BaseException:
+        with suppress(OSError):
+            stream.close()
+        raise
+    return stream, len(data)
+
+
+def _process_input_was_consumed(stream: BinaryIO, expected_size: int) -> bool:
+    """Confirm that the child advanced its shared input handle through EOF."""
+    return os.lseek(stream.fileno(), 0, os.SEEK_CUR) == expected_size
+
+
+def _defer_rooted_writer_close(
+    writer: _RootedAtomicWriter,
+    workers: Sequence[Thread],
+) -> None:
+    """Abort unpublished stream temporaries only after their workers stop."""
+
+    def close_after_workers() -> None:
+        for worker in workers:
+            worker.join()
+        writer.close()
+
+    Thread(
+        target=close_after_workers,
+        name="pyahead-command-evidence-cleanup",
+        daemon=True,
+    ).start()
 
 
 class CommandRunner:
@@ -1098,131 +4513,406 @@ class CommandRunner:
         env: Mapping[str, str] | None = None,
         log_base: Path | None = None,
     ) -> CommandResult:
-        """Execute one process without a shell and preserve its complete output."""
+        """Execute one process and persist complete sanitized human output."""
         argv = tuple(command)
         if not argv or any(not item or "\0" in item for item in argv):
             raise InvalidInputError("subprocess argv contains an invalid value")
         started = time.monotonic()
-        try:
-            process = subprocess.Popen(  # noqa: S603 - argv is validated and never shelled.
-                argv,
-                cwd=cwd,
-                env=dict(env) if env is not None else None,
-                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="surrogateescape",
-                start_new_session=os.name != "nt",
-                creationflags=(
-                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                    if os.name == "nt"
-                    else 0
-                ),
-            )
-        except FileNotFoundError:
-            result = CommandResult(
-                command=argv,
-                returncode=127,
-                stdout="",
-                stderr=f"executable not found: {argv[0]}\n",
-                duration_seconds=time.monotonic() - started,
-            )
-            self.write_logs(result, log_base)
-            return result
-        except OSError as error:
-            result = CommandResult(
-                command=argv,
-                returncode=126,
-                stdout="",
-                stderr=_redact(f"unable to start executable {argv[0]!r}: {error}\n"),
-                duration_seconds=time.monotonic() - started,
-            )
-            self.write_logs(result, log_base)
-            return result
+        deadline = started + timeout_seconds
+        rooted_writer: _RootedAtomicWriter | None = None
+        staged_input: BinaryIO | None = None
+        staged_input_size: int | None = None
         if log_base is not None:
-            started_path, _result_path, _stdout_path, _stderr_path = (
-                _command_evidence_paths(log_base)
-            )
-            atomic_write_json(
-                started_path,
-                {
-                    "command_sha256": _command_sha256(argv),
-                    "schema_version": 1,
-                },
+            _validate_command_log_base(cwd, log_base)
+            rooted_writer = _RootedAtomicWriter(
+                cwd, log_base.parent, create_parents=True
             )
         try:
-            stdout, stderr = process.communicate(
-                input=input_text, timeout=timeout_seconds
-            )
-            result = CommandResult(
-                command=argv,
-                returncode=process.returncode,
-                stdout=_redact(stdout),
-                stderr=_redact(stderr),
-                duration_seconds=time.monotonic() - started,
-            )
-        except subprocess.TimeoutExpired:
-            _terminate_process_tree(process, force=True)
-            stdout, stderr = process.communicate()
-            result = CommandResult(
-                command=argv,
-                returncode=process.returncode,
-                stdout=_redact(stdout),
-                stderr=_redact(stderr),
-                duration_seconds=time.monotonic() - started,
-                timed_out=True,
-            )
-        except KeyboardInterrupt as error:
-            _terminate_process_tree(process, force=False)
+            if log_base is not None:
+                atomic_write_json(
+                    _command_intent_path(log_base),
+                    {
+                        "command_sha256": _command_sha256(argv),
+                        "schema_version": 1,
+                    },
+                    root=cwd,
+                    writer=rooted_writer,
+                )
+            if input_text is not None:
+                try:
+                    staged_input, staged_input_size = _stage_process_input(input_text)
+                except (OSError, UnicodeError) as error:
+                    raise StateError(
+                        "command input could not be staged safely; "
+                        "completion evidence was not published"
+                    ) from error
             try:
-                stdout, stderr = process.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
+                process = subprocess.Popen(  # noqa: S603 - argv is validated and never shelled.
+                    argv,
+                    cwd=cwd,
+                    env=dict(env) if env is not None else None,
+                    stdin=(
+                        staged_input if staged_input is not None else subprocess.DEVNULL
+                    ),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=os.name != "nt",
+                    creationflags=(
+                        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                        if os.name == "nt"
+                        else 0
+                    ),
+                )
+            except FileNotFoundError:
+                result = CommandResult(
+                    command=argv,
+                    returncode=127,
+                    stdout="",
+                    stderr=f"executable not found: {argv[0]}\n",
+                    duration_seconds=time.monotonic() - started,
+                )
+                return self.write_logs(result, log_base, root=cwd, writer=rooted_writer)
+            except OSError as error:
+                result = CommandResult(
+                    command=argv,
+                    returncode=126,
+                    stdout="",
+                    stderr=_redact(
+                        f"unable to start executable {argv[0]!r}: {error}\n"
+                    ),
+                    duration_seconds=time.monotonic() - started,
+                )
+                return self.write_logs(result, log_base, root=cwd, writer=rooted_writer)
+            stdout_human: _RootedStreamingFile | None = None
+            stderr_human: _RootedStreamingFile | None = None
+            if log_base is not None:
+                if rooted_writer is None:  # pragma: no cover - log base owns it.
+                    raise StateError("command evidence writer is unavailable")
+                started_path, _result_path, stdout_path, stderr_path = (
+                    _command_evidence_paths(log_base)
+                )
+                try:
+                    stdout_human = rooted_writer.open_stream(stdout_path)
+                    stderr_human = rooted_writer.open_stream(stderr_path)
+                    atomic_write_json(
+                        started_path,
+                        {
+                            "command_sha256": _command_sha256(argv),
+                            "schema_version": 1,
+                        },
+                        root=cwd,
+                        writer=rooted_writer,
+                    )
+                except BaseException:
+                    _terminate_process_tree(process, force=True)
+                    _bounded_reap_terminated_process(process)
+                    raise
+            if process.stdout is None or process.stderr is None:
                 _terminate_process_tree(process, force=True)
-                stdout, stderr = process.communicate()
+                _bounded_reap_terminated_process(process)
+                raise StateError("subprocess output pipes are unavailable")
+            stdout_capture = _BoundedMachineCapture(bytearray())
+            stderr_capture = _BoundedMachineCapture(bytearray())
+            stdout_control = _StreamDrainControl()
+            stderr_control = _StreamDrainControl()
+            stdout_thread = Thread(
+                target=_drain_streaming_pipe,
+                args=(process.stdout, stdout_capture, stdout_human, stdout_control),
+                daemon=True,
+            )
+            stderr_thread = Thread(
+                target=_drain_streaming_pipe,
+                args=(process.stderr, stderr_capture, stderr_human, stderr_control),
+                daemon=True,
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+            timed_out = False
+            process_timed_out = False
+            interrupted_error: KeyboardInterrupt | None = None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                process_timed_out = True
+            else:
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    process_timed_out = True
+                except KeyboardInterrupt as error:
+                    interrupted_error = error
+                    _terminate_process_tree(process, force=False)
+                    remaining = min(5.0, max(0.0, deadline - time.monotonic()))
+                    try:
+                        process.wait(timeout=remaining)
+                    except subprocess.TimeoutExpired:
+                        _terminate_process_tree(process, force=True)
+                        _bounded_reap_terminated_process(process)
+            workers = [stdout_thread, stderr_thread]
+            if not timed_out:
+                for worker in workers:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    worker.join(timeout=remaining)
+                timed_out = any(worker.is_alive() for worker in workers)
+            if timed_out:
+                stdout_control.request_cancel()
+                stderr_control.request_cancel()
+                stdout_frozen = stdout_control.freeze(stdout_capture)
+                stderr_frozen = stderr_control.freeze(stderr_capture)
+                _terminate_process_tree(process, force=True)
+                _bounded_reap_terminated_process(process)
+                if not (stdout_frozen and stderr_frozen):
+                    if rooted_writer is not None:
+                        _defer_rooted_writer_close(
+                            rooted_writer,
+                            (stdout_thread, stderr_thread),
+                        )
+                        rooted_writer = None
+                    raise StateError(
+                        "command output could not be frozen at its deadline; "
+                        "completion evidence was not published"
+                    )
+            if staged_input is not None:
+                try:
+                    input_consumed = (
+                        staged_input_size is not None
+                        and _process_input_was_consumed(
+                            staged_input,
+                            staged_input_size,
+                        )
+                    )
+                except OSError:
+                    input_consumed = False
+                if (
+                    not input_consumed
+                    and not process_timed_out
+                    and interrupted_error is None
+                ):
+                    if rooted_writer is not None:
+                        _defer_rooted_writer_close(
+                            rooted_writer,
+                            (stdout_thread, stderr_thread),
+                        )
+                        rooted_writer = None
+                    raise StateError(
+                        "command input consumption could not be confirmed; "
+                        "completion evidence was not published"
+                    )
+                try:
+                    staged_input.close()
+                except OSError as error:
+                    if rooted_writer is not None:
+                        _defer_rooted_writer_close(
+                            rooted_writer,
+                            (stdout_thread, stderr_thread),
+                        )
+                        rooted_writer = None
+                    raise StateError(
+                        "command input could not be closed safely; "
+                        "completion evidence was not published"
+                    ) from error
+                staged_input = None
+            if stdout_capture.failed or stderr_capture.failed:
+                raise StateError(
+                    "complete sanitized command output could not be persisted"
+                )
+            returncode = process.returncode
+            if type(returncode) is not int:
+                returncode = 1 if os.name == "nt" else -int(signal.SIGKILL)
             result = CommandResult(
                 command=argv,
-                returncode=process.returncode,
-                stdout=_redact(stdout),
-                stderr=_redact(stderr),
+                returncode=returncode,
+                stdout=bytes(stdout_capture.content).decode(
+                    "utf-8", errors="surrogateescape"
+                ),
+                stderr=bytes(stderr_capture.content).decode(
+                    "utf-8", errors="surrogateescape"
+                ),
                 duration_seconds=time.monotonic() - started,
-                interrupted=True,
+                timed_out=timed_out,
+                interrupted=interrupted_error is not None,
+                stdout_overflow=stdout_capture.overflow,
+                stderr_overflow=stderr_capture.overflow,
             )
-            self.write_logs(result, log_base)
-            raise AutopilotInterruptedError(
-                "interrupted while a child process was running"
-            ) from error
-        self.write_logs(result, log_base)
-        return result
+            result = self._finalize_logs(
+                result,
+                log_base,
+                stdout_capture=stdout_capture,
+                stderr_capture=stderr_capture,
+                stdout_human=stdout_human,
+                stderr_human=stderr_human,
+                root=cwd,
+                writer=rooted_writer,
+            )
+            if interrupted_error is not None:
+                raise AutopilotInterruptedError(
+                    "interrupted while a child process was running"
+                ) from interrupted_error
+            return result
+        finally:
+            if staged_input is not None:
+                with suppress(OSError):
+                    staged_input.close()
+            if rooted_writer is not None:
+                rooted_writer.close()
 
     @staticmethod
-    def write_logs(result: CommandResult, log_base: Path | None) -> None:
+    def _finalize_logs(
+        result: CommandResult,
+        log_base: Path | None,
+        *,
+        stdout_capture: _BoundedMachineCapture,
+        stderr_capture: _BoundedMachineCapture,
+        stdout_human: _RootedStreamingFile | None,
+        stderr_human: _RootedStreamingFile | None,
+        root: Path,
+        writer: _RootedAtomicWriter | None = None,
+    ) -> CommandResult:
         if log_base is None:
-            return
-        _started_path, result_path, stdout_path, stderr_path = _command_evidence_paths(
-            log_base
+            return result
+        if writer is None or stdout_human is None or stderr_human is None:
+            raise StateError("command evidence writer is unavailable")
+        _validate_command_log_base(root, log_base)
+        _started_path, result_path, _stdout_path, _stderr_path = (
+            _command_evidence_paths(log_base)
         )
-        _atomic_write_bytes(
-            stdout_path,
-            result.stdout.encode("utf-8", errors="backslashreplace"),
+        output_path = _command_output_path(log_base)
+        try:
+            stdout_evidence = stdout_human.finalize()
+            stderr_evidence = stderr_human.finalize()
+        except OSError as error:
+            raise StateError(
+                "complete sanitized command logs could not be finalized"
+            ) from error
+        output_document = _command_output_document(
+            bytes(stdout_capture.content),
+            bytes(stderr_capture.content),
+            stdout_overflow=stdout_capture.overflow,
+            stderr_overflow=stderr_capture.overflow,
+            stdout_non_whitespace=stdout_capture.has_non_whitespace,
+            stderr_non_whitespace=stderr_capture.has_non_whitespace,
         )
-        _atomic_write_bytes(
-            stderr_path,
-            result.stderr.encode("utf-8", errors="backslashreplace"),
-        )
+        if len(output_document) > MAX_COMMAND_OUTPUT_DOCUMENT_BYTES:
+            raise StateError("command evidence expansion exceeds its safe limit")
+        _atomic_write_bytes(output_path, output_document, root=root, writer=writer)
         atomic_write_json(
             result_path,
             {
                 "command_sha256": _command_sha256(result.command),
                 "interrupted": result.interrupted,
+                "output_sha256": hashlib.sha256(output_document).hexdigest(),
                 "returncode": result.returncode,
-                "schema_version": 1,
-                "stderr_sha256": sha256_text(result.stderr),
-                "stdout_sha256": sha256_text(result.stdout),
+                "schema_version": 3,
+                "stderr_overflow": stderr_capture.overflow,
+                "stderr_non_whitespace": stderr_capture.has_non_whitespace,
+                "stderr_sha256": stderr_evidence.sha256,
+                "stderr_size_bytes": stderr_evidence.size,
+                "stdout_overflow": stdout_capture.overflow,
+                "stdout_non_whitespace": stdout_capture.has_non_whitespace,
+                "stdout_sha256": stdout_evidence.sha256,
+                "stdout_size_bytes": stdout_evidence.size,
                 "timed_out": result.timed_out,
             },
+            root=root,
+            writer=writer,
         )
+        return CommandResult(
+            command=result.command,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration_seconds=result.duration_seconds,
+            timed_out=result.timed_out,
+            interrupted=result.interrupted,
+            stdout_overflow=stdout_capture.overflow,
+            stderr_overflow=stderr_capture.overflow,
+            human_stdout_sha256=stdout_evidence.sha256,
+            human_stderr_sha256=stderr_evidence.sha256,
+            human_stdout_size=stdout_evidence.size,
+            human_stderr_size=stderr_evidence.size,
+            human_stdout_non_whitespace=stdout_capture.has_non_whitespace,
+            human_stderr_non_whitespace=stderr_capture.has_non_whitespace,
+        )
+
+    @staticmethod
+    def write_logs(
+        result: CommandResult,
+        log_base: Path | None,
+        *,
+        root: Path | None = None,
+        writer: _RootedAtomicWriter | None = None,
+    ) -> CommandResult:
+        """Persist a caller-supplied complete result through the stream boundary."""
+        if log_base is None:
+            return result
+        if result.stdout_overflow or result.stderr_overflow:
+            raise StateError("cannot rebuild complete logs from a machine mirror")
+        selected_root = _default_atomic_root(log_base) if root is None else root
+        _validate_command_log_base(selected_root, log_base)
+        _started, _result, stdout_path, stderr_path = _command_evidence_paths(log_base)
+        owned_writer = writer is None
+        rooted_writer = (
+            _RootedAtomicWriter(selected_root, log_base.parent, create_parents=True)
+            if writer is None
+            else writer
+        )
+        stdout_capture = _BoundedMachineCapture(bytearray())
+        stderr_capture = _BoundedMachineCapture(bytearray())
+
+        def capture_text(
+            value: str,
+            capture: _BoundedMachineCapture,
+            human: _RootedStreamingFile,
+        ) -> None:
+            redactor = _StreamingRedactor()
+            encoded = value.encode("utf-8", errors="surrogateescape")
+            for start in range(0, len(encoded), _CAPTURE_CHUNK_BYTES):
+                decided = redactor.feed(encoded[start : start + _CAPTURE_CHUNK_BYTES])
+                visible = _escape_terminal_text(decided)
+                capture.append(decided, visible=visible)
+                human.write(visible.encode("utf-8", errors="backslashreplace"))
+            decided = redactor.finish()
+            visible = _escape_terminal_text(decided)
+            capture.append(decided, visible=visible)
+            human.write(visible.encode("utf-8", errors="backslashreplace"))
+            capture.finish()
+
+        try:
+            stdout_human = rooted_writer.open_stream(stdout_path)
+            stderr_human = rooted_writer.open_stream(stderr_path)
+            capture_text(result.stdout, stdout_capture, stdout_human)
+            capture_text(result.stderr, stderr_capture, stderr_human)
+            machine_result = CommandResult(
+                command=result.command,
+                returncode=result.returncode,
+                stdout=bytes(stdout_capture.content).decode(
+                    "utf-8", errors="surrogateescape"
+                ),
+                stderr=bytes(stderr_capture.content).decode(
+                    "utf-8", errors="surrogateescape"
+                ),
+                duration_seconds=result.duration_seconds,
+                timed_out=result.timed_out,
+                interrupted=result.interrupted,
+                stdout_overflow=stdout_capture.overflow,
+                stderr_overflow=stderr_capture.overflow,
+            )
+            return CommandRunner._finalize_logs(
+                machine_result,
+                log_base,
+                stdout_capture=stdout_capture,
+                stderr_capture=stderr_capture,
+                stdout_human=stdout_human,
+                stderr_human=stderr_human,
+                root=selected_root,
+                writer=rooted_writer,
+            )
+        finally:
+            if owned_writer:
+                rooted_writer.close()
 
 
 class StateStore:
@@ -1230,6 +4920,7 @@ class StateStore:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.repo_root = root.parent
         self.state_path = root / "state.json"
         self.lock_path = root / "lock"
         self._owns_lock = False
@@ -1272,7 +4963,12 @@ class StateStore:
 
     def write(self, state: Mapping[str, object]) -> None:
         """Atomically persist one safe phase boundary."""
-        atomic_write_json(self.state_path, state)
+        atomic_write_json(
+            self.state_path,
+            state,
+            root=self.repo_root,
+            max_bytes=MAX_RESULT_BYTES,
+        )
 
     def acquire(self, run_id: str) -> None:
         """Refuse overlapping runners without guessing whether a lock is stale."""
@@ -2031,16 +5727,63 @@ def _changed_protected_paths(
 def _serialize_command_result(
     result: CommandResult, log_base: Path
 ) -> dict[str, object]:
+    _started_path, _result_path, stdout_path, stderr_path = _command_evidence_paths(
+        log_base
+    )
     return {
         "command": list(result.command),
         "returncode": result.returncode,
         "duration_seconds": round(result.duration_seconds, 6),
         "timed_out": result.timed_out,
         "signal": result.signal_number,
-        "stdout_log": log_base.with_suffix(".stdout.log").name,
-        "stderr_log": log_base.with_suffix(".stderr.log").name,
+        "stdout_overflow": result.stdout_overflow,
+        "stderr_overflow": result.stderr_overflow,
+        "stdout_log": stdout_path.name,
+        "stderr_log": stderr_path.name,
         "succeeded": result.succeeded,
     }
+
+
+class _FailureDocumentBuilder:
+    """Accumulate UTF-8 failure evidence to one deterministic aggregate bound."""
+
+    def __init__(self) -> None:
+        self._content = bytearray()
+        self._exceeded = False
+
+    def append(self, value: str) -> None:
+        if self._exceeded:
+            return
+        retained_limit = MAX_FAILURE_DOCUMENT_BYTES + 1
+        for start in range(0, len(value), _CAPTURE_CHUNK_BYTES):
+            chunk = value[start : start + _CAPTURE_CHUNK_BYTES].encode(
+                "utf-8", errors="backslashreplace"
+            )
+            remaining = retained_limit - len(self._content)
+            if len(chunk) <= remaining:
+                self._content.extend(chunk)
+                continue
+            self._content.extend(chunk[:remaining])
+            self._exceeded = True
+            return
+
+    def render_bytes(self) -> bytes:
+        if not self._exceeded and len(self._content) <= MAX_FAILURE_DOCUMENT_BYTES:
+            return bytes(self._content)
+        marker = _FAILURE_OMISSION.encode("ascii")
+        prefix_limit = MAX_FAILURE_DOCUMENT_BYTES - len(marker)
+        prefix = bytes(self._content[:prefix_limit])
+        prefix = prefix.decode("utf-8", errors="ignore").encode("utf-8")
+        return prefix + marker
+
+    def render(self) -> str:
+        return self.render_bytes().decode("utf-8")
+
+
+def _bounded_failure_text(value: str) -> str:
+    builder = _FailureDocumentBuilder()
+    builder.append(value)
+    return builder.render()
 
 
 def _format_command_failure(result: CommandResult) -> str:
@@ -2053,8 +5796,20 @@ def _format_command_failure(result: CommandResult) -> str:
     return (
         f"Command: {json.dumps(list(_redacted_command(result.command)))}\n"
         f"Outcome: {outcome}\n"
-        f"STDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}\n"
+        f"STDOUT:\n{_safe_log_text(result.stdout)}\n"
+        f"STDERR:\n{_safe_log_text(result.stderr)}\n"
+    )
+
+
+def _format_verification_failure(result: CommandResult) -> str:
+    """Render one durable failed verification result as safe repair evidence."""
+    return (
+        f"Command: {json.dumps(list(_redacted_command(result.command)))}\n"
+        f"Return code: {result.returncode}\n"
+        f"Timed out: {result.timed_out}\n"
+        f"Signal: {result.signal_number}\n"
+        f"STDOUT:\n{_safe_log_text(result.stdout)}\n"
+        f"STDERR:\n{_safe_log_text(result.stderr)}\n"
     )
 
 
@@ -2153,11 +5908,20 @@ class Autopilot:
         return value
 
     def _write(self, message: str) -> None:
-        self.stdout.write(message.rstrip() + "\n")
+        safe_message = _escape_terminal_text(message)
+        self.stdout.write(safe_message + "\n")
+        self.stdout.flush()
+
+    def _write_machine(self, message: str) -> None:
+        """Write a documented machine representation without terminal rewriting."""
+        self.stdout.write(message)
+        if not message.endswith("\n"):
+            self.stdout.write("\n")
         self.stdout.flush()
 
     def _warn(self, message: str) -> None:
-        self.stderr.write(f"autopilot: {message.rstrip()}\n")
+        safe_message = _escape_terminal_text(message)
+        self.stderr.write(f"autopilot: {safe_message}\n")
         self.stderr.flush()
 
     def _design_text(self) -> str:
@@ -2572,7 +6336,7 @@ class Autopilot:
                 f"(rendered sha256 {sha256_text(prompt)})"
             )
             self._write(f"    --- begin {role} prompt ---")
-            for line in prompt.rstrip().splitlines():
+            for line in prompt.rstrip("\n").split("\n"):
                 self._write(f"      {line}")
             self._write(f"    --- end {role} prompt ---")
         self._write("    verification commands:")
@@ -2793,7 +6557,7 @@ class Autopilot:
             }
             existing["schema_version"] = 1
             existing["gates"] = gates
-            atomic_write_json(self._gate_file(), existing)
+            atomic_write_json(self._gate_file(), existing, root=self.repo_root)
             if active_state is not None:
                 active_state["gate_record_hash"] = _hash_file(self._gate_file())
                 active_state["updated_at"] = datetime.now(UTC).isoformat()
@@ -3025,7 +6789,7 @@ class Autopilot:
             self._write("No autopilot state exists.")
             return
         if as_json:
-            self._write(
+            self._write_machine(
                 json.dumps(
                     _redact_structure(state),
                     ensure_ascii=False,
@@ -3034,15 +6798,17 @@ class Autopilot:
                 )
             )
             return
-        self._write(f"Run: {state['run_id']}")
-        self._write(f"Branch: {state['branch']}")
-        self._write(f"Phase: {state['current_phase']}")
-        self._write(f"Milestone: {state.get('current_milestone') or '-'}")
+        self._write(f"Run: {_escape_terminal_text(str(state['run_id']))}")
+        self._write(f"Branch: {_escape_terminal_text(str(state['branch']))}")
+        self._write(f"Phase: {_escape_terminal_text(str(state['current_phase']))}")
+        milestone = state.get("current_milestone") or "-"
+        self._write(f"Milestone: {_escape_terminal_text(str(milestone))}")
         self._write(f"Repair cycles: {state.get('repair_count', 0)}")
         commits = _state_list(state, "completed_commits")
         self._write(f"Completed commits: {len(commits)}")
         publication = _state_mapping(state, "publication")
-        self._write(f"Publication: {publication.get('status', 'unknown')}")
+        publication_status = publication.get("status", "unknown")
+        self._write(f"Publication: {_escape_terminal_text(str(publication_status))}")
         candidate_value = state.get("candidate")
         active_candidate = (
             candidate_value.get("active") if isinstance(candidate_value, dict) else None
@@ -3050,11 +6816,14 @@ class Autopilot:
         if isinstance(active_candidate, dict):
             self._write(
                 "Candidate: "
-                f"{active_candidate.get('sha', 'pending')} "
-                f"({active_candidate.get('status', 'unknown')})"
+                f"{_escape_terminal_text(str(active_candidate.get('sha', 'pending')))} "
+                "("
+                f"{_escape_terminal_text(str(active_candidate.get('status', 'unknown')))}"
+                ")"
             )
         if state.get("last_error"):
-            self._write(f"Last error: {state['last_error']}")
+            last_error = _escape_terminal_text(str(state["last_error"]))
+            self._write(f"Last error: {last_error}")
 
     def _transition_metadata_digest(
         self,
@@ -3245,6 +7014,8 @@ class Autopilot:
         hosted_evidence = state.get("hosted_evidence")
         if hosted_evidence is not None and not isinstance(hosted_evidence, dict):
             raise StateError("state hosted evidence is malformed")
+        if isinstance(hosted_evidence, dict):
+            self._validate_hosted_failure_log_records(state, hosted_evidence)
         current_milestone = state.get("current_milestone")
         expected_milestone = requested[index] if index < len(requested) else None
         if current_milestone != expected_milestone:
@@ -3628,7 +7399,9 @@ class Autopilot:
         contract_hash = sha256_text(contract)
         run_directory = self._run_directory(state)
         contract_path = run_directory / "contract" / f"{identifier}.md"
-        _atomic_write_bytes(contract_path, contract.encode("utf-8"))
+        _atomic_write_bytes(
+            contract_path, contract.encode("utf-8"), root=self.repo_root
+        )
         state["current_milestone"] = identifier
         state["contract_path"] = PurePosixPath(
             contract_path.relative_to(self.repo_root).as_posix()
@@ -3674,18 +7447,22 @@ class Autopilot:
         commits = _state_list(state, "completed_commits")
         if not commits:
             return (
-                f"M1 is complete at base commit {state['base_commit']}. "
+                "M1 is complete at base commit "
+                f"{_safe_log_text(str(state['base_commit']))}. "
                 "No milestone in this run has yet been committed."
             )
         lines = ["Completed and independently reviewed milestones in this run:"]
         for item in commits:
             record = _mapping(item, "completed commit")
-            lines.append(f"- {record.get('milestone')}: {record.get('commit')}")
+            lines.append(
+                f"- {_safe_log_text(str(record.get('milestone')))}: "
+                f"{_safe_log_text(str(record.get('commit')))}"
+            )
         return "\n".join(lines)
 
     def _verification_markdown(self, milestone: Milestone) -> str:
         return "\n".join(
-            f"- `{shlex.join(_redacted_command(spec.command))}` "
+            f"- `{_safe_log_text(shlex.join(_redacted_command(spec.command)))}` "
             f"(timeout {spec.timeout_seconds:g}s)"
             for spec in self.verification_for(milestone)
         )
@@ -3694,20 +7471,26 @@ class Autopilot:
         if milestone.hosted_verification is None:
             return "- No hosted verification is configured for this milestone."
         policy = self._hosted_policy(milestone)
-        jobs = "\n".join(f"  - `{name}`" for name in policy.required_jobs)
+        workflow = _safe_log_text(policy.workflow)
+        dispatch_input = _safe_log_text(policy.dispatch_input)
+        jobs = "\n".join(
+            f"  - `{_safe_log_text(name)}`" for name in policy.required_jobs
+        )
         return (
-            f"- Workflow: `{policy.workflow}`.\n"
-            f"- Declare `workflow_dispatch.inputs.{policy.dispatch_input}` and pass "
+            f"- Workflow: `{workflow}`.\n"
+            f"- Declare `workflow_dispatch.inputs.{dispatch_input}` and pass "
             "the controller-supplied one-time token through unchanged.\n"
             f"- Set the workflow `run-name` to exactly `PyAhead autopilot "
-            f"${{{{ inputs.{policy.dispatch_input} }}}}` so the controller can bind "
+            f"${{{{ inputs.{dispatch_input} }}}}` so the controller can bind "
             "the dispatch to one new run.\n"
             "- Required job names (exact):\n"
             f"{jobs}"
         )
 
     def _protected_markdown(self, milestone: str) -> str:
-        return "\n".join(f"- `{path}`" for path in self.protected_labels(milestone))
+        return "\n".join(
+            f"- `{_safe_log_text(path)}`" for path in self.protected_labels(milestone)
+        )
 
     def _render_implementation_prompt(
         self,
@@ -3723,7 +7506,7 @@ class Autopilot:
             template,
             {
                 "milestone": milestone.identifier,
-                "milestone_title": milestone.title,
+                "milestone_title": _safe_log_text(milestone.title),
                 "contract": contract.rstrip(),
                 "contract_hash": contract_hash,
                 "repository_instructions": self._repository_instructions(),
@@ -3744,7 +7527,10 @@ class Autopilot:
             encoding="utf-8"
         )
         changed = _state_mapping(state, "worktree_snapshot")
-        changed_paths = "\n".join(f"- `{path}`" for path in sorted(changed)) or "- none"
+        changed_paths = (
+            "\n".join(f"- `{_safe_log_text(path)}`" for path in sorted(changed))
+            or "- none"
+        )
         return render_prompt(
             template,
             {
@@ -3780,21 +7566,72 @@ class Autopilot:
                 results_directory,
                 "autopilot results directory",
             )
-            if (
-                failure_path.parent != results_directory
-                or failure_path.is_symlink()
-                or not failure_path.is_file()
-            ):
+            if failure_path.parent != results_directory:
                 raise StateError("recorded repair input path is unsafe")
             try:
-                failed_output = failure_path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as error:
+                failure_bytes = _read_pinned_file_bytes(
+                    self.repo_root,
+                    failure_path,
+                    MAX_FAILURE_DOCUMENT_BYTES,
+                    context="recorded repair input",
+                )
+                failure_text = failure_bytes.decode("utf-8")
+            except (_PinnedFileMissingError, UnicodeError) as error:
                 raise StateError("recorded repair input is unreadable") from error
+            metadata_path = failure_path.with_suffix(f"{failure_path.suffix}.meta.json")
+            try:
+                metadata_bytes = _read_pinned_file_bytes(
+                    self.repo_root,
+                    metadata_path,
+                    MAX_RESULT_BYTES,
+                    context="recorded repair input metadata",
+                )
+            except _PinnedFileMissingError:
+                # Pre-v2 failure inputs did not distinguish renderer-owned line
+                # endings. Keep them resumable without trusting any raw control.
+                failed_output = _safe_log_text(failure_text)
+            else:
+                try:
+                    metadata_raw = cast(
+                        "object",
+                        json.loads(
+                            metadata_bytes.decode("utf-8"),
+                            object_pairs_hook=_reject_duplicate_json_keys,
+                        ),
+                    )
+                    metadata = _mapping(metadata_raw, "recorded repair input metadata")
+                except (
+                    UnicodeError,
+                    json.JSONDecodeError,
+                    _DuplicateJSONKeyError,
+                    InvalidInputError,
+                ) as error:
+                    raise StateError(
+                        "recorded repair input metadata is malformed"
+                    ) from error
+                if (
+                    set(metadata) != {"content_sha256", "schema_version"}
+                    or type(metadata.get("schema_version")) is not int
+                    or metadata.get("schema_version") != 1
+                    or metadata.get("content_sha256")
+                    != hashlib.sha256(failure_bytes).hexdigest()
+                    or any(
+                        _safe_log_text(line) != line
+                        for line in failure_text.split("\n")
+                    )
+                ):
+                    raise StateError("recorded repair input metadata is contradictory")
+                failed_output = failure_text
         else:
             failed_output = "No verification command failed."
         review_findings = _state_list(state, "review_findings")
         findings_text = (
-            json.dumps(review_findings, ensure_ascii=False, indent=2, sort_keys=True)
+            json.dumps(
+                _safe_human_structure(review_findings),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
             if review_findings
             else "[]"
         )
@@ -3804,7 +7641,7 @@ class Autopilot:
                 "milestone": milestone.identifier,
                 "contract": contract.rstrip(),
                 "contract_hash": cast("str", state["contract_hash"]),
-                "failed_output": failed_output.rstrip(),
+                "failed_output": failed_output.rstrip("\n"),
                 "review_findings": findings_text,
                 "hosted_verification": self._hosted_verification_markdown(milestone),
                 "protected_files": self._protected_markdown(milestone.identifier),
@@ -4041,10 +7878,11 @@ class Autopilot:
             attempt,
             retry,
         )
-        _atomic_write_bytes(prompt_path, prompt.encode("utf-8"))
+        _atomic_write_bytes(prompt_path, prompt.encode("utf-8"), root=self.repo_root)
         _atomic_write_bytes(
             schema_path,
             self._session_schema_text(role, milestone.identifier).encode("utf-8"),
+            root=self.repo_root,
         )
         with suppress(FileNotFoundError):
             result_path.unlink()
@@ -4124,7 +7962,7 @@ class Autopilot:
         self._assert_child_boundaries(state, milestone, current)
         state["worktree_snapshot"] = current
         if not command_result.succeeded:
-            reason = _format_command_failure(command_result)
+            reason = _bounded_failure_text(_format_command_failure(command_result))
             failure_path = self._write_agent_process_failure(state, role, reason)
             failures = _state_list(state, "agent_process_failures")
             attempt, retry = self._active_agent_coordinates(state, role)
@@ -4219,7 +8057,9 @@ class Autopilot:
                 )
         except InvalidInputError as error:
             reason = f"{role} structured result was invalid: {error}"
-            state["failed_output_path"] = self._write_failure_input(state, reason)
+            state["failed_output_path"] = self._write_failure_input(
+                state, _safe_log_text(reason)
+            )
             state["last_error"] = reason
             if role == "review":
                 self._save(state, "agent_failed")
@@ -4278,13 +8118,29 @@ class Autopilot:
         self._write(f"Fresh {role} session completed for {milestone}.")
 
     def _write_failure_input(self, state: Mapping[str, object], content: str) -> str:
+        """Write an already-rendered safe repair document with structural lines."""
         run_directory = self._run_directory(state)
         milestone = cast("str", state["current_milestone"])
         repair = state.get("repair_count", 0)
         path = run_directory / "results" / f"{milestone}-failure-{repair}.txt"
-        _atomic_write_bytes(
-            path, _redact(content).encode("utf-8", errors="backslashreplace")
-        )
+        bounded_content = _bounded_failure_text(content)
+        if any(
+            character != "\n" and _is_unsafe_terminal_codepoint(ord(character))
+            for character in bounded_content
+        ):
+            raise StateError("repair input contains an unsafe untrusted control")
+        content_bytes = bounded_content.encode("utf-8")
+        with _RootedAtomicWriter(self.repo_root, path.parent) as writer:
+            _atomic_write_bytes(path, content_bytes, root=self.repo_root, writer=writer)
+            atomic_write_json(
+                path.with_suffix(f"{path.suffix}.meta.json"),
+                {
+                    "content_sha256": hashlib.sha256(content_bytes).hexdigest(),
+                    "schema_version": 1,
+                },
+                root=self.repo_root,
+                writer=writer,
+            )
         return PurePosixPath(path.relative_to(self.repo_root).as_posix()).as_posix()
 
     def _write_agent_process_failure(
@@ -4301,9 +8157,11 @@ class Autopilot:
         if retry:
             stem = f"{stem}-retry-{retry}"
         path = run_directory / "results" / f"{stem}.process-failure.txt"
+        bounded_content = _bounded_failure_text(content)
         _atomic_write_bytes(
             path,
-            _redact(content).encode("utf-8", errors="backslashreplace"),
+            bounded_content.encode("utf-8", errors="backslashreplace"),
+            root=self.repo_root,
         )
         return PurePosixPath(path.relative_to(self.repo_root).as_posix()).as_posix()
 
@@ -4316,8 +8174,84 @@ class Autopilot:
         state["last_error"] = reason
         self._save(state, "repair_pending")
         self._write(
-            f"Scheduling fresh repair cycle {cast('int', state['repair_count']) + 1}: {reason}."
+            "Scheduling fresh repair cycle "
+            f"{cast('int', state['repair_count']) + 1}: "
+            f"{_escape_terminal_text(reason)}."
         )
+
+    def _read_verification_evidence(
+        self,
+        run_directory: Path,
+        record: Mapping[str, object],
+        *,
+        expected_log_base: Path | None = None,
+    ) -> CommandResult:
+        """Load and cross-check one serialized verification result durably."""
+        try:
+            command = _command_tuple(record.get("command"), "verification command")
+            stdout_name = _string(record.get("stdout_log"), "stdout_log")
+            stderr_name = _string(record.get("stderr_log"), "stderr_log")
+        except InvalidInputError as error:
+            raise StateError("verification result is malformed") from error
+
+        stdout_suffix = ".stdout.log"
+        if (
+            Path(stdout_name).name != stdout_name
+            or PurePosixPath(stdout_name).name != stdout_name
+            or not stdout_name.endswith(stdout_suffix)
+        ):
+            raise StateError("verification log path is unsafe")
+        log_stem = stdout_name[: -len(stdout_suffix)]
+        if (
+            _COMMAND_LOG_STEM.fullmatch(log_stem) is None
+            or log_stem in {".", ".."}
+            or stderr_name != f"{log_stem}.stderr.log"
+        ):
+            raise StateError("verification log path is unsafe")
+        logs_directory = run_directory / "logs"
+        log_base = logs_directory / log_stem
+        evidence_paths = (
+            *_command_evidence_paths(log_base),
+            _command_intent_path(log_base),
+            _command_output_path(log_base),
+        )
+        if (
+            log_base.parent != logs_directory
+            or log_base.name != log_stem
+            or any(path.parent != logs_directory for path in evidence_paths)
+            or (expected_log_base is not None and log_base != expected_log_base)
+        ):
+            raise StateError("verification log path is unsafe")
+        _started, durable = self._read_command_evidence(log_base, command)
+        if durable is None:
+            raise StateError("verification command result evidence is missing")
+
+        returncode = record.get("returncode")
+        timed_out = record.get("timed_out")
+        signal_number = record.get("signal")
+        succeeded = record.get("succeeded")
+        stdout_overflow = record.get("stdout_overflow", False)
+        stderr_overflow = record.get("stderr_overflow", False)
+        if (
+            type(returncode) is not int
+            or not isinstance(timed_out, bool)
+            or (signal_number is not None and type(signal_number) is not int)
+            or not isinstance(succeeded, bool)
+            or not isinstance(stdout_overflow, bool)
+            or not isinstance(stderr_overflow, bool)
+        ):
+            raise StateError("verification result is malformed")
+        if (
+            durable.command != command
+            or durable.returncode != returncode
+            or durable.timed_out != timed_out
+            or durable.signal_number != signal_number
+            or durable.succeeded != succeeded
+            or durable.stdout_overflow != stdout_overflow
+            or durable.stderr_overflow != stderr_overflow
+        ):
+            raise StateError("verification result evidence is contradictory")
+        return durable
 
     def _run_verification(self, state: dict[str, object]) -> None:
         milestone = self.config.milestone(cast("str", state["current_milestone"]))
@@ -4330,6 +8264,8 @@ class Autopilot:
         ):
             raise StateError("verification index is malformed")
         results = _state_list(state, "verification_results")
+        if len(results) != index:
+            raise StateError("verification progress is contradictory")
         baseline = _state_mapping(state, "worktree_snapshot")
         run_directory = self._run_directory(state)
         while index < len(specs):
@@ -4367,68 +8303,51 @@ class Autopilot:
             self._assert_git_metadata_unchanged(state, session=False)
             current = self.git.changed_snapshot()
             self._assert_child_boundaries(state, milestone, current)
+            serialized = _serialize_command_result(result, log_base)
             if current != baseline:
-                result = CommandResult(
-                    command=result.command,
-                    returncode=result.returncode or 1,
-                    stdout=result.stdout,
-                    stderr=(
-                        result.stderr
-                        + "\nVerification command unexpectedly modified tracked worktree files.\n"
-                    ),
-                    duration_seconds=result.duration_seconds,
-                    timed_out=result.timed_out,
+                serialized["controller_failure"] = (
+                    "Verification command unexpectedly modified tracked worktree files."
                 )
-                CommandRunner.write_logs(result, log_base)
                 state["worktree_snapshot"] = current
                 baseline = current
-            results.append(_serialize_command_result(result, log_base))
+            results.append(serialized)
             state["verification_results"] = results
             index += 1
             state["verification_index"] = index
             self._save(state, "verification_running")
-        failures: list[str] = []
-        for result_item in results:
+        failures = _FailureDocumentBuilder()
+        has_failures = False
+        for result_index, result_item in enumerate(results):
             record = _mapping(result_item, "verification result")
-            if record.get("succeeded") is not True:
-                command = tuple(
-                    _string_tuple(record.get("command"), "verification command")
-                )
-                stdout_name = _string(record.get("stdout_log"), "stdout_log")
-                stderr_name = _string(record.get("stderr_log"), "stderr_log")
-                if any(
-                    Path(name).name != name or PurePosixPath(name).name != name
-                    for name in (stdout_name, stderr_name)
-                ):
-                    raise StateError("verification log path is unsafe")
-                logs_directory = run_directory / "logs"
-                _assert_safe_directory_chain(
-                    self.repo_root,
-                    logs_directory,
-                    "autopilot logs directory",
-                )
-                stdout_log = logs_directory / stdout_name
-                stderr_log = logs_directory / stderr_name
-                if any(
-                    path.is_symlink() or not path.is_file()
-                    for path in (stdout_log, stderr_log)
-                ):
-                    raise StateError("verification log is missing or unsafe")
-                try:
-                    stdout = stdout_log.read_text(encoding="utf-8")
-                    stderr = stderr_log.read_text(encoding="utf-8")
-                except (OSError, UnicodeError) as error:
-                    raise StateError("verification log is unreadable") from error
-                failures.append(
-                    f"Command: {json.dumps(list(_redacted_command(command)))}\n"
-                    f"Return code: {record.get('returncode')}\n"
-                    f"Timed out: {record.get('timed_out')}\n"
-                    f"Signal: {record.get('signal')}\n"
-                    f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}\n"
-                )
-        if failures:
+            spec = specs[result_index]
+            expected_log_base = (
+                run_directory
+                / "logs"
+                / f"{milestone.identifier}-verify-{cast('int', state['repair_count'])}-{result_index}-{spec.identifier}"
+            )
+            durable = self._read_verification_evidence(
+                run_directory,
+                record,
+                expected_log_base=expected_log_base,
+            )
+            controller_failure = record.get("controller_failure")
+            if controller_failure is not None and not isinstance(
+                controller_failure, str
+            ):
+                raise StateError("verification result is malformed")
+            if not durable.succeeded or controller_failure is not None:
+                has_failures = True
+                failures.append(_format_verification_failure(durable))
+                if isinstance(controller_failure, str):
+                    failures.append(
+                        "Controller failure: "
+                        + _safe_log_text(controller_failure)
+                        + "\n"
+                    )
+                failures.append("\n")
+        if has_failures:
             state["failed_output_path"] = self._write_failure_input(
-                state, "\n".join(failures)
+                state, failures.render()
             )
             state["review_findings"] = []
             self._schedule_repair(state, "independent verification failed")
@@ -4447,20 +8366,31 @@ class Autopilot:
         lines: list[str] = []
         for item in results:
             record = _mapping(item, "verification result")
+            command_text = json.dumps(
+                _safe_human_structure(record.get("command")),
+                ensure_ascii=False,
+            )
             lines.append(
                 "- "
-                + json.dumps(_redact_structure(record.get("command")))
+                + command_text
                 + f": {'passed' if record.get('succeeded') else 'failed'}; "
-                + f"returncode={record.get('returncode')}; "
-                + f"timeout={record.get('timed_out')}; signal={record.get('signal')}; "
-                + f"logs={record.get('stdout_log')}, {record.get('stderr_log')}"
+                + "returncode="
+                + _safe_log_text(str(record.get("returncode")))
+                + "; timeout="
+                + _safe_log_text(str(record.get("timed_out")))
+                + "; signal="
+                + _safe_log_text(str(record.get("signal")))
+                + "; logs="
+                + _safe_log_text(str(record.get("stdout_log")))
+                + ", "
+                + _safe_log_text(str(record.get("stderr_log")))
             )
         hosted = state.get("hosted_evidence")
         if isinstance(hosted, dict):
             lines.append(
                 "- exact-candidate hosted evidence: "
                 + json.dumps(
-                    _redact_structure(hosted),
+                    _safe_human_structure(hosted),
                     ensure_ascii=False,
                     sort_keys=True,
                 )
@@ -4861,26 +8791,41 @@ class Autopilot:
         started_path, result_path, stdout_path, stderr_path = _command_evidence_paths(
             log_base
         )
+        intent_path = _command_intent_path(log_base)
         expected_command = _command_sha256(command)
 
-        started = False
-        if started_path.exists():
-            if (
-                started_path.is_symlink()
-                or started_path.stat().st_size > MAX_RESULT_BYTES
-            ):
-                raise StateError("candidate command start evidence is unsafe")
+        def read_optional(path: Path, limit: int, context: str) -> bytes | None:
             try:
-                started_raw = cast(
+                return _read_pinned_file_bytes(
+                    self.repo_root,
+                    path,
+                    limit,
+                    context=context,
+                )
+            except _PinnedFileMissingError:
+                return None
+
+        def read_required(path: Path, limit: int, context: str) -> bytes:
+            try:
+                return _read_pinned_file_bytes(
+                    self.repo_root,
+                    path,
+                    limit,
+                    context=context,
+                )
+            except _PinnedFileMissingError as error:
+                raise StateError(f"{context} is unsafe or unreadable") from error
+
+        def validate_marker(content: bytes, context: str) -> None:
+            try:
+                marker_raw = cast(
                     "object",
                     json.loads(
-                        started_path.read_text(encoding="utf-8"),
+                        content.decode("utf-8"),
                         object_pairs_hook=_reject_duplicate_json_keys,
                     ),
                 )
-                started_document = _mapping(
-                    started_raw, "candidate command start evidence"
-                )
+                marker_document = _mapping(marker_raw, context)
             except (
                 OSError,
                 UnicodeError,
@@ -4888,38 +8833,49 @@ class Autopilot:
                 _DuplicateJSONKeyError,
                 InvalidInputError,
             ) as error:
-                raise StateError(
-                    "candidate command start evidence is malformed"
-                ) from error
+                raise StateError(f"{context} is malformed") from error
             if (
-                set(started_document) != {"command_sha256", "schema_version"}
-                or started_document.get("schema_version") != 1
-                or started_document.get("command_sha256") != expected_command
+                set(marker_document) != {"command_sha256", "schema_version"}
+                or type(marker_document.get("schema_version")) is not int
+                or marker_document.get("schema_version") != 1
+                or marker_document.get("command_sha256") != expected_command
             ):
-                raise StateError("candidate command start evidence is contradictory")
+                raise StateError(f"{context} is contradictory")
+
+        intent_bytes = read_optional(
+            intent_path,
+            MAX_RESULT_BYTES,
+            "candidate command intent evidence",
+        )
+        if intent_bytes is not None:
+            validate_marker(intent_bytes, "candidate command intent evidence")
+
+        started = False
+        started_bytes = read_optional(
+            started_path,
+            MAX_RESULT_BYTES,
+            "candidate command start evidence",
+        )
+        if started_bytes is not None:
+            validate_marker(started_bytes, "candidate command start evidence")
             started = True
 
-        if not result_path.exists():
+        result_bytes = read_optional(
+            result_path,
+            MAX_RESULT_BYTES,
+            "candidate command result evidence",
+        )
+        if result_bytes is None:
             return started, None
-        evidence_paths = (result_path, stdout_path, stderr_path)
-        if any(
-            path.is_symlink()
-            or not path.is_file()
-            or path.stat().st_size > MAX_RESULT_BYTES
-            for path in evidence_paths
-        ):
-            raise StateError("candidate command result evidence is unsafe")
         try:
             result_raw = cast(
                 "object",
                 json.loads(
-                    result_path.read_text(encoding="utf-8"),
+                    result_bytes.decode("utf-8"),
                     object_pairs_hook=_reject_duplicate_json_keys,
                 ),
             )
             result_document = _mapping(result_raw, "candidate command result evidence")
-            stdout = stdout_path.read_text(encoding="utf-8")
-            stderr = stderr_path.read_text(encoding="utf-8")
         except (
             OSError,
             UnicodeError,
@@ -4930,7 +8886,7 @@ class Autopilot:
             raise StateError(
                 "candidate command result evidence is malformed"
             ) from error
-        expected_keys = {
+        common_keys = {
             "command_sha256",
             "interrupted",
             "returncode",
@@ -4939,20 +8895,288 @@ class Autopilot:
             "stdout_sha256",
             "timed_out",
         }
+        schema_version = result_document.get("schema_version")
+        schema_three_keys = {
+            "output_sha256",
+            "stderr_non_whitespace",
+            "stderr_overflow",
+            "stderr_size_bytes",
+            "stdout_non_whitespace",
+            "stdout_overflow",
+            "stdout_size_bytes",
+        }
+        if schema_version == 1:
+            expected_keys = common_keys
+        elif schema_version == 2:
+            expected_keys = common_keys | {"output_sha256"}
+        else:
+            expected_keys = common_keys | schema_three_keys
         returncode = result_document.get("returncode")
         timed_out = result_document.get("timed_out")
         interrupted = result_document.get("interrupted")
         if (
             set(result_document) != expected_keys
-            or result_document.get("schema_version") != 1
+            or type(schema_version) is not int
+            or schema_version not in {1, 2, 3}
             or result_document.get("command_sha256") != expected_command
             or type(returncode) is not int
             or not isinstance(timed_out, bool)
             or not isinstance(interrupted, bool)
-            or result_document.get("stdout_sha256") != sha256_text(stdout)
-            or result_document.get("stderr_sha256") != sha256_text(stderr)
         ):
             raise StateError("candidate command result evidence is contradictory")
+
+        if schema_version == 1:
+            try:
+                visible_stdout = read_required(
+                    stdout_path,
+                    MAX_RESULT_BYTES,
+                    "candidate command result evidence",
+                ).decode("utf-8")
+                visible_stderr = read_required(
+                    stderr_path,
+                    MAX_RESULT_BYTES,
+                    "candidate command result evidence",
+                ).decode("utf-8")
+            except UnicodeError as error:
+                raise StateError(
+                    "candidate command result evidence is malformed"
+                ) from error
+            if result_document.get("stdout_sha256") != sha256_text(
+                visible_stdout
+            ) or result_document.get("stderr_sha256") != sha256_text(visible_stderr):
+                raise StateError("candidate command result evidence is contradictory")
+            stdout = visible_stdout
+            stderr = visible_stderr
+            stdout_overflow = False
+            stderr_overflow = False
+            stdout_size = len(visible_stdout.encode("utf-8"))
+            stderr_size = len(visible_stderr.encode("utf-8"))
+            stdout_non_whitespace = bool(visible_stdout.strip())
+            stderr_non_whitespace = bool(visible_stderr.strip())
+            stdout_hash = cast("str", result_document["stdout_sha256"])
+            stderr_hash = cast("str", result_document["stderr_sha256"])
+        else:
+            output_path = _command_output_path(log_base)
+            try:
+                output_document_bytes = read_required(
+                    output_path,
+                    MAX_COMMAND_OUTPUT_DOCUMENT_BYTES,
+                    "candidate command output evidence",
+                )
+                output_raw = cast(
+                    "object",
+                    json.loads(
+                        output_document_bytes.decode("ascii"),
+                        object_pairs_hook=_reject_duplicate_json_keys,
+                    ),
+                )
+                output_document = _mapping(
+                    output_raw, "candidate command output evidence"
+                )
+            except (
+                UnicodeError,
+                json.JSONDecodeError,
+                _DuplicateJSONKeyError,
+                InvalidInputError,
+            ) as error:
+                raise StateError(
+                    "candidate command output evidence is malformed"
+                ) from error
+            output_schema_version = output_document.get("schema_version")
+            expected_output_keys = (
+                {"schema_version", "stderr_base64", "stdout_base64"}
+                if schema_version == 2
+                else {
+                    "schema_version",
+                    "stderr_base64",
+                    "stderr_non_whitespace",
+                    "stderr_overflow",
+                    "stdout_base64",
+                    "stdout_non_whitespace",
+                    "stdout_overflow",
+                }
+            )
+            if (
+                set(output_document) != expected_output_keys
+                or type(output_schema_version) is not int
+                or output_schema_version != schema_version - 1
+                or result_document.get("output_sha256")
+                != hashlib.sha256(output_document_bytes).hexdigest()
+            ):
+                raise StateError("candidate command output evidence is contradictory")
+            stdout = _decode_command_output(
+                output_document.get("stdout_base64"), stream="stdout"
+            )
+            stderr = _decode_command_output(
+                output_document.get("stderr_base64"), stream="stderr"
+            )
+            if schema_version == 2:
+                stdout_overflow = False
+                stderr_overflow = False
+                stdout_size = len(_escape_terminal_text(stdout).encode("utf-8"))
+                stderr_size = len(_escape_terminal_text(stderr).encode("utf-8"))
+                stdout_non_whitespace = bool(stdout.strip())
+                stderr_non_whitespace = bool(stderr.strip())
+                stdout_hash = cast("str", result_document["stdout_sha256"])
+                stderr_hash = cast("str", result_document["stderr_sha256"])
+                try:
+                    visible_stdout = read_required(
+                        stdout_path,
+                        MAX_COMMAND_LOG_BYTES,
+                        "candidate command result evidence",
+                    ).decode("utf-8")
+                    visible_stderr = read_required(
+                        stderr_path,
+                        MAX_COMMAND_LOG_BYTES,
+                        "candidate command result evidence",
+                    ).decode("utf-8")
+                except UnicodeError as error:
+                    raise StateError(
+                        "candidate command result evidence is malformed"
+                    ) from error
+                if result_document.get("stdout_sha256") != sha256_text(
+                    visible_stdout
+                ) or result_document.get("stderr_sha256") != sha256_text(
+                    visible_stderr
+                ):
+                    raise StateError(
+                        "candidate command result evidence is contradictory"
+                    )
+            else:
+                recorded_stdout_overflow = result_document.get("stdout_overflow")
+                recorded_stderr_overflow = result_document.get("stderr_overflow")
+                recorded_stdout_size = result_document.get("stdout_size_bytes")
+                recorded_stderr_size = result_document.get("stderr_size_bytes")
+                recorded_stdout_non_whitespace = result_document.get(
+                    "stdout_non_whitespace"
+                )
+                recorded_stderr_non_whitespace = result_document.get(
+                    "stderr_non_whitespace"
+                )
+                recorded_stdout_hash = result_document.get("stdout_sha256")
+                recorded_stderr_hash = result_document.get("stderr_sha256")
+                if (
+                    not isinstance(recorded_stdout_overflow, bool)
+                    or not isinstance(recorded_stderr_overflow, bool)
+                    or not isinstance(output_document.get("stdout_overflow"), bool)
+                    or not isinstance(output_document.get("stderr_overflow"), bool)
+                    or not isinstance(
+                        output_document.get("stdout_non_whitespace"), bool
+                    )
+                    or not isinstance(
+                        output_document.get("stderr_non_whitespace"), bool
+                    )
+                    or type(recorded_stdout_size) is not int
+                    or recorded_stdout_size < 0
+                    or type(recorded_stderr_size) is not int
+                    or recorded_stderr_size < 0
+                    or not isinstance(recorded_stdout_non_whitespace, bool)
+                    or not isinstance(recorded_stderr_non_whitespace, bool)
+                    or not isinstance(recorded_stdout_hash, str)
+                    or not isinstance(recorded_stderr_hash, str)
+                    or output_document.get("stdout_overflow")
+                    != recorded_stdout_overflow
+                    or output_document.get("stderr_overflow")
+                    != recorded_stderr_overflow
+                    or output_document.get("stdout_non_whitespace")
+                    != recorded_stdout_non_whitespace
+                    or output_document.get("stderr_non_whitespace")
+                    != recorded_stderr_non_whitespace
+                ):
+                    raise StateError(
+                        "candidate command result evidence is contradictory"
+                    )
+                stdout_overflow = recorded_stdout_overflow
+                stderr_overflow = recorded_stderr_overflow
+                stdout_size = recorded_stdout_size
+                stderr_size = recorded_stderr_size
+                stdout_non_whitespace = recorded_stdout_non_whitespace
+                stderr_non_whitespace = recorded_stderr_non_whitespace
+                stdout_hash = recorded_stdout_hash
+                stderr_hash = recorded_stderr_hash
+                stdout_inspection = _inspect_pinned_human_log(
+                    self.repo_root,
+                    stdout_path,
+                    expected_size=stdout_size,
+                    expected_sha256=stdout_hash,
+                    context="candidate command stdout human evidence",
+                )
+                stderr_inspection = _inspect_pinned_human_log(
+                    self.repo_root,
+                    stderr_path,
+                    expected_size=stderr_size,
+                    expected_sha256=stderr_hash,
+                    context="candidate command stderr human evidence",
+                )
+                stdout_machine_size = len(
+                    stdout.encode("utf-8", errors="surrogateescape")
+                )
+                stderr_machine_size = len(
+                    stderr.encode("utf-8", errors="surrogateescape")
+                )
+                if (
+                    (stdout_overflow and stdout_machine_size != MAX_RESULT_BYTES)
+                    or (stderr_overflow and stderr_machine_size != MAX_RESULT_BYTES)
+                    or (stdout_overflow and stdout_size <= MAX_RESULT_BYTES)
+                    or (stderr_overflow and stderr_size <= MAX_RESULT_BYTES)
+                    or stdout_non_whitespace != stdout_inspection.has_non_whitespace
+                    or stderr_non_whitespace != stderr_inspection.has_non_whitespace
+                ):
+                    raise StateError(
+                        "candidate command output evidence is contradictory"
+                    )
+                if not stdout_overflow:
+                    try:
+                        visible_stdout = read_required(
+                            stdout_path,
+                            MAX_COMMAND_LOG_BYTES,
+                            "candidate command result evidence",
+                        ).decode("utf-8")
+                    except UnicodeError as error:
+                        raise StateError(
+                            "candidate command result evidence is malformed"
+                        ) from error
+                    if visible_stdout != _escape_terminal_text(stdout):
+                        raise StateError(
+                            "candidate command result evidence is contradictory"
+                        )
+                if not stderr_overflow:
+                    try:
+                        visible_stderr = read_required(
+                            stderr_path,
+                            MAX_COMMAND_LOG_BYTES,
+                            "candidate command result evidence",
+                        ).decode("utf-8")
+                    except UnicodeError as error:
+                        raise StateError(
+                            "candidate command result evidence is malformed"
+                        ) from error
+                    if visible_stderr != _escape_terminal_text(stderr):
+                        raise StateError(
+                            "candidate command result evidence is contradictory"
+                        )
+            expected_sidecar = _command_output_document(
+                stdout,
+                stderr,
+                stdout_overflow=stdout_overflow,
+                stderr_overflow=stderr_overflow,
+                stdout_non_whitespace=stdout_non_whitespace,
+                stderr_non_whitespace=stderr_non_whitespace,
+                schema_version=output_schema_version,
+            )
+            if (
+                output_document_bytes != expected_sidecar
+                or stdout != _redact(stdout)
+                or stderr != _redact(stderr)
+                or (
+                    schema_version == 2
+                    and (
+                        visible_stdout != _escape_terminal_text(stdout)
+                        or visible_stderr != _escape_terminal_text(stderr)
+                    )
+                )
+            ):
+                raise StateError("candidate command output evidence is contradictory")
         return started, CommandResult(
             command=tuple(command),
             returncode=returncode,
@@ -4961,6 +9185,14 @@ class Autopilot:
             duration_seconds=0.0,
             timed_out=timed_out,
             interrupted=interrupted,
+            stdout_overflow=stdout_overflow,
+            stderr_overflow=stderr_overflow,
+            human_stdout_sha256=stdout_hash,
+            human_stderr_sha256=stderr_hash,
+            human_stdout_size=stdout_size,
+            human_stderr_size=stderr_size,
+            human_stdout_non_whitespace=stdout_non_whitespace,
+            human_stderr_non_whitespace=stderr_non_whitespace,
         )
 
     @staticmethod
@@ -5832,6 +10064,114 @@ class Autopilot:
             "workflow": document.get("workflowName"),
         }
 
+    def _validate_hosted_failure_log_records(
+        self,
+        state: Mapping[str, object],
+        evidence: Mapping[str, object],
+    ) -> None:
+        """Authenticate every complete hosted log before resume or repair."""
+        raw_records = evidence.get("failure_logs")
+        if raw_records is None:
+            return
+        if not isinstance(raw_records, list) or not raw_records:
+            raise StateError("hosted failure log evidence is malformed")
+        run_directory = self._run_directory(state)
+        logs_directory = run_directory / "logs"
+        repository = _state_github_repository(state)
+        run_id = evidence.get("run_id")
+        if type(run_id) is not int or run_id <= 0:
+            raise StateError("hosted failure log run identity is malformed")
+        for index, raw_record in enumerate(raw_records):
+            record = _mapping(raw_record, f"hosted failure_logs[{index}]")
+            job_id = record.get("database_id")
+            retrieval = record.get("retrieval")
+            stdout_raw = record.get("stdout_log")
+            if (
+                type(job_id) is not int
+                or job_id <= 0
+                or retrieval not in {"gh-run-view", "github-api"}
+                or not isinstance(stdout_raw, str)
+            ):
+                raise StateError("hosted failure log evidence is malformed")
+            stdout_relative = _relative_path(
+                stdout_raw, f"hosted failure_logs[{index}].stdout_log"
+            )
+            stdout_path = _path_from_repo(self.repo_root, stdout_relative)
+            suffix = ".stdout.log"
+            if not stdout_path.name.endswith(suffix):
+                raise StateError("hosted failure log path is unsafe")
+            log_base = stdout_path.with_name(stdout_path.name[: -len(suffix)])
+            if log_base.parent != logs_directory:
+                raise StateError("hosted failure log path is unsafe")
+            command_raw = record.get("command")
+            if command_raw is not None:
+                try:
+                    command = _command_tuple(
+                        command_raw, f"hosted failure_logs[{index}].command"
+                    )
+                except InvalidInputError as error:
+                    raise StateError(
+                        "hosted failure log command is malformed"
+                    ) from error
+            elif retrieval == "gh-run-view":
+                command = (
+                    *self.config.tools["gh"],
+                    "run",
+                    "view",
+                    str(run_id),
+                    "--job",
+                    str(job_id),
+                    "--log",
+                    "--repo",
+                    repository.selector,
+                )
+            else:
+                command = (
+                    *self.config.tools["gh"],
+                    "api",
+                    "--hostname",
+                    repository.host,
+                    f"repos/{repository.name_with_owner}/actions/jobs/{job_id}/logs",
+                )
+            started, durable = self._read_command_evidence(log_base, command)
+            if (
+                not started
+                or durable is None
+                or not durable.process_succeeded
+                or not durable.human_logs_complete
+                or not durable.human_stdout_non_whitespace
+            ):
+                raise StateError("hosted failure log evidence is incomplete")
+            expected_paths = {
+                "result_log": _command_evidence_paths(log_base)[1],
+                "started_log": _command_evidence_paths(log_base)[0],
+                "stderr_log": _command_evidence_paths(log_base)[3],
+                "stdout_log": _command_evidence_paths(log_base)[2],
+            }
+            for key, expected_path in expected_paths.items():
+                value = record.get(key)
+                if (
+                    not isinstance(value, str)
+                    or _path_from_repo(
+                        self.repo_root,
+                        _relative_path(value, f"hosted failure_logs[{index}].{key}"),
+                    )
+                    != expected_path
+                ):
+                    raise StateError("hosted failure log paths are contradictory")
+            if (
+                record.get("stdout_sha256") != durable.human_stdout_sha256
+                or record.get("stderr_sha256") != durable.human_stderr_sha256
+            ):
+                raise StateError("hosted failure log hashes are contradictory")
+            if "stdout_size_bytes" in record and (
+                record.get("stdout_size_bytes") != durable.human_stdout_size
+                or record.get("stderr_size_bytes") != durable.human_stderr_size
+                or record.get("machine_stdout_overflow") != durable.stdout_overflow
+                or record.get("machine_stderr_overflow") != durable.stderr_overflow
+            ):
+                raise StateError("hosted failure log metadata is contradictory")
+
     def _collect_hosted_failure_logs(
         self,
         state: dict[str, object],
@@ -5861,6 +10201,15 @@ class Autopilot:
         milestone = cast("str", state["current_milestone"])
         run_directory = self._run_directory(state)
         records: list[dict[str, object]] = []
+
+        def usable_complete_log(result: CommandResult | None) -> bool:
+            return bool(
+                result is not None
+                and result.process_succeeded
+                and result.human_logs_complete
+                and result.human_stdout_non_whitespace
+            )
+
         for name in job_names:
             selected_job = jobs.get(name)
             if selected_job is None:
@@ -5869,33 +10218,41 @@ class Autopilot:
             if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
                 raise StateError("hosted failure log job ID is malformed")
             log_name = f"{milestone}-candidate-{attempt}-hosted-job-{job_id}"
-            result = self._gh_run(
-                (
-                    "run",
-                    "view",
-                    str(run_id),
-                    "--job",
-                    str(job_id),
-                    "--log",
-                ),
-                state,
-                log_name,
-            )
+            try:
+                result: CommandResult | None = self._gh_run(
+                    (
+                        "run",
+                        "view",
+                        str(run_id),
+                        "--job",
+                        str(job_id),
+                        "--log",
+                    ),
+                    state,
+                    log_name,
+                )
+            except StateError:
+                result = None
             retrieval = "gh-run-view"
             selected_log_name = log_name
-            if not result.succeeded or not result.stdout.strip():
+            if not usable_complete_log(result):
                 repository = _state_github_repository(state)
                 api_log_name = f"{log_name}-api"
                 endpoint = (
                     f"repos/{repository.name_with_owner}/actions/jobs/{job_id}/logs"
                 )
-                api_result = self._gh_api_run(
-                    (endpoint,),
-                    state,
-                    api_log_name,
-                )
-                if not api_result.succeeded or not api_result.stdout.strip():
-                    detail = api_result.stderr.strip() or result.stderr.strip()
+                try:
+                    api_result: CommandResult | None = self._gh_api_run(
+                        (endpoint,),
+                        state,
+                        api_log_name,
+                    )
+                except StateError:
+                    api_result = None
+                if not usable_complete_log(api_result):
+                    detail = (
+                        api_result.stderr.strip() if api_result is not None else ""
+                    ) or (result.stderr.strip() if result is not None else "")
                     if not detail:
                         detail = (
                             "GitHub returned an empty hosted failure log from both "
@@ -5905,6 +10262,8 @@ class Autopilot:
                 result = api_result
                 retrieval = "github-api"
                 selected_log_name = api_log_name
+            if result is None:  # pragma: no cover - failure helper raises above.
+                raise StateError("hosted log retrieval produced no result")
             log_base = run_directory / "logs" / selected_log_name
             started_path, result_path, stdout_path, stderr_path = (
                 _command_evidence_paths(log_base)
@@ -5915,17 +10274,33 @@ class Autopilot:
                     path.relative_to(self.repo_root).as_posix()
                 ).as_posix()
 
+            started, durable = self._read_command_evidence(log_base, result.command)
+            if (
+                not started
+                or durable is None
+                or not durable.process_succeeded
+                or not durable.human_logs_complete
+                or not durable.human_stdout_non_whitespace
+            ):
+                self._candidate_publication_failure(
+                    state, "complete hosted failure log evidence is unavailable"
+                )
             records.append(
                 {
+                    "command": list(result.command),
                     "database_id": job_id,
                     "job": name,
+                    "machine_stderr_overflow": durable.stderr_overflow,
+                    "machine_stdout_overflow": durable.stdout_overflow,
                     "retrieval": retrieval,
                     "result_log": relative(result_path),
                     "started_log": relative(started_path),
                     "stderr_log": relative(stderr_path),
-                    "stderr_sha256": sha256_text(result.stderr),
+                    "stderr_sha256": durable.human_stderr_sha256,
+                    "stderr_size_bytes": durable.human_stderr_size,
                     "stdout_log": relative(stdout_path),
-                    "stdout_sha256": sha256_text(result.stdout),
+                    "stdout_sha256": durable.human_stdout_sha256,
+                    "stdout_size_bytes": durable.human_stdout_size,
                 }
             )
         updated = dict(evidence)
@@ -5941,23 +10316,26 @@ class Autopilot:
         reason: str,
     ) -> None:
         state["hosted_evidence"] = dict(evidence)
-        state["failed_output_path"] = self._write_failure_input(
-            state,
-            reason
-            + (
+        self._validate_hosted_failure_log_records(state, evidence)
+        failure = _FailureDocumentBuilder()
+        failure.append(_safe_log_text(reason))
+        if evidence.get("failure_logs"):
+            failure.append(
                 "\nComplete redacted failed-job logs are stored at the safe "
                 "repository-relative paths in hosted evidence.failure_logs. "
                 "Inspect every listed stdout and stderr log before editing."
-                if evidence.get("failure_logs")
-                else ""
             )
-            + "\nHosted evidence:\n"
-            + json.dumps(
-                _redact_structure(dict(evidence)),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            ),
+        failure.append("\nHosted evidence:\n")
+        encoder = json.JSONEncoder(
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        for chunk in encoder.iterencode(_safe_human_structure(dict(evidence))):
+            failure.append(chunk)
+        state["failed_output_path"] = self._write_failure_input(
+            state,
+            failure.render(),
         )
         state["review_findings"] = []
         self._schedule_repair(state, reason)
@@ -6662,13 +11040,14 @@ class Autopilot:
 
     def _write_pr_body(self, state: Mapping[str, object], stop_reason: str) -> Path:
         completed = _state_list(state, "completed_commits")
+        safe = _safe_log_text
         lines = [
             "## PyAhead autonomous milestone run",
             "",
-            f"- Branch: `{state['branch']}`",
-            f"- Base commit: `{state['base_commit']}`",
-            f"- Current phase: `{state['current_phase']}`",
-            f"- Stop reason: {stop_reason}",
+            f"- Branch: `{safe(str(state['branch']))}`",
+            f"- Base commit: `{safe(str(state['base_commit']))}`",
+            f"- Current phase: `{safe(str(state['current_phase']))}`",
+            f"- Stop reason: {safe(stop_reason)}",
             "",
             "## Completed milestones",
             "",
@@ -6677,7 +11056,8 @@ class Autopilot:
             for item in completed:
                 record = _mapping(item, "completed commit")
                 lines.append(
-                    f"- {record.get('milestone')}: `{record.get('commit')}` — "
+                    f"- {safe(str(record.get('milestone')))}: "
+                    f"`{safe(str(record.get('commit')))}` — "
                     "independent verification passed and reviewer returned `pass`."
                 )
                 verification = record.get("verification")
@@ -6685,32 +11065,37 @@ class Autopilot:
                     for result_item in verification:
                         result = _mapping(result_item, "completed verification")
                         command = result.get("command")
+                        rendered_command = shlex.join(
+                            _redacted_command(
+                                _string_tuple(command, "verification command")
+                            )
+                        )
                         lines.append(
                             "  - `"
-                            + shlex.join(
-                                _redacted_command(
-                                    _string_tuple(command, "verification command")
-                                )
-                            )
+                            + safe(rendered_command)
                             + "`: "
                             + (
                                 "passed"
                                 if result.get("succeeded") is True
                                 else "failed"
                             )
-                            + f" (returncode={result.get('returncode')}, "
-                            + f"timeout={result.get('timed_out')}, "
-                            + f"signal={result.get('signal')})"
+                            + " (returncode="
+                            + safe(str(result.get("returncode")))
+                            + ", timeout="
+                            + safe(str(result.get("timed_out")))
+                            + ", signal="
+                            + safe(str(result.get("signal")))
+                            + ")"
                         )
                 hosted = record.get("hosted_evidence")
                 if isinstance(hosted, dict):
                     lines.append(
                         "  - exact candidate `"
-                        + str(hosted.get("candidate_sha"))
+                        + safe(str(hosted.get("candidate_sha")))
                         + "`: hosted workflow "
-                        + str(hosted.get("conclusion"))
+                        + safe(str(hosted.get("conclusion")))
                         + " ("
-                        + str(hosted.get("url"))
+                        + safe(str(hosted.get("url")))
                         + ")"
                     )
         else:
@@ -6724,7 +11109,9 @@ class Autopilot:
             ]
         )
         body_path = self._run_directory(state) / "pr-body.md"
-        _atomic_write_bytes(body_path, "\n".join(lines).encode("utf-8"))
+        _atomic_write_bytes(
+            body_path, "\n".join(lines).encode("utf-8"), root=self.repo_root
+        )
         return body_path
 
     def _update_pr_body(
@@ -6817,7 +11204,7 @@ def _positive_timeout(value: str) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the documented command interface and stable exit-code help."""
-    parser = argparse.ArgumentParser(
+    parser = _SafeArgumentParser(
         prog="autopilot.py",
         description=(
             "Run PyAhead design milestones through isolated implementation, "
@@ -7001,7 +11388,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return int(ExitCode.INTERRUPTED)
     except AutopilotError as error:
-        sys.stderr.write(f"autopilot: {error}\n")
+        sys.stderr.write(f"autopilot: {_escape_terminal_text(str(error))}\n")
         return int(error.exit_code)
 
 

@@ -2,8 +2,8 @@
 
 from collections import Counter
 from itertools import groupby
-from unicodedata import category as unicode_category
 
+from pyahead._human_text import escape_terminal_text
 from pyahead.model import (
     AnalysisInference,
     Diagnostic,
@@ -14,32 +14,16 @@ from pyahead.model import (
     ScanReport,
 )
 
-_UNICODE_BMP_MAX = 0xFFFF
-
-
-def _artifact_text(value: str) -> str:
-    """Escape controls that could manipulate a terminal or split a CI log."""
-    rendered: list[str] = []
-    for character in value:
-        codepoint = ord(character)
-        category = unicode_category(character)
-        if category in {"Cc", "Cf", "Cs", "Zl", "Zp"}:
-            escape = (
-                f"\\u{codepoint:04x}"
-                if codepoint <= _UNICODE_BMP_MAX
-                else f"\\U{codepoint:08x}"
-            )
-            rendered.append(escape)
-        else:
-            rendered.append(character)
-    return "".join(rendered)
-
 
 def _evidence_text(evidence: tuple[tuple[str, EvidenceValue], ...]) -> str:
     def render(value: EvidenceValue) -> str:
-        return f"[{', '.join(value)}]" if isinstance(value, tuple) else value
+        if isinstance(value, tuple):
+            return f"[{', '.join(escape_terminal_text(item) for item in value)}]"
+        return escape_terminal_text(value)
 
-    return "; ".join(f"{key}={render(value)}" for key, value in evidence)
+    return "; ".join(
+        f"{escape_terminal_text(key)}={render(value)}" for key, value in evidence
+    )
 
 
 def _observed_warning_line(
@@ -50,7 +34,7 @@ def _observed_warning_line(
     if observation.location is None:
         where = "external or unavailable location"
     else:
-        path = _artifact_text(observation.location.path.as_posix())
+        path = escape_terminal_text(observation.location.path.as_posix())
         where = f"{path}:{observation.location.line}"
     occurrence = (
         f"; {observation.occurrences} occurrences"
@@ -58,24 +42,31 @@ def _observed_warning_line(
         else ""
     )
     stale = (
-        f"; stale for {observation.source_commit[:12]} (scan {source_commit[:12]})"
+        "; stale for "
+        f"{escape_terminal_text(observation.source_commit[:12])} "
+        f"(scan {escape_terminal_text(source_commit[:12])})"
         if observation.freshness.value == "stale"
         else "; current commit"
     )
     relationships = ""
     if observation.relationships:
         rendered_relationships = ", ".join(
-            f"{relationship.rule_id}={relationship.kind.value} "
-            f"({', '.join(relationship.reasons)})"
+            (
+                f"{escape_terminal_text(relationship.rule_id)}="
+                f"{relationship.kind.value} "
+                "("
+                + ", ".join(escape_terminal_text(item) for item in relationship.reasons)
+                + ")"
+            )
             for relationship in observation.relationships
         )
         relationships = f"; relationships: {rendered_relationships}"
     return (
-        f"{observation.observation_id[:12]} "
-        f"{_artifact_text(observation.provider)} {where} "
-        f"[{_artifact_text(observation.category)}]: "
-        f"{_artifact_text(observation.message)} "
-        f"(Python {_artifact_text(observation.environment.python_version)}"
+        f"{escape_terminal_text(observation.observation_id[:12])} "
+        f"{escape_terminal_text(observation.provider)} {where} "
+        f"[{escape_terminal_text(observation.category)}]: "
+        f"{escape_terminal_text(observation.message)} "
+        f"(Python {escape_terminal_text(observation.environment.python_version)}"
         f"{occurrence}{stale}"
         f"{relationships})"
     )
@@ -83,7 +74,9 @@ def _observed_warning_line(
 
 def _artifact_line(artifact: EvidenceArtifact, *, source_commit: str) -> str:
     stale = (
-        f"stale for {artifact.source_commit[:12]} (scan {source_commit[:12]})"
+        "stale for "
+        f"{escape_terminal_text(artifact.source_commit[:12])} "
+        f"(scan {escape_terminal_text(source_commit[:12])})"
         if artifact.freshness.value == "stale"
         else "current commit"
     )
@@ -96,10 +89,10 @@ def _artifact_line(artifact: EvidenceArtifact, *, source_commit: str) -> str:
     else:
         completeness = "warnings incomplete; capture completeness unproven"
     return (
-        f"  {_artifact_text(artifact.path.as_posix())}: "
-        f"{_artifact_text(artifact.provider)} "
-        f"{_artifact_text(artifact.provider_version)}; "
-        f"Python {_artifact_text(artifact.environment.python_version)}; "
+        f"  {escape_terminal_text(artifact.path.as_posix())}: "
+        f"{escape_terminal_text(artifact.provider)} "
+        f"{escape_terminal_text(artifact.provider_version)}; "
+        f"Python {escape_terminal_text(artifact.environment.python_version)}; "
         f"{_plural(artifact.tests_collected, 'test')} collected; "
         f"{_plural(artifact.warning_count, 'warning')} captured; "
         f"pytest exit code {artifact.exit_code}; {completeness}; {stale}"
@@ -113,7 +106,7 @@ def _finding_lines(
     source_commit: str | None = None,
 ) -> list[str]:
     start = finding.location.region.start
-    path = finding.location.path.as_posix()
+    path = escape_terminal_text(finding.location.path.as_posix())
     timeline = "; ".join(
         f"{event.kind.value} in {event.python} ({event.certainty.value})"
         for event in finding.events
@@ -137,11 +130,12 @@ def _finding_lines(
     annotation = f"; {'; '.join(annotations)}" if annotations else ""
     lines = [
         (
-            f"  {finding.rule_id}  {path}:{start.line}:{start.column}  "
-            f"{finding.subject} ({finding.impact.value}; "
+            f"  {escape_terminal_text(finding.rule_id)}  "
+            f"{path}:{start.line}:{start.column}  "
+            f"{escape_terminal_text(finding.subject)} ({finding.impact.value}; "
             f"{finding.match_confidence.value} confidence{annotation})"
         ),
-        f"    {finding.title}",
+        f"    {escape_terminal_text(finding.title)}",
         (
             "    Inferred evidence: "
             if source_commit is not None
@@ -155,7 +149,7 @@ def _finding_lines(
         ),
         f"    States: {states}",
         f"    Timeline: {timeline}",
-        f"    Guidance: {finding.remediation.summary}",
+        f"    Guidance: {escape_terminal_text(finding.remediation.summary)}",
     ]
     if finding.removal_unscheduled:
         lines.insert(
@@ -164,19 +158,27 @@ def _finding_lines(
         )
     if finding.remediation.documentation_url is not None:
         lines.append(
-            f"    Remediation documentation: {finding.remediation.documentation_url}"
+            "    Remediation documentation: "
+            f"{escape_terminal_text(finding.remediation.documentation_url)}"
         )
     if finding.remediation.automation is not None:
         automation = finding.remediation.automation
         lines.append(
-            f"    Automation metadata: {automation.tool.value} {automation.rule} "
+            f"    Automation metadata: {automation.tool.value} "
+            f"{escape_terminal_text(automation.rule)} "
             "(not invoked)"
         )
     if finding.suppression is not None:
         if finding.suppression.reason is not None:
-            lines.append(f"    Suppression reason: {finding.suppression.reason}")
+            lines.append(
+                "    Suppression reason: "
+                f"{escape_terminal_text(finding.suppression.reason)}"
+            )
         if finding.suppression.pattern is not None:
-            lines.append(f"    Suppression pattern: {finding.suppression.pattern}")
+            lines.append(
+                "    Suppression pattern: "
+                f"{escape_terminal_text(finding.suppression.pattern)}"
+            )
     if source_commit is not None and observations:
         lines.append("    Observed evidence:")
         lines.extend(
@@ -188,7 +190,9 @@ def _finding_lines(
             for observation in observations
         )
     lines.extend(
-        f"    Source: {source.title} — {source.url}" for source in finding.sources
+        f"    Source: {escape_terminal_text(source.title)} — "
+        f"{escape_terminal_text(source.url)}"
+        for source in finding.sources
     )
     return lines
 
@@ -198,15 +202,27 @@ def _diagnostic_lines(diagnostic: Diagnostic) -> list[str]:
         where = ""
     else:
         start = diagnostic.location.region.start
-        where = f" {diagnostic.location.path.as_posix()}:{start.line}:{start.column}"
-    return [f"  {diagnostic.code}{where}: {diagnostic.message}"]
+        where = (
+            f" {escape_terminal_text(diagnostic.location.path.as_posix())}:"
+            f"{start.line}:{start.column}"
+        )
+    return [
+        (
+            f"  {escape_terminal_text(diagnostic.code)}{where}: "
+            f"{escape_terminal_text(diagnostic.message)}"
+        )
+    ]
 
 
 def _inference_lines(inference: AnalysisInference) -> list[str]:
     start = inference.location.region.start
-    path = inference.location.path.as_posix()
+    path = escape_terminal_text(inference.location.path.as_posix())
     return [
-        f"  {inference.code} {path}:{start.line}:{start.column}: {inference.message}",
+        (
+            f"  {escape_terminal_text(inference.code)} "
+            f"{path}:{start.line}:{start.column}: "
+            f"{escape_terminal_text(inference.message)}"
+        ),
         f"    Evidence: {_evidence_text(inference.evidence)}",
     ]
 
@@ -297,12 +313,15 @@ def _observed_evidence_summary(report: ScanReport) -> str:
 def render_text(report: ScanReport) -> str:
     """Render a stable, colour-free human report."""
     lines = [
-        f"PyAhead {report.tool_version}",
+        f"PyAhead {escape_terminal_text(report.tool_version)}",
         (
             f"Policy: Python {report.policy.baseline_python} through "
             f"{report.policy.horizon_python}"
         ),
-        (f"Registry: {report.registry_release} ({report.registry_revision[:12]})"),
+        (
+            f"Registry: {escape_terminal_text(report.registry_release)} "
+            f"({escape_terminal_text(report.registry_revision[:12])})"
+        ),
     ]
     provenance = report.policy_provenance
     if (
@@ -311,13 +330,13 @@ def render_text(report: ScanReport) -> str:
     ):
         lines.append(
             "Policy provenance: "
-            f"baseline={provenance.baseline_python}; "
-            f"horizon={provenance.horizon_python}"
+            f"baseline={escape_terminal_text(provenance.baseline_python)}; "
+            f"horizon={escape_terminal_text(provenance.horizon_python)}"
         )
         if provenance.requires_python is not None:
             lines.append(
                 "Requires-Python declaration evaluated at minor granularity: "
-                f"{provenance.requires_python}"
+                f"{escape_terminal_text(provenance.requires_python)}"
             )
     lines.append("")
 

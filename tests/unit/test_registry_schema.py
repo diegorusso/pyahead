@@ -9,6 +9,7 @@ import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from pyahead._human_text import escape_terminal_text
 from pyahead.model import Registry
 from pyahead.registry.presentation import (
     render_registry_list,
@@ -718,6 +719,45 @@ def test_schema_supports_all_event_and_matcher_metadata_for_explanation() -> Non
     assert "Aliases: CPY9001" in explanation
     assert registry.find_rule("CPY9001") is rule
     assert registry.find_rule("CPY9999") is None
+
+
+def test_registry_human_output_escapes_author_controlled_text() -> None:
+    """Registry text cannot inject terminal structure or control sequences."""
+    hostile = "line\nINJECT\x1b[2J\r\u202e\u2028\u2029tail"
+    document = _rule_document()
+    document["title"] = hostile
+    document["summary"] = hostile
+    document["matchers"] = [
+        {
+            "kind": "call-shape",
+            "qualified_name": "targetpkg.call",
+            "literal_arguments": [{"position": 0, "equals": hostile}],
+        }
+    ]
+    remediation = cast("dict[str, object]", document["remediation"])
+    remediation["summary"] = hostile
+    sources = cast("list[dict[str, object]]", document["sources"])
+    sources[0]["title"] = hostile
+
+    rule = parse_rule(document, "CPY0001.yaml")
+    registry = Registry(
+        release=hostile,
+        revision="a" * 64,
+        retired_ids=(),
+        rules=(rule,),
+    )
+
+    output = render_registry_list(registry) + render_rule_explanation(registry, rule)
+
+    assert escape_terminal_text(hostile) in output
+    assert f"position[0]='{escape_terminal_text(hostile)}'" in output
+    assert hostile not in output
+    assert "\nINJECT" not in output
+    for control in ("\r", "\x1b", "\u202e", "\u2028", "\u2029"):
+        assert control not in output
+    assert rule.title == hostile
+    assert rule.summary == hostile
+    assert rule.sources[0].title == hostile
 
 
 def test_schema_generator_main_writes_all_documents(tmp_path: Path) -> None:

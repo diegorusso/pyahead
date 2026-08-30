@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 REAL_GIT_ENV = "PYAHEAD_FAKE_GIT_REAL"
+GLOBAL_CONFIG_ENV = "PYAHEAD_FAKE_GIT_GLOBAL_CONFIG"
 FAIL_PUSH_ENV = "PYAHEAD_FAKE_GIT_FAIL_PUSH"
 RACE_CANDIDATE_PUSH_ENV = "PYAHEAD_FAKE_GIT_RACE_CANDIDATE_PUSH"
 RACE_EXACT_CANDIDATE_PUSH_ENV = "PYAHEAD_FAKE_GIT_RACE_EXACT_CANDIDATE_PUSH"
@@ -38,6 +39,9 @@ def _record(arguments: list[str]) -> None:
 def main(arguments: list[str] | None = None) -> int:
     """Forward Git, except for one sentinel-controlled push failure."""
     argv = list(sys.argv[1:] if arguments is None else arguments)
+    git_environment = dict(os.environ)
+    git_environment["GIT_CONFIG_GLOBAL"] = os.environ[GLOBAL_CONFIG_ENV]
+    git_environment["GIT_CONFIG_NOSYSTEM"] = "1"
     if argv and argv[0] in {"fsck", "push"}:
         _record(argv)
     sentinel_value = os.environ.get(FAIL_PUSH_ENV)
@@ -67,10 +71,12 @@ def main(arguments: list[str] | None = None) -> int:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                env=git_environment,
             ).stdout.strip()
             subprocess.run(
                 [real_git, "push", remote_path or argv[-2], f"{parent}:{remote_ref}"],
                 check=True,
+                env=git_environment,
             )
     if (
         argv
@@ -85,6 +91,7 @@ def main(arguments: list[str] | None = None) -> int:
             subprocess.run(
                 [real_git, "push", remote_path or argv[-2], f"{source}:{remote_ref}"],
                 check=True,
+                env=git_environment,
             )
     forwarded = list(argv)
     if forwarded and forwarded[0] in {"fetch", "ls-remote", "push"} and remote_path:
@@ -92,7 +99,7 @@ def main(arguments: list[str] | None = None) -> int:
             remote_path if item in {"origin", LOGICAL_REMOTE} else item
             for item in forwarded
         ]
-    result = subprocess.run([real_git, *forwarded], check=False)
+    result = subprocess.run([real_git, *forwarded], check=False, env=git_environment)
     return result.returncode
 
 

@@ -58,6 +58,7 @@ from packaging.utils import (
 )
 from packaging.version import InvalidVersion, Version
 
+from pyahead._human_text import escape_terminal_text
 from pyahead._rooted_reader import (
     RootedReadTooLargeError,
     read_rooted_bytes,
@@ -6828,64 +6829,91 @@ def render_dependency_text(report: DependencyReport) -> str:
             f"timeout {report.timeout_seconds:g}s)"
         )
     ]
-    lines.extend(
-        (
-            f"Metadata {item.artifact_id}: {item.name}=={item.version}; "
-            f"Core Metadata {item.metadata_version}; "
-            f"Requires-Python {item.requires_python or 'unspecified'}; "
-            f"{item.path.as_posix()}!{item.metadata_path}; sha256={item.sha256}; "
-            f"dynamic={','.join(item.dynamic) or 'none'}"
+    for item in report.metadata:
+        dynamic = ",".join(escape_terminal_text(value) for value in item.dynamic)
+        lines.append(
+            f"Metadata {escape_terminal_text(item.artifact_id)}: "
+            f"{escape_terminal_text(item.name)}=="
+            f"{escape_terminal_text(item.version)}; "
+            f"Core Metadata {escape_terminal_text(item.metadata_version)}; "
+            "Requires-Python "
+            f"{escape_terminal_text(item.requires_python or 'unspecified')}; "
+            f"{escape_terminal_text(item.path.as_posix())}!"
+            f"{escape_terminal_text(item.metadata_path)}; "
+            f"sha256={escape_terminal_text(item.sha256)}; "
+            "dynamic="
+            f"{dynamic or 'none'}"
         )
-        for item in report.metadata
-    )
     lines.append(
         f"Resolver control: requested={str(report.resolve).lower()}; "
-        f"adapter={report.resolver}; index={report.index_url or 'disabled'}"
+        f"adapter={escape_terminal_text(report.resolver)}; "
+        f"index={escape_terminal_text(report.index_url or 'disabled')}"
     )
     for result in report.targets:
         lines.append(
-            f"Target {result.target.name}: Python {result.target.python_full_version}; "
-            f"{result.target.sys_platform}/{result.target.platform_machine}"
+            f"Target {escape_terminal_text(result.target.name)}: "
+            f"Python {escape_terminal_text(result.target.python_full_version)}; "
+            f"{escape_terminal_text(result.target.sys_platform)}/"
+            f"{escape_terminal_text(result.target.platform_machine)}"
         )
         for requirement in result.declared_requirements:
             state = "verified" if requirement.verified else "unverified"
             lines.append(
-                f"  Declared {requirement.requirement}: "
+                f"  Declared {escape_terminal_text(requirement.requirement)}: "
                 f"{'active' if requirement.applies else 'inactive'}; {state}"
             )
-            lines.append(f"    {requirement.reason}")
+            lines.append(f"    {escape_terminal_text(requirement.reason)}")
         for transitive in result.transitive_requirements:
             state = "verified" if transitive.verified else "unverified"
-            lines.append(
-                f"  Transitive {transitive.requirement}: {state}; required by "
-                f"{', '.join(transitive.required_by)}"
+            required_by = ", ".join(
+                escape_terminal_text(item) for item in transitive.required_by
             )
-            lines.append(f"    {transitive.reason}")
+            lines.append(
+                f"  Transitive {escape_terminal_text(transitive.requirement)}: "
+                f"{state}; required by {required_by}"
+            )
+            lines.append(f"    {escape_terminal_text(transitive.reason)}")
         for assessment in result.assessments:
             lines.append(
-                f"  {assessment.package}=={assessment.version}: "
+                f"  {escape_terminal_text(assessment.package)}=="
+                f"{escape_terminal_text(assessment.version)}: "
                 f"{assessment.status.value}; Requires-Python "
                 f"{assessment.requires_python_status.value}; artifact "
                 f"{assessment.artifact_availability.value}"
             )
-            lines.append(f"    {assessment.reason}")
-            lines.append(f"    Metadata: {', '.join(assessment.metadata_used)}")
+            lines.append(f"    {escape_terminal_text(assessment.reason)}")
+            lines.append(
+                "    Metadata: "
+                + ", ".join(
+                    escape_terminal_text(item) for item in assessment.metadata_used
+                )
+            )
             lines.append(
                 "    Applicable requirements: "
-                + (", ".join(assessment.applicable_requirements) or "none")
+                + (
+                    ", ".join(
+                        escape_terminal_text(item)
+                        for item in assessment.applicable_requirements
+                    )
+                    or "none"
+                )
             )
         resolution = result.resolution
         lines.append(
             f"  Resolver: {resolution.status.value}; "
             f"complete={str(resolution.complete).lower()}; "
-            f"version={resolution.resolver_version or 'unavailable'}"
+            "version="
+            f"{escape_terminal_text(resolution.resolver_version or 'unavailable')}"
         )
-        lines.append(f"    {resolution.reason}")
+        lines.append(f"    {escape_terminal_text(resolution.reason)}")
         lines.extend(
-            f"    {package.name}=={package.version}" for package in resolution.packages
+            f"    {escape_terminal_text(package.name)}=="
+            f"{escape_terminal_text(package.version)}"
+            for package in resolution.packages
         )
     lines.extend(
-        f"Incomplete metadata {issue.path.as_posix()}: {issue.message}"
+        f"Incomplete metadata {escape_terminal_text(issue.path.as_posix())}: "
+        f"{escape_terminal_text(issue.message)}"
         for issue in report.metadata_issues
     )
     return "\n".join(lines) + "\n"
