@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -386,6 +386,88 @@ def test_corpus_worksheet_identity_rejects_a_different_result(
     result.write_text('{"repositories":[{}],"schema_version":1}\n', encoding="utf-8")
     with pytest.raises(corpus.CorpusError, match="does not match"):
         corpus._verify_worksheet_identity(result, worksheet)
+
+
+def _hostile_repositories() -> list[dict[str, Any]]:
+    """One corpus repository whose file name and subject are live formulas."""
+    return [
+        {
+            "repository_url": "https://example.invalid/hostile",
+            "commit": "0" * 40,
+            "findings": [
+                {
+                    "fingerprint": "a" * 64,
+                    "rule_id": "CPY0001",
+                    "subject": "@SUM(1,1)",
+                    "match": {"kind": "=danger()"},
+                    "location": {
+                        "path": "=cmd|'/c calc'!A1.py",
+                        "region": {"start": {"line": 1}},
+                    },
+                }
+            ],
+        }
+    ]
+
+
+def test_corpus_worksheet_neutralizes_repository_controlled_formulas() -> None:
+    """A hostile scanned filename cannot become a live spreadsheet formula."""
+    rows = corpus._worksheet_rows(
+        _hostile_repositories(),
+        sample_size=1,
+        corpus_result_sha256="b" * 64,
+    )
+
+    assert rows[0]["path"] == "'=cmd|'/c calc'!A1.py"
+    assert rows[0]["subject"] == "'@SUM(1,1)"
+    assert rows[0]["match_kind"] == "'=danger()"
+    rendered = corpus._render_worksheet(rows, result_digest="b" * 64)
+    for line in rendered.splitlines()[1:]:
+        assert not line.startswith(("=", "+", "@"))
+
+
+def test_corpus_worksheet_identity_rejects_an_unescaped_formula(
+    tmp_path: Path,
+) -> None:
+    """Stripping the apostrophe from a repository value is refused on read-back."""
+    result = tmp_path / "corpus-results.json"
+    worksheet = tmp_path / "false-positive-review.csv"
+    result.write_text('{"repositories":[],"schema_version":1}\n', encoding="utf-8")
+    result_digest = corpus._sha256_path(result)
+    rows = corpus._worksheet_rows(
+        _hostile_repositories(),
+        sample_size=1,
+        corpus_result_sha256=result_digest,
+    )
+    clean = corpus._render_worksheet(rows, result_digest=result_digest)
+    worksheet.write_text(clean, encoding="utf-8")
+
+    corpus._verify_worksheet_identity(result, worksheet)
+
+    worksheet.write_text(clean.replace("'=cmd", "=cmd", 1), encoding="utf-8")
+    with pytest.raises(corpus.CorpusError, match="unescaped spreadsheet formula"):
+        corpus._verify_worksheet_identity(result, worksheet)
+
+
+def test_corpus_worksheet_keeps_reviewer_prose_free_text(tmp_path: Path) -> None:
+    """Reviewer columns are human prose, so a leading dash is not a formula."""
+    result = tmp_path / "corpus-results.json"
+    worksheet = tmp_path / "false-positive-review.csv"
+    result.write_text('{"repositories":[],"schema_version":1}\n', encoding="utf-8")
+    result_digest = corpus._sha256_path(result)
+    rows = corpus._worksheet_rows(
+        _hostile_repositories(),
+        sample_size=1,
+        corpus_result_sha256=result_digest,
+    )
+    rows[0]["notes"] = "-- not a real finding, see issue 123"
+    rows[0]["reviewer"] = "@diegorusso"
+    worksheet.write_text(
+        corpus._render_worksheet(rows, result_digest=result_digest),
+        encoding="utf-8",
+    )
+
+    corpus._verify_worksheet_identity(result, worksheet)
 
 
 def test_ci_declares_exact_host_and_artifact_job_matrix() -> None:

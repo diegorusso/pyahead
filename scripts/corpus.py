@@ -22,6 +22,10 @@ from pyahead._human_text import SafeArgumentParser, escape_terminal_text
 _CORPUS_SIZE = 100
 _MAX_REPORT_BYTES = 64 * 1024 * 1024
 _ACCEPTED_SCAN_EXITS = frozenset({0, 3})
+_SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+_REPOSITORY_DERIVED_FIELDS = ("match_kind", "path", "subject")
+
 _WORKSHEET_FIELDS = (
     "row_kind",
     "corpus_result_sha256",
@@ -483,6 +487,19 @@ def _sample_rank(repository: dict[str, Any], finding: dict[str, Any]) -> str:
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
+def _spreadsheet_safe(value: str) -> str:
+    """Neutralize a value a spreadsheet would otherwise evaluate as a formula.
+
+    Repository-derived worksheet columns carry attacker-chosen text: a scanned
+    file may legally be named `=cmd|...` or `-x`. The review worksheet is opened
+    in a spreadsheet, so such a value is quoted with a leading apostrophe rather
+    than left to execute.
+    """
+    if value.startswith(_SPREADSHEET_FORMULA_PREFIXES):
+        return f"'{value}"
+    return value
+
+
 def _worksheet_rows(
     repositories: list[dict[str, Any]],
     *,
@@ -506,9 +523,9 @@ def _worksheet_rows(
                 "commit": repository["commit"],
                 "corpus_result_sha256": corpus_result_sha256,
                 "fingerprint": finding["fingerprint"],
-                "match_kind": finding["match"]["kind"],
+                "match_kind": str(finding["match"]["kind"]),
                 "notes": "",
-                "path": location["path"],
+                "path": str(location["path"]),
                 "regression_fixture": "",
                 "repository_url": repository["repository_url"],
                 "reviewer": "",
@@ -516,9 +533,11 @@ def _worksheet_rows(
                 "rule_id": finding["rule_id"],
                 "sample_rank": sample_rank,
                 "start_line": start["line"],
-                "subject": finding["subject"],
+                "subject": str(finding["subject"]),
             }
         )
+        for field in _REPOSITORY_DERIVED_FIELDS:
+            rows[-1][field] = _spreadsheet_safe(rows[-1][field])
     return rows
 
 
@@ -620,6 +639,17 @@ def _verify_worksheet_identity(result_path: Path, worksheet_path: Path) -> None:
         if row["row_kind"] != "finding" or row["corpus_result_sha256"] != expected:
             message = "worksheet finding is not bound to the corpus result"
             raise CorpusError(message)
+    for line, row in enumerate(rows, start=2):
+        for field in _REPOSITORY_DERIVED_FIELDS:
+            value = row.get(field)
+            if isinstance(value, str) and value.startswith(
+                _SPREADSHEET_FORMULA_PREFIXES
+            ):
+                message = (
+                    f"worksheet line {line} has an unescaped spreadsheet formula "
+                    f"in {field}; repository-derived values keep their apostrophe"
+                )
+                raise CorpusError(message)
 
 
 def _require_manifest(path: Path | None) -> Path:

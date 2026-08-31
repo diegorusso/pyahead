@@ -71,6 +71,14 @@ stabilizing.
   operating system. CI creates a fresh cache, populates it through the online
   public-PyPI smokes, and then reuses it for offline evidence.
 
+### Removed
+
+- The milestone controller and its development automation: `scripts/autopilot.py`,
+  `automation/`, `docs/autopilot.md`, and the offline controller test suite. The
+  source distribution no longer ships the `automation/` tree. Milestone rules,
+  protected paths, quality-policy tables, and the Gate C approval requirement are
+  retained as prose in `AGENTS.md` and `docs/design.md`.
+
 ### Security
 
 - Documented offline scan, no-telemetry, no-target-execution, filesystem, and
@@ -83,6 +91,10 @@ stabilizing.
   non-reparse directory handles and fails closed if those APIs are unavailable.
 - Corpus review worksheets carry and verify the exact result digest so a
   partially published pair cannot be mistaken for matching Gate C evidence.
+- Corpus review worksheets quote repository-derived `path`, `subject`, and
+  `match_kind` values so a scanned file name cannot become a live formula in a
+  reviewer's spreadsheet, and reject an unescaped one when a reviewed worksheet
+  is read back. Reviewer prose columns stay free text.
 - Release smoke children no longer inherit ambient installer configuration,
   caches, proxies, Python environments, or credentials, and retained failure
   diagnostics redact common credential forms before truncation.
