@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 from typing import cast
 
+import pytest
 from jsonschema import validate
 
+import pyahead.reporting.sarif as sarif_module
 from pyahead.analysis import ScanRequest, scan
 from pyahead.model import ExitCode, ScanReport
 from pyahead.reporting import render_sarif
@@ -105,7 +107,7 @@ def test_sarif_validates_and_uses_stable_ci_identity_fields(
     assert document["version"] == "2.1.0"
     assert run["columnKind"] == "unicodeCodePoints"
     assert driver["name"] == "pyahead"
-    assert driver["semanticVersion"] == "0.1.0-alpha.2"
+    assert driver["semanticVersion"] == "0.2.0"
     assert [rule["id"] for rule in rules] == ["CPY0001"]
     assert result["ruleId"] == "CPY0001"
     assert result["level"] == "error"
@@ -331,3 +333,25 @@ def test_sarif_retains_version_guard_inference_provenance(tmp_path: Path) -> Non
         },
         "kind": "version-guard",
     }
+
+
+@pytest.mark.parametrize(
+    ("pep440", "expected"),
+    [
+        ("0.2.0", "0.2.0"),
+        ("1.0.0", "1.0.0"),
+        ("0.1.0a2", "0.1.0-alpha.2"),
+        ("0.3.0b1", "0.3.0-beta.1"),
+        ("1.0.0rc4", "1.0.0-rc.4"),
+    ],
+)
+def test_sarif_semantic_version_translates_pep440_prereleases(
+    pep440: str,
+    expected: str,
+) -> None:
+    """SARIF requires strict SemVer, so PEP 440 prerelease spellings convert.
+
+    The driver assertion above only covers whichever form the project version
+    currently takes, so the translation is pinned here independently of it.
+    """
+    assert sarif_module._semantic_version(pep440) == expected  # noqa: SLF001

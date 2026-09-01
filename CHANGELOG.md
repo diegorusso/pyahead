@@ -6,6 +6,13 @@ stabilizing.
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-01
+
+First public-alpha release. It carries the evidence providers that
+`docs/design.md` §4.3 assigns to `0.2`: opt-in pytest deprecation-warning
+evidence and opt-in dependency metadata and resolver evidence. No `0.1.0`
+release was published; the `0.1.0a2` candidate is superseded by this version.
+
 ### Added
 
 - A closed static-report JSON Schema, packaged schema resource, `py.typed`
