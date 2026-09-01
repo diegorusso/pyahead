@@ -498,6 +498,10 @@ def test_gitignore_symlink_is_never_followed(
     assert [item.relative_path.as_posix() for item in result.files] == ["keep.py"]
 
 
+@pytest.mark.skipif(
+    not rooted_reader_module.supports_rooted_descriptor_reads(),
+    reason="requires POSIX directory-relative descriptor reads",
+)
 @pytest.mark.parametrize("replacement_kind", ["fifo", "symlink", "regular"])
 def test_gitignore_entry_replacement_fails_closed_without_blocking(
     tmp_path: Path,
@@ -565,6 +569,10 @@ def test_oversized_gitignore_is_a_bounded_incomplete_read(tmp_path: Path) -> Non
         discover_python_files(tmp_path, ())
 
 
+@pytest.mark.skipif(
+    not rooted_reader_module.supports_rooted_descriptor_reads(),
+    reason="requires POSIX directory-relative descriptor reads",
+)
 def test_growing_gitignore_is_bounded_after_descriptor_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
