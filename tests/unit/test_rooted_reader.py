@@ -291,6 +291,40 @@ def test_windows_leaf_reparse_swap_fails_closed(
     assert swapped is True
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows directory handles")
+def test_windows_missing_leaf_raises_file_not_found(tmp_path: Path) -> None:
+    """A native Windows read of an absent leaf raises FileNotFoundError."""
+    root = tmp_path / "root"
+    root.mkdir()
+
+    with pytest.raises(FileNotFoundError):
+        read_rooted_bytes(root, Path("missing.toml"), 64)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows directory handles")
+def test_windows_missing_intermediate_directory_raises_file_not_found(
+    tmp_path: Path,
+) -> None:
+    """An absent native Windows ancestor directory also raises FileNotFoundError."""
+    root = tmp_path / "root"
+    root.mkdir()
+
+    with pytest.raises(FileNotFoundError):
+        read_rooted_bytes(root, Path("missing-parent/input.toml"), 64)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows directory handles")
+def test_windows_directory_leaf_does_not_surface_bare_ntstatus(tmp_path: Path) -> None:
+    """A directory given as the leaf fails closed without a raw NTSTATUS message."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "leaf").mkdir()
+
+    with pytest.raises(OSError, match="real regular file") as captured:
+        read_rooted_bytes(root, Path("leaf"), 64)
+    assert "NTSTATUS" not in str(captured.value)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows alternate data streams")
 @pytest.mark.parametrize("path", [Path("input:stream"), Path("parent:stream/input")])
 def test_windows_alternate_data_streams_are_rejected_in_every_component(

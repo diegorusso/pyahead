@@ -79,6 +79,14 @@ stabilizing.
   protected paths, quality-policy tables, and the Gate C approval requirement are
   retained as prose in `AGENTS.md` and `docs/design.md`.
 
+### Fixed
+
+- Root-bounded Windows input now reports absent, access-denied, and
+  non-directory paths as the corresponding standard `FileNotFoundError`,
+  `PermissionError`, and `NotADirectoryError`, instead of a generic NTSTATUS
+  `OSError`. Optional configuration, baselines, and evidence are no longer
+  misreported as unreadable when they are simply absent.
+
 ### Security
 
 - Documented offline scan, no-telemetry, no-target-execution, filesystem, and

@@ -49,6 +49,12 @@ _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
 _FILE_RENAME_INFORMATION_CLASS = 10
 _FILE_DISPOSITION_INFO_CLASS = 4
 _STATUS_OBJECT_NAME_COLLISION = 0xC0000035
+_STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034
+_STATUS_OBJECT_PATH_NOT_FOUND = 0xC000003A
+_STATUS_NO_SUCH_FILE = 0xC000000F
+_STATUS_ACCESS_DENIED = 0xC0000022
+_STATUS_SHARING_VIOLATION = 0xC0000043
+_STATUS_NOT_A_DIRECTORY = 0xC0000103
 _TEMPORARY_ATTEMPTS = 128
 _WRITE_CHUNK_BYTES = 1024 * 1024
 _READ_CHUNK_BYTES = 1024 * 1024
@@ -148,6 +154,33 @@ class _NtStatusError(OSError):
     def __init__(self, operation: str, status: int) -> None:
         self.status = status & 0xFFFFFFFF
         super().__init__(f"{operation} failed with NTSTATUS 0x{self.status:08x}")
+
+
+class _NtStatusFileNotFoundError(_NtStatusError, FileNotFoundError):
+    """An NTSTATUS failure whose absent-path meaning matches ``FileNotFoundError``."""
+
+
+class _NtStatusPermissionError(_NtStatusError, PermissionError):
+    """An NTSTATUS failure whose access-denied meaning matches ``PermissionError``."""
+
+
+class _NtStatusNotADirectoryError(_NtStatusError, NotADirectoryError):
+    """An NTSTATUS failure whose meaning matches ``NotADirectoryError``."""
+
+
+_STATUS_ERROR_TYPES: dict[int, type[_NtStatusError]] = {
+    _STATUS_OBJECT_NAME_NOT_FOUND: _NtStatusFileNotFoundError,
+    _STATUS_OBJECT_PATH_NOT_FOUND: _NtStatusFileNotFoundError,
+    _STATUS_NO_SUCH_FILE: _NtStatusFileNotFoundError,
+    _STATUS_ACCESS_DENIED: _NtStatusPermissionError,
+    _STATUS_SHARING_VIOLATION: _NtStatusPermissionError,
+    _STATUS_NOT_A_DIRECTORY: _NtStatusNotADirectoryError,
+}
+
+
+def _nt_status_error(operation: str, status: int) -> _NtStatusError:
+    error_type = _STATUS_ERROR_TYPES.get(status & 0xFFFFFFFF, _NtStatusError)
+    return error_type(operation, status)
 
 
 def _function(
@@ -391,7 +424,7 @@ def _nt_create_relative(
     del name_buffer
     if status < 0:
         operation = "NtCreateFile"
-        raise _NtStatusError(operation, status)
+        raise _nt_status_error(operation, status)
     if handle.value is None:
         message = "NtCreateFile returned an invalid handle"
         raise OSError(message)
@@ -562,7 +595,7 @@ def _replace_windows_handle(
     )
     if status < 0:
         operation = "NtSetInformationFile(FileRenameInformation)"
-        raise _NtStatusError(operation, status)
+        raise _nt_status_error(operation, status)
 
 
 def _delete_windows_handle(api: _WindowsAPI, handle: int) -> None:

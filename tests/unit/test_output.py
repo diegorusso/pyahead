@@ -9,8 +9,12 @@ from typing import cast
 
 import pytest
 
+import pyahead._rooted_reader as rooted_reader_module
 import pyahead._windows_output as windows_output_module
+import pyahead.config as config_module
 import pyahead.output as output_module
+from pyahead.baseline import load_baseline
+from pyahead.model import ConfigurationError
 from pyahead.output import OutputError, write_text_atomic
 
 
@@ -1087,6 +1091,143 @@ def test_windows_nt_relative_open_success_and_failures() -> None:
     oversized = "x" * (windows_output_module._MAX_UNICODE_STRING_BYTES // 2 + 1)  # noqa: SLF001
     with pytest.raises(OSError, match="component is too long"):
         windows_output_module._unicode_string(oversized)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_type"),
+    [
+        (
+            windows_output_module._STATUS_OBJECT_NAME_NOT_FOUND,  # noqa: SLF001
+            FileNotFoundError,
+        ),
+        (
+            windows_output_module._STATUS_OBJECT_PATH_NOT_FOUND,  # noqa: SLF001
+            FileNotFoundError,
+        ),
+        (windows_output_module._STATUS_NO_SUCH_FILE, FileNotFoundError),  # noqa: SLF001
+        (windows_output_module._STATUS_ACCESS_DENIED, PermissionError),  # noqa: SLF001
+        (windows_output_module._STATUS_SHARING_VIOLATION, PermissionError),  # noqa: SLF001
+        (windows_output_module._STATUS_NOT_A_DIRECTORY, NotADirectoryError),  # noqa: SLF001
+    ],
+)
+def test_nt_status_error_factory_maps_known_statuses_to_python_exceptions(
+    status: int,
+    expected_type: type[OSError],
+) -> None:
+    """Known NTSTATUS failure codes translate to the matching Python exception."""
+    operation = "NtCreateFile"
+
+    error = windows_output_module._nt_status_error(operation, status)  # noqa: SLF001
+
+    assert isinstance(error, expected_type)
+    assert isinstance(error, windows_output_module._NtStatusError)  # noqa: SLF001
+    assert isinstance(error, OSError)
+    assert error.status == status
+    assert str(error) == f"{operation} failed with NTSTATUS 0x{status:08x}"
+
+
+def test_nt_status_error_factory_falls_back_for_an_unmapped_status() -> None:
+    """An unmapped NTSTATUS still raises the plain, undifferentiated error."""
+    operation = "NtCreateFile"
+    status = 0xC0000005  # STATUS_ACCESS_VIOLATION, deliberately unmapped
+
+    error = windows_output_module._nt_status_error(operation, status)  # noqa: SLF001
+
+    assert type(error) is windows_output_module._NtStatusError  # noqa: SLF001
+    assert not isinstance(error, FileNotFoundError)
+    assert not isinstance(error, PermissionError)
+    assert not isinstance(error, NotADirectoryError)
+    assert error.status == status
+    assert str(error) == f"{operation} failed with NTSTATUS 0x{status:08x}"
+
+
+def test_windows_rooted_reader_translates_missing_leaf_to_file_not_found(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing Windows leaf surfaces as FileNotFoundError, not a bare NTSTATUS."""
+    status = windows_output_module._STATUS_OBJECT_NAME_NOT_FOUND  # noqa: SLF001
+
+    def missing_leaf(*_arguments: object) -> int:
+        return status - 0x1_0000_0000
+
+    opener = cast("windows_output_module._CFunction", missing_leaf)  # noqa: SLF001
+    api = _fake_windows_api(nt_create_file=opener)
+    chain = windows_output_module._WindowsDirectoryChain(handles=(11,))  # noqa: SLF001
+    monkeypatch.setattr(windows_output_module, "_windows_api", lambda: api)
+    monkeypatch.setattr(
+        windows_output_module,
+        "_open_directory_chain",
+        lambda *_arguments, **_keywords: chain,
+    )
+
+    with pytest.raises(FileNotFoundError, match="NTSTATUS 0xc0000034"):
+        windows_output_module.read_windows_rooted_file(
+            tmp_path,
+            Path("input.toml"),
+            limit=64,
+        )
+
+
+def _force_windows_rooted_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    api: windows_output_module._WindowsAPI,
+) -> None:
+    """Route the shared reader through a fake Windows API on any host platform."""
+    fake_os = SimpleNamespace(**{**vars(os), "name": "nt"})
+    monkeypatch.setattr(rooted_reader_module, "os", fake_os)
+    monkeypatch.setattr(
+        rooted_reader_module, "supports_rooted_descriptor_reads", lambda: False
+    )
+    monkeypatch.setattr(windows_output_module, "_windows_api", lambda: api)
+    monkeypatch.setattr(
+        windows_output_module,
+        "_open_directory_chain",
+        lambda *_arguments, **_keywords: windows_output_module._WindowsDirectoryChain(  # noqa: SLF001
+            handles=(11,)
+        ),
+    )
+
+
+def test_windows_config_consumer_reports_missing_optional_pyproject_as_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing optional Windows pyproject.toml resolves to None, not a read error."""
+    status = windows_output_module._STATUS_OBJECT_NAME_NOT_FOUND  # noqa: SLF001
+
+    def missing_leaf(*_arguments: object) -> int:
+        return status - 0x1_0000_0000
+
+    opener = cast("windows_output_module._CFunction", missing_leaf)  # noqa: SLF001
+    _force_windows_rooted_reads(monkeypatch, _fake_windows_api(nt_create_file=opener))
+
+    assert (
+        config_module._read_toml(  # noqa: SLF001
+            tmp_path / "pyproject.toml",
+            tmp_path,
+            "pyproject.toml",
+            missing_ok=True,
+        )
+        is None
+    )
+
+
+def test_windows_baseline_consumer_reports_missing_file_as_does_not_exist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing Windows baseline is reported as absent, not unreadable."""
+    status = windows_output_module._STATUS_OBJECT_NAME_NOT_FOUND  # noqa: SLF001
+
+    def missing_leaf(*_arguments: object) -> int:
+        return status - 0x1_0000_0000
+
+    opener = cast("windows_output_module._CFunction", missing_leaf)  # noqa: SLF001
+    _force_windows_rooted_reads(monkeypatch, _fake_windows_api(nt_create_file=opener))
+
+    with pytest.raises(ConfigurationError, match="does not exist"):
+        load_baseline(Path("baseline.json"), tmp_path)
 
 
 def test_windows_temporary_open_retries_only_name_collisions(
