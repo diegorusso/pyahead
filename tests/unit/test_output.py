@@ -1189,6 +1189,63 @@ def _force_windows_rooted_reads(
     )
 
 
+def test_windows_replace_handle_translates_ntstatus_failure_to_permission_error() -> (
+    None
+):
+    """A rejected Windows rename reports the mapped exception, not a bare NTSTATUS."""
+    status = windows_output_module._STATUS_ACCESS_DENIED  # noqa: SLF001
+
+    def denied(*_arguments: object) -> int:
+        return status - 0x1_0000_0000
+
+    function = cast("windows_output_module._CFunction", denied)  # noqa: SLF001
+    api = _fake_windows_api(nt_set_information=function)
+
+    with pytest.raises(PermissionError, match="NTSTATUS 0xc0000022"):
+        windows_output_module._replace_windows_handle(  # noqa: SLF001
+            api,
+            temporary_handle=1,
+            parent_handle=2,
+            destination_name="report.json",
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_type"),
+    [
+        (windows_output_module._STATUS_ACCESS_DENIED, PermissionError),  # noqa: SLF001
+        (windows_output_module._STATUS_NOT_A_DIRECTORY, NotADirectoryError),  # noqa: SLF001
+    ],
+)
+def test_windows_rooted_reader_translates_leaf_open_failures_to_python_exceptions(
+    status: int,
+    expected_type: type[OSError],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected Windows leaf open surfaces the mapped exception, not a bare status."""
+
+    def rejected_leaf(*_arguments: object) -> int:
+        return status - 0x1_0000_0000
+
+    opener = cast("windows_output_module._CFunction", rejected_leaf)  # noqa: SLF001
+    api = _fake_windows_api(nt_create_file=opener)
+    chain = windows_output_module._WindowsDirectoryChain(handles=(11,))  # noqa: SLF001
+    monkeypatch.setattr(windows_output_module, "_windows_api", lambda: api)
+    monkeypatch.setattr(
+        windows_output_module,
+        "_open_directory_chain",
+        lambda *_arguments, **_keywords: chain,
+    )
+
+    with pytest.raises(expected_type, match=f"NTSTATUS 0x{status:08x}"):
+        windows_output_module.read_windows_rooted_file(
+            tmp_path,
+            Path("input.toml"),
+            limit=64,
+        )
+
+
 def test_windows_config_consumer_reports_missing_optional_pyproject_as_none(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
