@@ -337,6 +337,7 @@ pyahead/
 │   ├── contributing.md
 │   ├── releasing.md
 │   ├── corpus-review.md
+│   ├── pypi-validation.md           # repo-internal PyPI top-1000 validation harness
 │   ├── evidence/gate-c.md
 │   └── schema/                      # public report, evidence, and registry schemas
 ├── src/
@@ -390,7 +391,11 @@ pyahead/
 ├── scripts/
 │   ├── benchmark.py                 # performance-budget harness
 │   ├── corpus.py                    # Gate C corpus acquisition
-│   └── install_smoke.py             # wheel/sdist install verification
+│   ├── install_smoke.py             # wheel/sdist install verification
+│   ├── pypi_corpus.py               # PyPI top-1000 manifest and acquisition
+│   ├── pypi_probe.py                # target-interpreter probe payload
+│   ├── pypi_validate.py             # provision, scan, and adjudicate
+│   └── pypi_report.py               # aggregate accuracy report and worksheet
 ├── CHANGELOG.md
 ├── LICENSE
 ├── README.md
@@ -1537,6 +1542,13 @@ The target-interpreter probe can:
 - capture warnings and failures.
 
 Probe results must state coverage. “Tests passed” is not equivalent to universal compatibility.
+
+The `scripts/pypi_*.py` PyPI top-1000 validation harness (see
+[`pypi-validation.md`](pypi-validation.md)) also runs target-interpreter
+probes, but it is repo-internal precision validation, not this shipped `0.2`
+provider: it never emits an `evidence-v1` artifact, is not wired to `pyahead
+check --evidence`, and exists only to adjudicate PyAhead's own findings
+against real interpreters.
 
 ---
 

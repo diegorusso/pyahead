@@ -44,3 +44,8 @@ and record the exact verification results.
 Public-alpha releases follow [`releasing.md`](releasing.md). Corpus and
 false-positive work must follow [`corpus-review.md`](corpus-review.md); never
 commit acquired checkouts or expanded source-derived review data.
+
+Large-scale precision validation against the PyPI top-1000, with per-finding
+runtime adjudication, follows [`pypi-validation.md`](pypi-validation.md);
+like the 100-repository corpus, never commit its acquired manifest,
+wheelhouse, or work directory.

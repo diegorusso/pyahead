@@ -8,3 +8,11 @@ build/
 dist/
 *.egg-info/
 benchmark-results.json
+
+# PyPI validation harness (docs/pypi-validation.md): acquired manifest,
+# wheelhouse, and work directory are local acquisition metadata, never committed.
+/work/pypi-manifest.json
+/work/pypi-wheelhouse/
+/work/pypi-validate/
+/work/pypi-report.json
+/work/pypi-disagreements.csv

@@ -158,6 +158,7 @@ pyahead explain CPY0001
 - [Security and privacy](docs/security-and-privacy.md)
 - [Performance budgets](docs/usage.md#performance)
 - [100-repository corpus and false-positive review](docs/corpus-review.md)
+- [PyPI top-1000 precision validation](docs/pypi-validation.md)
 - [Release process](docs/releasing.md)
 - [Changelog](CHANGELOG.md)
 - [Product and technical design](docs/design.md)

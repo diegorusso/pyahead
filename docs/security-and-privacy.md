@@ -199,7 +199,10 @@ The following M6 operations can access a network outside `pyahead check`:
 - package installation when an installer resolves PyAhead dependencies;
 - `uv sync`, `uv build`, or publication when required artifacts are not cached;
 - operator-owned Git acquisition of public corpus repositories;
-- explicit release publication to a package index or Git hosting service.
+- explicit release publication to a package index or Git hosting service;
+- operator-owned `scripts/pypi_corpus.py acquire`, which fetches the PyPI
+  top-1000 ranking snapshot and one artifact per package over HTTPS (see
+  [Repo-internal PyPI validation](#repo-internal-pypi-validation)).
 
 The M8 `pyahead dependencies` resolver can also access its explicitly configured
 package index, plus artifact or redirect hosts selected by that index, only when
@@ -298,6 +301,32 @@ Only public repositories whose licenses and hosting terms permit the planned
 review should enter the corpus. Do not add private, embargoed, credentialed, or
 personal-data-focused repositories. Reviewer names and maintainer-consent
 evidence belong in separately access-controlled Gate C records, not corpus JSON.
+
+## Repo-internal PyPI validation
+
+`scripts/pypi_validate.py run` is the one tool in this repository that
+installs and imports arbitrary third-party code, deliberately crossing the
+[default scan boundary](#default-scan-boundary) that every other command
+(including the corpus runner above) upholds. It is a repo-internal precision
+validation harness under `scripts/`, not a shipped feature, requires the
+operator to pass an explicit `--execute-third-party-code` flag, and runs
+probes under `bwrap --unshare-net --unshare-pid --die-with-parent`, with
+`/tmp`, `/run`, and `HOME` all private to the sandbox and a child environment
+built from an explicit allowlist rather than inherited wholesale (falling
+back to `RLIMIT_AS`/`RLIMIT_CPU`/`RLIMIT_NPROC`/`RLIMIT_FSIZE`-only isolation
+when `bwrap` is unavailable, with the isolation mode actually used recorded
+in the result). Under `bwrap`, the sandbox never binds the operator's home
+directory or the rest of the host filesystem - only a fixed set of base
+system directories plus the specific extra paths a command actually needs
+(the wheelhouse, the target package's own venv, and so on) are visible, so
+target code cannot read credentials or other files outside those paths
+regardless of what the invoking account could otherwise read. The
+`rlimit-only` fallback has no filesystem isolation at all, so still run this
+harness under a dedicated account with no credentials worth protecting on
+the same filesystem. See
+[`pypi-validation.md`](pypi-validation.md) for the full protocol, isolation
+details, and the closed verdict vocabulary this boundary crossing exists to
+support.
 
 ## Supply chain and releases
 
