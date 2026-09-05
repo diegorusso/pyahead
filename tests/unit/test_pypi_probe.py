@@ -16,6 +16,13 @@ from typing import Any
 
 import pytest
 
+if sys.platform != "linux":  # pragma: no cover - CI platform guard
+    pytest.skip(
+        "the PyPI validation harness targets Linux: its isolation depends on "
+        "bwrap, and RLIMIT_AS is not dependably enforceable elsewhere",
+        allow_module_level=True,
+    )
+
 from scripts import pypi_probe
 
 _SCRIPT = Path(pypi_probe.__file__).resolve()

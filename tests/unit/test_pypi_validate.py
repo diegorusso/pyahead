@@ -8,12 +8,20 @@ import argparse
 import base64
 import hashlib
 import json
+import sys
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 from packaging.tags import cpython_tags
+
+if sys.platform != "linux":  # pragma: no cover - CI platform guard
+    pytest.skip(
+        "the PyPI validation harness targets Linux: its isolation depends on "
+        "bwrap, and RLIMIT_AS is not dependably enforceable elsewhere",
+        allow_module_level=True,
+    )
 
 from scripts import pypi_validate
 

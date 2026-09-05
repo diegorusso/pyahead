@@ -7,6 +7,16 @@ the shipped `0.2` compatibility-probe provider described in
 [`design.md`](design.md) §17.5 — see that section for the product feature
 this harness must not be confused with.
 
+The harness runs on Linux only. Its isolation depends on `bwrap`, which needs
+Linux namespaces, and `RLIMIT_AS` is not dependably enforceable elsewhere —
+on macOS setting it makes CPython fail to allocate, so every probe returns
+`probe-crashed`. The `tests/unit/test_pypi_probe.py`,
+`tests/unit/test_pypi_validate.py`, and
+`tests/integration/test_pypi_validation.py` modules skip at import on other
+platforms, before `scripts/pypi_validate.py` can import the POSIX-only
+`resource` module. Every other command in this repository remains
+cross-platform.
+
 ## The oracle: C1/C2 per-finding adjudication
 
 A static finding is a claim, not a fact. Each high-confidence finding asserts

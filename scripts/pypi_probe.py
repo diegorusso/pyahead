@@ -35,9 +35,7 @@ if TYPE_CHECKING:
 _resource: ModuleType | None
 try:
     import resource as _resource
-except (
-    ImportError
-):  # pragma: no cover - POSIX-only guard; this harness targets Linux/macOS.
+except ImportError:  # pragma: no cover - POSIX-only guard; this harness targets Linux.
     _resource = None
 
 _SCHEMA_VERSION = 1

@@ -431,13 +431,16 @@ def test_render_and_verify_worksheet_identity_round_trip(tmp_path: Path) -> None
     package = {"rank": 1, "name": "pkg1", "version": "1.0.0"}
     finding = _finding(fingerprint="f1", adjudication_status="refuted-binding")
     rows = [pypi_report._finding_row(package, finding)]
-    result_text = json.dumps({"schema_version": 1}) + "\n"
+    # Write the exact bytes that are hashed. `write_text` applies newline
+    # translation, so on Windows it would store "\r\n" while the digest covered
+    # "\n"; production writes through `_write_atomic`, which passes newline="".
+    result_bytes = (json.dumps({"schema_version": 1}) + "\n").encode()
     result_path = tmp_path / "report.json"
-    result_path.write_text(result_text, encoding="utf-8")
-    digest = hashlib.sha256(result_text.encode()).hexdigest()
+    result_path.write_bytes(result_bytes)
+    digest = hashlib.sha256(result_bytes).hexdigest()
     worksheet_path = tmp_path / "worksheet.csv"
-    worksheet_path.write_text(
-        pypi_report._render_worksheet(rows, result_digest=digest), encoding="utf-8"
+    worksheet_path.write_bytes(
+        pypi_report._render_worksheet(rows, result_digest=digest).encode()
     )
     pypi_report._verify_worksheet_identity(result_path, worksheet_path)
 
