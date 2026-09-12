@@ -48,6 +48,16 @@ _MANIFEST_FIELDS = (
     "sha256",
     "version",
 )
+# A ranked project whose current release has neither an sdist nor a wheel any
+# supported interpreter on this host can install (a Windows-only extension,
+# say) cannot be part of a Linux sweep at all. Acquisition records it under
+# the manifest's `unresolved` list with one of these closed reasons instead
+# of aborting the whole corpus, so `packages` plus `unresolved` always
+# account for every one of the 1000 ranks; downstream tooling operates on
+# `packages` only and the evidence record must name every unresolved entry.
+_UNRESOLVED_FIELDS = ("name", "rank", "reason", "version")
+_NO_INSTALLABLE_ARTIFACT = "no-installable-artifact"
+_UNRESOLVED_REASONS = frozenset({_NO_INSTALLABLE_ARTIFACT})
 
 HttpGet = Callable[[str, float], bytes]
 Clock = Callable[[], datetime]
@@ -55,6 +65,22 @@ Clock = Callable[[], datetime]
 
 class PypiCorpusError(RuntimeError):
     """Raised when the PyPI corpus manifest or wheelhouse would be untrustworthy."""
+
+
+class NoInstallableArtifactError(PypiCorpusError):
+    """Raised when a release has no sdist and no wheel this host could install.
+
+    This is the one acquisition failure that is a property of the package on
+    this platform rather than of the network or the metadata, so `_acquire`
+    records it as an `unresolved` manifest entry and carries on; every other
+    `PypiCorpusError` still aborts the acquisition.
+    """
+
+    def __init__(self, *, name: str, version: str) -> None:
+        """Name the release so the manifest can record what was left out and why."""
+        super().__init__(f"PyPI metadata for {name} {version} has no wheel or sdist")
+        self.name = name
+        self.version = version
 
 
 @dataclass(frozen=True)
@@ -281,8 +307,7 @@ def _select_release_file(document: object, *, name: str) -> dict[str, Any]:
         ),
     )
     if not candidates:
-        message = f"PyPI metadata for {name} {version} has no wheel or sdist"
-        raise PypiCorpusError(message)
+        raise NoInstallableArtifactError(name=name, version=version)
     chosen = candidates[0]
     filename = _safe_filename(chosen.get("filename"), field=f"{name} filename")
     url = _https_url(chosen.get("url"), field=f"{name} file url")
@@ -400,20 +425,39 @@ def _acquire(
     wheelhouse.mkdir(parents=True, exist_ok=True)
 
     entries: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
     seen_filenames: set[str] = set()
     for rank, name in ranked_names:
-        entry, artifact = _acquire_package(
-            rank,
-            name,
-            timeout=timeout,
-            hooks=hooks,
-            seen_filenames=seen_filenames,
-        )
+        try:
+            entry, artifact = _acquire_package(
+                rank,
+                name,
+                timeout=timeout,
+                hooks=hooks,
+                seen_filenames=seen_filenames,
+            )
+        except NoInstallableArtifactError as error:
+            hooks.progress(
+                f"[{rank}/{_CORPUS_SIZE}] unresolved {error.name} {error.version}: "
+                f"{_NO_INSTALLABLE_ARTIFACT}"
+            )
+            unresolved.append(
+                {
+                    "name": error.name,
+                    "rank": rank,
+                    "reason": _NO_INSTALLABLE_ARTIFACT,
+                    "version": error.version,
+                }
+            )
+            continue
         _write_atomic_bytes(wheelhouse / str(entry["filename"]), artifact)
         entries.append(entry)
 
-    if len(entries) != _CORPUS_SIZE:
-        message = f"acquired {len(entries)} packages, expected exactly {_CORPUS_SIZE}"
+    if len(entries) + len(unresolved) != _CORPUS_SIZE:
+        message = (
+            f"acquired {len(entries)} packages and recorded {len(unresolved)} "
+            f"unresolved, expected exactly {_CORPUS_SIZE} in total"
+        )
         raise PypiCorpusError(message)
 
     document = {
@@ -421,6 +465,7 @@ def _acquire(
         "retrieved_on": hooks.clock().astimezone(UTC).isoformat(),
         "schema_version": 1,
         "source_url": source_url,
+        "unresolved": unresolved,
         "upstream_payload_sha256": upstream_sha256,
     }
     manifest_text = json.dumps(document, indent=2, sort_keys=True) + "\n"
@@ -484,24 +529,32 @@ def _valid_is_wheel(value: object, *, name: str) -> bool:
     return value
 
 
-def _load_manifest_entry(item: object, *, seen: _SeenIdentities) -> PackageEntry:
-    if not isinstance(item, dict) or set(item) != set(_MANIFEST_FIELDS):
-        message = "every PyPI corpus entry must contain only the documented fields"
-        raise PypiCorpusError(message)
-
-    rank = _valid_rank(item["rank"])
+def _claim_rank(value: object, *, seen: _SeenIdentities) -> int:
+    rank = _valid_rank(value)
     if rank in seen.ranks:
         message = f"PyPI corpus manifest has duplicate rank {rank}"
         raise PypiCorpusError(message)
     seen.ranks.add(rank)
+    return rank
 
-    name = _valid_name(item["name"])
+
+def _claim_name(value: object, *, seen: _SeenIdentities) -> str:
+    name = _valid_name(value)
     normalized = _normalized_name(name)
     if normalized in seen.names:
         message = f"PyPI corpus manifest has duplicate normalized name {name!r}"
         raise PypiCorpusError(message)
     seen.names.add(normalized)
+    return name
 
+
+def _load_manifest_entry(item: object, *, seen: _SeenIdentities) -> PackageEntry:
+    if not isinstance(item, dict) or set(item) != set(_MANIFEST_FIELDS):
+        message = "every PyPI corpus entry must contain only the documented fields"
+        raise PypiCorpusError(message)
+
+    rank = _claim_rank(item["rank"], seen=seen)
+    name = _claim_name(item["name"], seen=seen)
     filename = _safe_filename(item["filename"], field=f"{name} filename")
     if filename in seen.filenames:
         message = f"PyPI corpus manifest has duplicate filename {filename!r}"
@@ -517,6 +570,22 @@ def _load_manifest_entry(item: object, *, seen: _SeenIdentities) -> PackageEntry
         requires_python=_valid_requires_python(item["requires_python"], name=name),
         is_wheel=_valid_is_wheel(item["is_wheel"], name=name),
     )
+
+
+def _check_unresolved_entry(item: object, *, seen: _SeenIdentities) -> None:
+    """Validate one `unresolved` entry; ranks and names stay unique corpus-wide."""
+    if not isinstance(item, dict) or set(item) != set(_UNRESOLVED_FIELDS):
+        message = (
+            "every unresolved PyPI corpus entry must contain only its documented fields"
+        )
+        raise PypiCorpusError(message)
+    _claim_rank(item["rank"], seen=seen)
+    name = _claim_name(item["name"], seen=seen)
+    _valid_version(item["version"], name=name)
+    reason = item["reason"]
+    if not isinstance(reason, str) or reason not in _UNRESOLVED_REASONS:
+        message = f"unresolved PyPI corpus entry for {name} has an unknown reason"
+        raise PypiCorpusError(message)
 
 
 def _load_manifest(path: Path) -> tuple[dict[str, Any], tuple[PackageEntry, ...]]:
@@ -535,12 +604,22 @@ def _load_manifest(path: Path) -> tuple[dict[str, Any], tuple[PackageEntry, ...]
     _https_url(document["source_url"], field="source_url")
 
     packages = document.get("packages")
-    if not isinstance(packages, list) or len(packages) != _CORPUS_SIZE:
-        message = f"PyPI corpus manifest must contain exactly {_CORPUS_SIZE} packages"
+    unresolved = document.get("unresolved", [])
+    if (
+        not isinstance(packages, list)
+        or not isinstance(unresolved, list)
+        or len(packages) + len(unresolved) != _CORPUS_SIZE
+    ):
+        message = (
+            f"PyPI corpus manifest must account for exactly {_CORPUS_SIZE} packages "
+            "across its packages and unresolved lists"
+        )
         raise PypiCorpusError(message)
 
     seen = _SeenIdentities(ranks=set(), names=set(), filenames=set())
     entries = [_load_manifest_entry(item, seen=seen) for item in packages]
+    for item in unresolved:
+        _check_unresolved_entry(item, seen=seen)
     entries.sort(key=lambda entry: entry.rank)
     return document, tuple(entries)
 

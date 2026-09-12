@@ -778,3 +778,50 @@ def test_main_rejects_colliding_output_and_worksheet_paths(tmp_path: Path) -> No
         ]
     )
     assert result == 1
+
+
+def test_main_aggregates_a_manifest_with_an_unresolved_rank(tmp_path: Path) -> None:
+    """An `unresolved` rank needs no shard and is not counted as a package."""
+    manifest_path = tmp_path / "manifest.json"
+    padding = _padding_manifest_entries(start=1, end=_CORPUS_SIZE - 1)
+    document = {
+        "packages": padding,
+        "retrieved_on": "2026-09-03T12:00:00+00:00",
+        "schema_version": 1,
+        "source_url": "https://example.test/top-pypi-packages.json",
+        "unresolved": [
+            {
+                "name": "winonly",
+                "rank": _CORPUS_SIZE,
+                "reason": "no-installable-artifact",
+                "version": "3.1.2",
+            }
+        ],
+        "upstream_payload_sha256": "a" * 64,
+    }
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+    manifest_sha256 = pypi_report._sha256_path(manifest_path)
+    shards_dir = tmp_path / "shards"
+    shards_dir.mkdir()
+    _write_padding_shards(
+        shards_dir, manifest_sha256=manifest_sha256, start=1, end=_CORPUS_SIZE - 1
+    )
+    output_path = tmp_path / "report.json"
+
+    result = pypi_report.main(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--shards",
+            str(shards_dir),
+            "--output",
+            str(output_path),
+            "--worksheet",
+            str(tmp_path / "worksheet.csv"),
+        ]
+    )
+
+    assert result == 0
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert record["packages_total"] == _CORPUS_SIZE - 1
+    assert record["packages_scanned"] == 0

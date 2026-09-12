@@ -31,6 +31,7 @@ class _VersionInfoShape(StrEnum):
     UNSLICED = "unsliced"
     MINOR_SLICE = "minor-slice"
     PATCH_SLICE = "patch-slice"
+    MAJOR_INDEX = "major-index"
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,24 @@ def _prefix_slice(node: cst.Subscript, components: int) -> bool:
     )
 
 
+def _major_index(node: cst.Subscript) -> bool:
+    """Recognize the ``sys.version_info[0]`` major-only index."""
+    if len(node.slice) != 1:
+        return False
+    subscript = node.slice[0].slice
+    return isinstance(subscript, cst.Index) and _integer(subscript.value) == 0
+
+
+def _subscript_shape(node: cst.Subscript) -> _VersionInfoShape | None:
+    if _prefix_slice(node, _MINOR_COMPONENTS):
+        return _VersionInfoShape.MINOR_SLICE
+    if _prefix_slice(node, _PATCH_COMPONENTS):
+        return _VersionInfoShape.PATCH_SLICE
+    if _major_index(node):
+        return _VersionInfoShape.MAJOR_INDEX
+    return None
+
+
 def _version_info_shape(
     node: cst.BaseExpression,
     matches_qualified_name: QualifiedNameMatcher,
@@ -134,11 +153,7 @@ def _version_info_shape(
     if isinstance(node, cst.Subscript):
         if not matches_qualified_name(node.value, SYS_VERSION_INFO):
             return None
-        if _prefix_slice(node, _MINOR_COMPONENTS):
-            return _VersionInfoShape.MINOR_SLICE
-        if _prefix_slice(node, _PATCH_COMPONENTS):
-            return _VersionInfoShape.PATCH_SLICE
-        return None
+        return _subscript_shape(node)
     if matches_qualified_name(node, SYS_VERSION_INFO):
         return _VersionInfoShape.UNSLICED
     return None
@@ -165,6 +180,30 @@ def _comparison_truth(
     else:
         return TruthValue.UNKNOWN
     return TruthValue.TRUE if result else TruthValue.FALSE
+
+
+def _evaluate_major_index(
+    literal_node: cst.BaseExpression,
+    target: PythonMinor,
+    operator: cst.BaseCompOp,
+    *,
+    version_on_left: bool,
+) -> GuardEvaluation:
+    """Decide ``sys.version_info[0] <op> N``, the Python 2/3 compatibility split.
+
+    Only the major component is compared, against a bare integer literal; any
+    other right-hand shape stays unknown.
+    """
+    major = _integer(literal_node)
+    if major is None:
+        return GuardEvaluation(TruthValue.UNKNOWN)
+    return GuardEvaluation(
+        _comparison_truth(
+            (target.major,) if version_on_left else (major,),
+            (major,) if version_on_left else (target.major,),
+            operator,
+        )
+    )
 
 
 def _evaluate_comparison(
@@ -195,6 +234,10 @@ def _evaluate_comparison(
             unsupported_patch=unsupported_patch,
         )
 
+    if version_shape is _VersionInfoShape.MAJOR_INDEX:
+        return _evaluate_major_index(
+            literal_node, target, comparison.operator, version_on_left=version_on_left
+        )
     literal, literal_unsupported_patch = _version_literal(literal_node)
     unsupported_patch = unsupported_patch or literal_unsupported_patch
     if unsupported_patch:

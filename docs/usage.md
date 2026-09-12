@@ -131,10 +131,16 @@ pyahead check --minimum-confidence medium
 ```
 
 The analyzer understands import-derived aliases, ordinary lexical shadowing,
-common `sys.version_info` comparisons, three-valued Boolean guards, nested
+common `sys.version_info` comparisons (including the `sys.version_info[0]`
+major-only Python 2/3 split), three-valued Boolean guards, nested
 `if`/`elif` branches, `typing.TYPE_CHECKING`, `.pyi` typing contexts, and the
 exact removal-safe `hasattr(imported_module, "attribute") and ...` short-circuit
-shape. Unknown conditions conservatively enter both branches.
+shape. Unknown conditions conservatively enter both branches. The annotation
+of a local variable inside a function body, which Python never evaluates, is
+a typing-only reference, so a runtime-only rule does not report it;
+parameter, return, class-body and module-level annotations remain runtime
+references, including under `from __future__ import annotations`, because
+runtime introspection can still evaluate them.
 
 An exact import-derived `sys.path.insert` or `sys.path.append` plus a matching
 nested repository module produces visible `PYA2001` module-resolution evidence.

@@ -21,15 +21,15 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from types import CodeType
+from types import CodeType, ModuleType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from types import ModuleType
     from typing import IO
 
 _resource: ModuleType | None
@@ -292,14 +292,50 @@ def _resolve_subject(descriptor: dict[str, Any]) -> SubjectResolution:
             return SubjectResolution("import-error", None, _error_text(error), None)
         except Exception as error:  # noqa: BLE001 - reported as a structured status.
             return SubjectResolution("import-error", None, _error_text(error), None)
+        qualified = owner_module
         for attribute in descriptor["attribute_path"]:
+            qualified = f"{qualified}.{attribute}"
             try:
                 value = getattr(value, attribute)
             except AttributeError:
-                return SubjectResolution(
-                    "absent", None, None, _deprecation_text(caught)
-                )
+                submodule = _import_submodule(value, qualified)
+                if submodule.status != "present":
+                    return SubjectResolution(
+                        submodule.status,
+                        None,
+                        submodule.error,
+                        _deprecation_text(caught),
+                    )
+                value = submodule.value
         return SubjectResolution("present", value, None, _deprecation_text(caught))
+
+
+def _import_submodule(
+    parent: Any,  # noqa: ANN401 - the walked owner's current value, of unknown type.
+    qualified: str,
+) -> SubjectResolution:
+    """Resolve `from A import B` the way Python does when `B` is a submodule.
+
+    A package only carries a submodule as an attribute once that submodule has
+    been imported, so a bare-interpreter `getattr(lib2to3, "refactor")`
+    fails even though `from lib2to3 import refactor` succeeds: the `from`
+    form falls back to importing `A.B` itself (`importlib._bootstrap
+    ._handle_fromlist`). Mirror exactly that fallback, and only when the
+    parent is a module: a missing attribute on a class or instance is
+    genuinely absent. A `ModuleNotFoundError` naming the submodule is real
+    evidence it does not exist; any other failure leaves it unknown.
+    """
+    if not isinstance(parent, ModuleType):
+        return SubjectResolution("absent", None, None, None)
+    try:
+        submodule = importlib.import_module(qualified)
+    except ModuleNotFoundError as error:
+        if error.name == qualified:
+            return SubjectResolution("absent", None, None, None)
+        return SubjectResolution("import-error", None, _error_text(error), None)
+    except Exception as error:  # noqa: BLE001 - reported as a structured status.
+        return SubjectResolution("import-error", None, _error_text(error), None)
+    return SubjectResolution("present", submodule, None, None)
 
 
 def _signature_text(value: Any) -> str | None:  # noqa: ANN401 - any resolved subject.
@@ -459,6 +495,165 @@ def _find_base(
     return _UNSET
 
 
+def _same_object(
+    resolved: Any,  # noqa: ANN401 - the site's resolved value, of unknown type.
+    subject: Any,  # noqa: ANN401 - the independently resolved subject.
+) -> bool:
+    """Identity, extended to bound methods that are re-created on every access.
+
+    `datetime.datetime.utcnow is datetime.datetime.utcnow` is `False` under
+    CPython: a classmethod (or any method bound to a class) yields a fresh
+    bound-method object per attribute access, so plain `is` refutes every
+    genuine reference to such a subject. Two bound methods denote the same
+    binding exactly when they are bound to the same object and wrap the same
+    underlying function - which is what `__eq__` on both the Python and the
+    builtin bound-method types compares. Everything else keeps strict `is`.
+    """
+    if resolved is subject:
+        return True
+    if isinstance(resolved, types.MethodType) and isinstance(subject, types.MethodType):
+        return (
+            resolved.__self__ is subject.__self__
+            and resolved.__func__ is subject.__func__
+        )
+    if isinstance(resolved, types.BuiltinMethodType) and isinstance(
+        subject, types.BuiltinMethodType
+    ):
+        # `builtin_function_or_method.__eq__` already compares `__self__` by
+        # identity and the underlying C method.
+        return resolved == subject
+    return False
+
+
+def _walk_failed_at_subject_slot(
+    attribute_path: list[str],
+    *,
+    subject_descriptor: dict[str, Any],
+    reached: Any,  # noqa: ANN401 - the last object the walk resolved before failing.
+    failed_at: int | None,
+    subject: SubjectResolution,
+) -> bool:
+    """Whether the failed attribute walk stopped at exactly `S`'s own slot.
+
+    At an interpreter where `S` has already been removed, a genuine
+    `unittest.makeSuite` reference walks the real `unittest` module and
+    fails on `makeSuite` - the very attribute `S` itself is missing. That
+    is not a binding to a *different* object (the refutation the
+    cross-check exists for); it is the site naming `S`'s slot while `S` is
+    absent, which C1 cannot compare and must report as inconclusive. The
+    walk must have failed on its final step, on the same attribute name as
+    `S`'s own final attribute, from the identical parent object `S` hangs
+    off - anything else (a shadowing class missing the attribute, an
+    earlier step failing) stays a refutation.
+    """
+    subject_path = subject_descriptor["attribute_path"]
+    if (
+        subject.status != "absent"
+        or not subject_path
+        or failed_at != len(attribute_path) - 1
+        or attribute_path[-1] != subject_path[-1]
+    ):
+        return False
+    parent = _resolve_subject(
+        {
+            "owner_module": subject_descriptor["owner_module"],
+            "attribute_path": list(subject_path[:-1]),
+        }
+    )
+    return parent.status == "present" and reached is parent.value
+
+
+def _walk_candidates(
+    probe: dict[str, Any],
+    *,
+    module_globals: dict[str, Any],
+    scope_globals: dict[str, Any] | None,
+    local_names: frozenset[str],
+    subject: SubjectResolution,
+) -> tuple[Any, str | None, bool] | None:
+    """Walk the recorded name from the head the site actually bound.
+
+    The finding records the *canonical* dotted name (`datetime.datetime.utcnow`),
+    not the site's spelling: after `from datetime import datetime` the module
+    global `datetime` is the class, and walking `.datetime.utcnow` from it
+    fails on the first step even though `datetime.utcnow()` at the site is
+    exactly `S`. Which prefix the site bound to a name is not recoverable
+    from static evidence (an alias hides it entirely), so every prefix that
+    keeps the recorded spelling is tried in order - `head` with the full
+    path, then each `attribute_path[k]` with the rest.
+
+    The recorded head is the only candidate whose outcome can refute: a
+    later prefix is a guess at the site's spelling, and a module global that
+    merely shares a later component's name (`import datetime as dt` beside a
+    wrapper `def utcnow()`, `import typing as t` beside a project `class
+    Text`) is no evidence the site bound anything else. So a later prefix
+    decides only when its walk completes on `S` itself (`_same_object`) or
+    stops on `S`'s own slot (inconclusive); a later prefix the enclosing
+    callable binds locally is skipped like a shadowed head. A later prefix
+    whose walk ends anywhere else - on some *other* live object, or on an
+    `AttributeError` away from `S`'s slot - ends the guessing: it is as
+    plausible a spelling as every prefix after it, so a prefix after it
+    that reaches `S` (a saved `utcnow = datetime.utcnow` beside a `datetime`
+    global rebound to a replacement class, whether or not the replacement
+    has an `utcnow`) would confirm through a binding the site may never
+    have used. Otherwise the recorded head's own outcome stands: a
+    refutation if it was visible, not-visible if it was not.
+
+    Returns `(resolved, walk_error, slot_consistent)`, or `None` when no
+    candidate decided and the recorded head was not visible.
+    """
+    attribute_path = list(probe["attribute_path"])
+    candidates = [(probe["head"], attribute_path)] + [
+        (attribute_path[k], attribute_path[k + 1 :]) for k in range(len(attribute_path))
+    ]
+    head_outcome: tuple[Any, str | None, bool] | None = None
+    for index, (head, path) in enumerate(candidates):
+        is_recorded_head = index == 0
+        if not is_recorded_head and head in local_names:
+            continue
+        base = _find_base(
+            head, module_globals=module_globals, scope_globals=scope_globals
+        )
+        if base is _UNSET:
+            continue
+        resolved: Any = base
+        walk_error: str | None = None
+        failed_at: int | None = None
+        for step, attribute in enumerate(path):
+            try:
+                resolved = getattr(resolved, attribute)
+            except AttributeError as error:
+                walk_error = _error_text(error)
+                failed_at = step
+                break
+        if walk_error is None:
+            if is_recorded_head or (
+                subject.status == "present" and _same_object(resolved, subject.value)
+            ):
+                return resolved, None, False
+            # This prefix reached a live object that is not `S`, and the site
+            # may have spelled exactly this prefix: no prefix after it can
+            # confirm, so the recorded head's own outcome stands.
+            break
+        if _walk_failed_at_subject_slot(
+            path,
+            subject_descriptor=probe["subject"],
+            reached=resolved,
+            failed_at=failed_at,
+            subject=subject,
+        ):
+            return resolved, walk_error, True
+        if is_recorded_head:
+            head_outcome = (resolved, walk_error, False)
+            continue
+        # This prefix is bound but its walk broke away from `S`'s slot: a
+        # site that spelled it raises rather than reaching `S`, and it is as
+        # plausible a spelling as every prefix after it, so none of them can
+        # confirm either. The recorded head's own outcome stands.
+        break
+    return head_outcome
+
+
 def _run_binding_probe(probe: dict[str, Any]) -> dict[str, Any]:
     try:
         module = importlib.import_module(probe["module"])
@@ -483,26 +678,21 @@ def _run_binding_probe(probe: dict[str, Any]) -> dict[str, Any]:
         # or clear the subject based on the wrong object entirely.
         return _binding_not_visible(probe)
 
-    base = _find_base(
-        probe["head"], module_globals=vars(module), scope_globals=scope_globals
-    )
-    if base is _UNSET:
-        return _binding_not_visible(probe)
-
-    resolved: Any = base
-    walk_error: str | None = None
-    for attribute in probe["attribute_path"]:
-        try:
-            resolved = getattr(resolved, attribute)
-        except AttributeError as error:
-            walk_error = _error_text(error)
-            break
-
     subject_resolution = _resolve_subject(probe["subject"])
+    walk = _walk_candidates(
+        probe,
+        module_globals=vars(module),
+        scope_globals=scope_globals,
+        local_names=local_names,
+        subject=subject_resolution,
+    )
+    if walk is None:
+        return _binding_not_visible(probe)
+    resolved, walk_error, slot_consistent = walk
     if walk_error is not None:
-        identity_match: bool | None = False
+        identity_match: bool | None = None if slot_consistent else False
     elif subject_resolution.status == "present":
-        identity_match = resolved is subject_resolution.value
+        identity_match = _same_object(resolved, subject_resolution.value)
     elif subject_resolution.status == "absent":
         # S is confirmed gone at this interpreter (not merely errored while
         # resolving), so a `head` binding that resolved to a live object
@@ -701,11 +891,14 @@ def _binding_fields_well_typed(result: dict[str, Any]) -> bool:
         return True
     if subject_status not in _SUBJECT_STATUS_VALUES:
         return False
-    expected = (
-        (False,)
-        if result["error"] is not None
-        else _RESOLVED_IDENTITY_MATCH_BY_SUBJECT_STATUS[subject_status]
-    )
+    expected: tuple[bool | None, ...]
+    if result["error"] is not None:
+        # A failed attribute walk is a refutation, except when it stopped at
+        # `S`'s own slot while `S` is absent (`_walk_failed_at_subject_slot`),
+        # which is inconclusive.
+        expected = (False, None) if subject_status == "absent" else (False,)
+    else:
+        expected = _RESOLVED_IDENTITY_MATCH_BY_SUBJECT_STATUS[subject_status]
     return identity_match in expected
 
 

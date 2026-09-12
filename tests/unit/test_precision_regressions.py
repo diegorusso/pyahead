@@ -193,3 +193,187 @@ def test_hasattr_lookalikes_do_not_hide_breaking_reachability(
     assert finding.impact.value == "breaking"
     assert str(finding.action_version) == "3.14"
     assert "reachability_guard" not in dict(finding.match_evidence)
+
+
+# --- PyPI top-1000 triage (docs/evidence/pypi-top-1000.md) --------------------
+
+
+def test_major_version_index_guard_hides_a_python2_only_import(tmp_path: Path) -> None:
+    """distlib: ``if sys.version_info[0] < 3: import imp`` is unreachable on 3.x."""
+    _write_project(
+        tmp_path,
+        {
+            "wheel.py": (
+                "import sys\n"
+                "if sys.version_info[0] < 3:\n"
+                "    import imp\n"
+                "else:\n"
+                "    imp = None\n"
+            )
+        },
+    )
+
+    report = _scan(tmp_path, minimum_confidence="medium")
+
+    assert _rule_findings(report, "CPY0024") == []
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "sys.version_info[0] >= 3",
+        "3 <= sys.version_info[0]",
+        "sys.version_info[0] == 3",
+    ],
+)
+def test_major_version_index_guard_keeps_the_python3_branch(
+    tmp_path: Path, condition: str
+) -> None:
+    """The major-only index narrows nothing when the branch is live on 3.x."""
+    _write_project(
+        tmp_path, {"wheel.py": f"import sys\nif {condition}:\n    import imp\n"}
+    )
+
+    finding = _rule_findings(_scan(tmp_path), "CPY0024")[0]
+
+    assert finding.impact.value == "breaking"
+    assert tuple(str(version) for version in finding.reachable_versions) == (
+        "3.11",
+        "3.12",
+        "3.13",
+        "3.14",
+        "3.15",
+        "3.16",
+    )
+
+
+def test_major_version_index_against_a_non_integer_stays_unknown(
+    tmp_path: Path,
+) -> None:
+    """Only a bare integer literal decides the major-only comparison."""
+    _write_project(
+        tmp_path,
+        {"wheel.py": "import sys\nif sys.version_info[0] < (3,):\n    import imp\n"},
+    )
+
+    finding = _rule_findings(_scan(tmp_path), "CPY0024")[0]
+
+    assert finding.impact.value == "breaking"
+
+
+def test_local_variable_annotation_is_never_evaluated(tmp_path: Path) -> None:
+    """anyio: a function-local ``x: asyncio.AbstractChildWatcher | None`` never runs.
+
+    PEP 526 leaves local-variable annotations unevaluated and unstored, so
+    the reference cannot raise at import or call time on any interpreter.
+    The sweep's binding oracle does not observe evaluation: it refuted the
+    row at 3.14 only because the walk from the real ``asyncio`` module
+    failed on ``AbstractChildWatcher`` itself (oracle defect 3), and the
+    fixed oracle confirms the binding, so this classification rests on
+    PEP 526 alone.
+    """
+    _write_project(
+        tmp_path,
+        {
+            "backend.py": (
+                "import asyncio\n"
+                "def shutdown():\n"
+                "    watcher: asyncio.AbstractChildWatcher | None = None\n"
+                "    return watcher\n"
+            )
+        },
+    )
+
+    report = _scan(tmp_path, minimum_confidence="medium")
+
+    assert _rule_findings(report, "CPY0043") == []
+
+
+def test_future_annotations_do_not_defer_evaluated_annotations(
+    tmp_path: Path,
+) -> None:
+    """PEP 563 only stringifies annotations; introspection still evaluates them.
+
+    ``typing.get_type_hints`` and the libraries built on it (dataclasses,
+    pydantic, attrs) evaluate stringified parameter, return, class-body and
+    module-level annotations at runtime, so a removed subject named there
+    still breaks. Only the local-variable annotation, which is never
+    evaluated or stored, is deferred.
+    """
+    _write_project(
+        tmp_path,
+        {
+            "backend.py": (
+                "from __future__ import annotations\n"
+                "import asyncio\n"
+                "def shutdown(\n"
+                "    watcher: asyncio.AbstractChildWatcher,\n"
+                ") -> asyncio.AbstractChildWatcher: ...\n"
+                "class Pool:\n"
+                "    watcher: asyncio.AbstractChildWatcher\n"
+                "default: asyncio.AbstractChildWatcher | None = None\n"
+                "def local():\n"
+                "    watcher: asyncio.AbstractChildWatcher | None = None\n"
+                "    return watcher\n"
+            )
+        },
+    )
+
+    findings = _rule_findings(_scan(tmp_path, minimum_confidence="medium"), "CPY0043")
+
+    assert sorted(finding.location.region.start.line for finding in findings) == [
+        4,
+        5,
+        7,
+        8,
+    ]
+    for finding in findings:
+        assert finding.impact.value == "breaking"
+        assert dict(finding.match_evidence)["reference_context"] == "annotation"
+        assert "annotation_evaluation" not in dict(finding.match_evidence)
+
+
+def test_deferred_annotation_keeps_a_typing_context_finding(tmp_path: Path) -> None:
+    """A deferred annotation is still a typing use, with the deferral as evidence.
+
+    Only the runtime context is dropped: a rule that applies in typing
+    context (CPY0091 ``typing.ByteString``) still reports the reference,
+    narrowed to typing-only and tagged so triage can see why.
+    """
+    _write_project(
+        tmp_path,
+        {
+            "shapes.py": (
+                "import typing\n"
+                "def size(data):\n"
+                "    buffer: typing.ByteString = data\n"
+                "    return len(buffer)\n"
+            )
+        },
+    )
+
+    finding = _rule_findings(_scan(tmp_path), "CPY0091")[0]
+
+    assert tuple(context.value for context in finding.usage_contexts) == ("typing",)
+    assert dict(finding.match_evidence)["annotation_evaluation"] == "deferred"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import asyncio\ndef shutdown(watcher: asyncio.AbstractChildWatcher): ...\n",
+        "import asyncio\ndef watcher() -> asyncio.AbstractChildWatcher: ...\n",
+        "import asyncio\nclass Pool:\n    watcher: asyncio.AbstractChildWatcher\n",
+        "import asyncio\nwatcher: asyncio.AbstractChildWatcher | None = None\n",
+    ],
+    ids=("parameter", "return", "class-body", "module-level"),
+)
+def test_evaluated_annotations_still_report(tmp_path: Path, source: str) -> None:
+    """Parameter, return, class-body and module-level annotations are runtime uses."""
+    _write_project(tmp_path, {"backend.py": source})
+
+    finding = _rule_findings(_scan(tmp_path), "CPY0043")[0]
+
+    assert finding.impact.value == "breaking"
+    assert dict(finding.match_evidence)["reference_context"] == "annotation"
+    assert "annotation_evaluation" not in dict(finding.match_evidence)

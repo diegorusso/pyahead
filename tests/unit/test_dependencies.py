@@ -5599,7 +5599,13 @@ def test_interruption_before_containment_cleans_the_suspended_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A real SIGINT is replayed only after process ownership is recorded."""
+    """A real SIGINT is replayed only after process ownership is recorded.
+
+    The replay honours the prior disposition, so the test pins the default
+    handler for its duration: a pytest launched as a shell background job
+    inherits SIGINT ignored, Python then leaves it ignored, and the replay
+    would correctly swallow the signal instead of raising.
+    """
 
     class FakeProcess:
         pid = 42
@@ -5632,13 +5638,19 @@ def test_interruption_before_containment_cleans_the_suspended_process(
     monkeypatch.setattr(dependency_module.subprocess, "Popen", fake_popen)
 
     containment = dependency_module._ProcessContainment()  # noqa: SLF001
-    with pytest.raises(KeyboardInterrupt):
-        dependency_module._start_contained_process(  # noqa: SLF001
-            ["resolver"],
-            cwd=tmp_path,
-            env={},
-            containment=containment,
-        )
+    prior_handler = dependency_module.signal.signal(
+        dependency_module.signal.SIGINT, dependency_module.signal.default_int_handler
+    )
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            dependency_module._start_contained_process(  # noqa: SLF001
+                ["resolver"],
+                cwd=tmp_path,
+                env={},
+                containment=containment,
+            )
+    finally:
+        dependency_module.signal.signal(dependency_module.signal.SIGINT, prior_handler)
 
     assert creationflags[0] & dependency_module._CREATE_SUSPENDED  # noqa: SLF001
     assert containment.process is process

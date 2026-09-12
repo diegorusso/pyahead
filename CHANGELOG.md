@@ -6,6 +6,20 @@ stabilizing.
 
 ## Unreleased
 
+### Fixed
+
+- `sys.version_info[0]` compared against an integer, the Python 2/3 split
+  such as `if sys.version_info[0] < 3:`, is now evaluated as a version guard,
+  so a Python-2-only branch no longer produces findings for Python 3 targets.
+- The annotation of a local variable inside a function body, which Python
+  never evaluates or stores, is now a typing-only reference, so runtime-only
+  rules no longer report it. Parameter, return, class-body and module-level
+  annotations are unchanged, including under
+  `from __future__ import annotations`, because runtime introspection such
+  as `typing.get_type_hints` still evaluates them. Both fixes come from the
+  runtime adjudication of the PyPI top-1000 recorded in
+  `docs/evidence/pypi-top-1000.md`.
+
 ## 0.2.0 - 2026-09-01
 
 First public-alpha release. It carries the evidence providers that

@@ -293,3 +293,25 @@ def test_unsupported_comparison_shapes_remain_unknown(source: str) -> None:
     )
 
     assert evaluation.truth is TruthValue.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("version[0] < 3", TruthValue.FALSE),
+        ("version[0] >= 3", TruthValue.TRUE),
+        ("version[0] == 2", TruthValue.FALSE),
+        ("version[0] != 2", TruthValue.TRUE),
+        ("2 < version[0]", TruthValue.TRUE),
+        ("version[0] < (3,)", TruthValue.UNKNOWN),
+        ("version[1] < 3", TruthValue.UNKNOWN),
+        ("version[0] < 3.0", TruthValue.UNKNOWN),
+    ],
+)
+def test_major_index_guard_compares_the_major_component_only(
+    source: str, expected: TruthValue
+) -> None:
+    """``version[0]`` against a bare integer is the Python 2/3 split."""
+    expression = cst.parse_expression(source)
+
+    assert evaluate_guard(expression, _TARGET, _matches_name).truth is expected

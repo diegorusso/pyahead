@@ -15,6 +15,7 @@ from packaging.tags import cpython_tags
 from scripts import pypi_corpus
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 _CORPUS_SIZE = 1000
@@ -22,14 +23,40 @@ _SHA256_HEX_LENGTH = 64
 _RANKING_URL = "https://example.test/top-pypi-packages.json"
 
 
-def _fake_environment(count: int = _CORPUS_SIZE) -> tuple[bytes, dict[str, bytes]]:
-    """Build a synthetic ranking payload plus every response it will trigger."""
+def _fake_environment(
+    count: int = _CORPUS_SIZE, *, unresolvable: frozenset[int] = frozenset()
+) -> tuple[bytes, dict[str, bytes]]:
+    """Build a synthetic ranking payload plus every response it will trigger.
+
+    A project whose zero-based index is in `unresolvable` publishes only a
+    wheel for a platform no interpreter can install and no sdist, and has no
+    artifact URL at all: any attempt to download it is an unexpected request.
+    """
     rows = [{"project": f"demo-package-{index}"} for index in range(count)]
     ranking = json.dumps({"rows": rows}).encode()
     responses: dict[str, bytes] = {}
-    for row in rows:
+    for index, row in enumerate(rows):
         name = row["project"]
         version = "1.0.0"
+        if index in unresolvable:
+            wheel_name = name.replace("-", "_")
+            filename = f"{wheel_name}-{version}-cp311-cp311-totallymadeupplatform.whl"
+            metadata = {
+                "info": {"requires_python": ">=3.9", "version": version},
+                "urls": [
+                    {
+                        "filename": filename,
+                        "packagetype": "bdist_wheel",
+                        "requires_python": ">=3.9",
+                        "url": f"https://files.example.test/{filename}",
+                        "yanked": False,
+                    },
+                ],
+            }
+            responses[pypi_corpus._project_metadata_url(name)] = json.dumps(
+                metadata
+            ).encode()
+            continue
         filename = f"{name}-{version}-py3-none-any.whl"
         artifact = f"artifact-contents-for-{name}".encode()
         metadata = {
@@ -71,9 +98,15 @@ def _fixed_clock() -> datetime:
     return datetime(2026, 9, 3, 12, 0, 0, tzinfo=UTC)
 
 
-def _acquire_into(tmp_path: Path, *, count: int = _CORPUS_SIZE) -> tuple[Path, Path]:
+def _acquire_into(
+    tmp_path: Path,
+    *,
+    count: int = _CORPUS_SIZE,
+    unresolvable: frozenset[int] = frozenset(),
+    progress: Callable[[str], None] = lambda _message: None,
+) -> tuple[Path, Path]:
     """Run `_acquire` against a synthetic environment and return its outputs."""
-    ranking, responses = _fake_environment(count)
+    ranking, responses = _fake_environment(count, unresolvable=unresolvable)
     manifest_path = tmp_path / "manifest.json"
     wheelhouse = tmp_path / "wheelhouse"
     pypi_corpus._acquire(
@@ -84,7 +117,7 @@ def _acquire_into(tmp_path: Path, *, count: int = _CORPUS_SIZE) -> tuple[Path, P
         hooks=pypi_corpus.AcquireHooks(
             http_get=_fake_http_get(ranking, responses),
             clock=_fixed_clock,
-            progress=lambda _message: None,
+            progress=progress,
         ),
     )
     return manifest_path, wheelhouse
@@ -113,6 +146,20 @@ def _valid_document(count: int = _CORPUS_SIZE) -> dict[str, Any]:
     }
 
 
+def _document_with_unresolved() -> dict[str, Any]:
+    """Build a manifest whose last rank is an unresolved entry, not a package."""
+    document = _valid_document(_CORPUS_SIZE - 1)
+    document["unresolved"] = [
+        {
+            "name": "winonly",
+            "rank": _CORPUS_SIZE,
+            "reason": "no-installable-artifact",
+            "version": "3.1.2",
+        }
+    ]
+    return document
+
+
 def _write_manifest(path: Path, document: dict[str, Any]) -> None:
     path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -132,6 +179,7 @@ def test_acquire_writes_a_manifest_with_exactly_1000_verified_entries(
     assert document["retrieved_on"] == "2026-09-03T12:00:00+00:00"
     assert len(document["upstream_payload_sha256"]) == _SHA256_HEX_LENGTH
     assert len(document["packages"]) == _CORPUS_SIZE
+    assert document["unresolved"] == []
 
     first = document["packages"][0]
     assert first["rank"] == 1
@@ -147,6 +195,71 @@ def test_acquire_output_round_trips_through_verify(tmp_path: Path) -> None:
     manifest_path, wheelhouse = _acquire_into(tmp_path)
     problems = pypi_corpus._verify(manifest_path=manifest_path, wheelhouse=wheelhouse)
     assert problems == []
+
+
+def test_acquire_records_a_package_without_an_installable_artifact_as_unresolved(
+    tmp_path: Path,
+) -> None:
+    """A release with no sdist and no installable wheel is recorded, not fatal.
+
+    Its rank stays reserved rather than being renumbered or filled from
+    further down the ranking, no download is attempted for it (the fake
+    environment serves no artifact URL for it), and the rest of the corpus is
+    acquired, loads, and verifies cleanly.
+    """
+    unresolved_index = 588
+    unresolved_rank = unresolved_index + 1
+    messages: list[str] = []
+    manifest_path, wheelhouse = _acquire_into(
+        tmp_path, unresolvable=frozenset({unresolved_index}), progress=messages.append
+    )
+
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert len(document["packages"]) == _CORPUS_SIZE - 1
+    assert document["unresolved"] == [
+        {
+            "name": f"demo-package-{unresolved_index}",
+            "rank": unresolved_rank,
+            "reason": "no-installable-artifact",
+            "version": "1.0.0",
+        }
+    ]
+    ranks = [package["rank"] for package in document["packages"]]
+    expected_ranks = range(1, _CORPUS_SIZE + 1)
+    assert ranks == [rank for rank in expected_ranks if rank != unresolved_rank]
+    assert len(list(wheelhouse.iterdir())) == _CORPUS_SIZE - 1
+    assert (
+        f"[{unresolved_rank}/1000] unresolved demo-package-{unresolved_index} 1.0.0: "
+        "no-installable-artifact"
+    ) in messages
+    assert pypi_corpus._verify(manifest_path=manifest_path, wheelhouse=wheelhouse) == []
+    _, entries = pypi_corpus._load_manifest(manifest_path)
+    assert len(entries) == _CORPUS_SIZE - 1
+    assert all(entry.rank != unresolved_rank for entry in entries)
+
+
+def test_acquire_still_aborts_on_any_other_package_error(tmp_path: Path) -> None:
+    """Only the no-installable-artifact case is tolerated; a bad file URL is fatal."""
+    ranking, responses = _fake_environment()
+    name = "demo-package-3"
+    metadata = json.loads(responses[pypi_corpus._project_metadata_url(name)])
+    metadata["urls"][0]["url"] = "http://files.example.test/insecure.whl"
+    responses[pypi_corpus._project_metadata_url(name)] = json.dumps(metadata).encode()
+    manifest_path = tmp_path / "manifest.json"
+
+    with pytest.raises(pypi_corpus.PypiCorpusError, match="HTTPS"):
+        pypi_corpus._acquire(
+            source_url=_RANKING_URL,
+            manifest_path=manifest_path,
+            wheelhouse=tmp_path / "wheelhouse",
+            timeout=5.0,
+            hooks=pypi_corpus.AcquireHooks(
+                http_get=_fake_http_get(ranking, responses),
+                clock=_fixed_clock,
+                progress=lambda _message: None,
+            ),
+        )
+    assert not manifest_path.exists()
 
 
 def test_acquire_rejects_a_ranking_snapshot_with_too_few_projects(
@@ -362,6 +475,25 @@ def test_select_release_file_ignores_yanked_files() -> None:
         pypi_corpus._select_release_file(document, name="demo")
 
 
+def test_select_release_file_reports_no_installable_artifact_as_a_typed_error() -> None:
+    """The no-artifact case is distinguishable so acquisition can record, not abort."""
+    document = {
+        "info": {"version": "3.1.2"},
+        "urls": [
+            {
+                "filename": "demo-3.1.2-cp311-cp311-totallymadeupplatform.whl",
+                "packagetype": "bdist_wheel",
+                "url": "https://files.example.test/demo-3.1.2-cp311-cp311-x.whl",
+            },
+        ],
+    }
+    with pytest.raises(pypi_corpus.NoInstallableArtifactError) as excinfo:
+        pypi_corpus._select_release_file(document, name="demo")
+    assert excinfo.value.name == "demo"
+    assert excinfo.value.version == "3.1.2"
+    assert "no wheel or sdist" in str(excinfo.value)
+
+
 def test_select_release_file_rejects_only_unsupported_package_types() -> None:
     """A release published only as an unsupported package type is refused."""
     document = {
@@ -438,6 +570,97 @@ def test_load_manifest_public_wrapper_matches_the_internal_loader(
     document, entries = pypi_corpus.load_manifest(manifest_path)
     assert document["schema_version"] == 1
     assert len(entries) == _CORPUS_SIZE
+
+
+def test_load_manifest_accepts_unresolved_entries_alongside_packages(
+    tmp_path: Path,
+) -> None:
+    """`packages` plus `unresolved` cover 1000 ranks; entries are packages only."""
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path, _document_with_unresolved())
+    document, entries = pypi_corpus._load_manifest(manifest_path)
+    assert len(entries) == _CORPUS_SIZE - 1
+    assert entries[-1].rank == _CORPUS_SIZE - 1
+    assert document["unresolved"][0]["name"] == "winonly"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        pytest.param(
+            lambda document: document["unresolved"][0].update(reason="mystery"),
+            "unknown reason",
+            id="unknown-reason",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"][0].update(reason=[]),
+            "unknown reason",
+            id="list-reason",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"][0].update(reason={}),
+            "unknown reason",
+            id="object-reason",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"][0].update(rank=1),
+            "duplicate rank",
+            id="rank-shared-with-a-package",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"][0].update(name="PKG0"),
+            "duplicate normalized name",
+            id="name-shared-with-a-package",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"][0].update(version=""),
+            "invalid version",
+            id="empty-version",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"][0].update(extra=True),
+            "documented fields",
+            id="undocumented-field",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"][0].pop("version"),
+            "documented fields",
+            id="missing-field",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"].__setitem__(0, "winonly"),
+            "documented fields",
+            id="not-an-object",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"].append(
+                {**document["unresolved"][0], "name": "other", "rank": 1001}
+            ),
+            "exactly 1000",
+            id="over-count",
+        ),
+        pytest.param(
+            lambda document: document["unresolved"].clear(),
+            "exactly 1000",
+            id="under-count",
+        ),
+        pytest.param(
+            lambda document: document.update(unresolved={}),
+            "exactly 1000",
+            id="not-a-list",
+        ),
+    ],
+)
+def test_load_manifest_rejects_a_malformed_unresolved_list(
+    tmp_path: Path, mutate: Callable[[dict[str, Any]], object], match: str
+) -> None:
+    """Unresolved entries are validated as strictly as packages, corpus-wide."""
+    document = _document_with_unresolved()
+    mutate(document)
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(manifest_path, document)
+    with pytest.raises(pypi_corpus.PypiCorpusError, match=match):
+        pypi_corpus._load_manifest(manifest_path)
 
 
 def test_load_manifest_rejects_wrong_schema_version(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ import argparse
 import base64
 import hashlib
 import json
+import subprocess
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -569,6 +570,76 @@ def test_isolate_command_falls_back_to_rlimit_only_without_bwrap(
 # --- full pipeline: real uv venv/install/scan subprocesses ---------------
 
 
+def test_installed_interpreters_resolve_launcher_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recorded interpreter path is the real file, not a launcher symlink.
+
+    `uv python install` also links each interpreter into `~/.local/bin`, and
+    `uv python list` reports that link. The sandbox binds uv's managed
+    install root, not `~/.local/bin`, so a bare-interpreter probe started
+    through the link fails at exec inside `bwrap` and every C2 probe
+    surfaces as `probe-crashed`.
+    """
+    real = tmp_path / "share" / "cpython-3.11" / "bin" / "python3.11"
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b"")
+    link = tmp_path / "bin" / "python3.11"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    listing = [
+        {
+            "implementation": "cpython",
+            "variant": "default",
+            "version": "3.11.15",
+            "version_parts": {"major": 3, "minor": 11, "patch": 15},
+            "path": str(link),
+        }
+    ]
+
+    def _fake_run(
+        argv: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout=json.dumps(listing), stderr=""
+        )
+
+    monkeypatch.setattr(pypi_validate.subprocess, "run", _fake_run)
+    installed = pypi_validate._installed_interpreters("uv", timeout=5)
+    assert installed[11].path == real.resolve()
+    assert installed[11].path != link
+
+
+def test_uv_python_install_dir_resolves_a_symlinked_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bound install root is the real directory the resolved interpreters live in.
+
+    `_installed_interpreters` records each interpreter's resolved path, and
+    the sandbox binds the install root as its own mount point. If `uv python
+    dir` reaches that root through a symlink and the unresolved path were
+    bound, the resolved interpreter file would lie outside every bound tree
+    and every bare-interpreter probe would fail at exec inside `bwrap`.
+    """
+    real = tmp_path / "data" / "uv" / "python"
+    real.mkdir(parents=True)
+    link = tmp_path / "share"
+    link.symlink_to(tmp_path / "data")
+    reported = link / "uv" / "python"
+
+    def _fake_run(
+        argv: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout=f"{reported}\n", stderr=""
+        )
+
+    monkeypatch.setattr(pypi_validate.subprocess, "run", _fake_run)
+    directory = pypi_validate._uv_python_install_dir("uv", timeout=5)
+    assert directory == real.resolve()
+    assert directory != reported
+
+
 def _run_main(argv: list[str]) -> int:
     return pypi_validate.main(argv)
 
@@ -867,6 +938,112 @@ def test_run_captures_an_install_failure(tmp_path: Path) -> None:
     assert document["status"] == "install-failed"
     assert document["reason"]
     assert not (work_dir / "tmp").exists() or not list((work_dir / "tmp").iterdir())
+
+
+def test_run_resolves_a_relative_work_dir_before_processing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative `--work-dir` reaches package processing as an absolute path.
+
+    The venv and scratch home derive from the work directory and are passed
+    to `bwrap` as bind sources, which bubblewrap resolves against the
+    sandbox's old root, not the caller's working directory: left relative,
+    every install fails with "Can't find source path".
+    """
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(
+        manifest_path,
+        [
+            _package_entry(
+                rank=1,
+                name="relative",
+                filename="relative-1.0.0-py3-none-any.whl",
+                sha256="f" * 64,
+            )
+        ],
+    )
+    seen: list[Path] = []
+
+    def _fake_process_package(
+        entry: PackageEntry,
+        *,
+        installed: Mapping[int, pypi_validate.InstalledInterpreter],  # noqa: ARG001
+        options: pypi_validate.RunOptions,
+    ) -> dict[str, Any]:
+        seen.append(options.work_dir)
+        return {
+            **pypi_validate._package_base(
+                entry, manifest_sha256=options.manifest_sha256
+            ),
+            "status": "skipped",
+            "reason": "no-compatible-interpreter",
+            "isolation_mode": None,
+            "interpreter": None,
+        }
+
+    monkeypatch.setattr(pypi_validate, "_process_package", _fake_process_package)
+    monkeypatch.chdir(tmp_path)
+    result = _run_main(
+        [
+            "run",
+            "--manifest",
+            "manifest.json",
+            "--wheelhouse",
+            "wheelhouse",
+            "--work-dir",
+            "work",
+            "--execute-third-party-code",
+            "--limit",
+            "1",
+        ]
+    )
+    assert result == 0
+    assert seen == [tmp_path.resolve() / "work"]
+    assert seen[0].is_absolute()
+    assert (tmp_path / "work" / "shards" / "0001-relative.json").is_file()
+
+
+def test_run_records_no_probe_isolation_mode_without_findings(tmp_path: Path) -> None:
+    """A scanned package with nothing to probe records no probe isolation mode.
+
+    Defaulting to `rlimit-only` would claim the unsandboxed fallback ran for
+    a package under which no probe batch executed at all.
+    """
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    filename, sha256 = _build_wheel(
+        wheelhouse, "benign", "1.0.0", {"benign/__init__.py": b"VALUE = 1\n"}
+    )
+    manifest_path = tmp_path / "manifest.json"
+    _write_manifest(
+        manifest_path,
+        [_package_entry(rank=1, name="benign", filename=filename, sha256=sha256)],
+    )
+    work_dir = tmp_path / "work"
+    result = _run_main(
+        [
+            "run",
+            "--manifest",
+            str(manifest_path),
+            "--wheelhouse",
+            str(wheelhouse),
+            "--work-dir",
+            str(work_dir),
+            "--execute-third-party-code",
+            "--limit",
+            "1",
+            "--timeout",
+            "60",
+        ]
+    )
+    assert result == 0
+    document = json.loads((work_dir / "shards" / "0001-benign.json").read_text())
+    assert document["status"] == "scanned"
+    assert document["scan"]["high_confidence_findings"] == 0
+    assert document["adjudication"]["verdicts"] == {}
+    assert document["adjudication"]["isolation_mode"] is None
 
 
 def test_run_resumes_by_default_and_reprocesses_with_refresh(
@@ -1241,6 +1418,7 @@ def test_binding_verdict_covers_every_status(
         action_minor=13,
         impact="breaking",
         reference_minor=13,
+        expected_presence="absent",
     )
     assert verdict == expected_verdict
     assert evidence["status"] == result["status"]
@@ -1257,6 +1435,7 @@ def test_binding_verdict_confirms_a_module_not_found_error_naming_the_subject() 
         action_minor=13,
         impact="breaking",
         reference_minor=13,
+        expected_presence="absent",
     )
     assert verdict == "confirmed"
     assert evidence["confirmation"] == "module-import-end-to-end"
@@ -1273,6 +1452,7 @@ def test_binding_verdict_does_not_confirm_an_unrelated_import_error() -> None:
         action_minor=13,
         impact="breaking",
         reference_minor=13,
+        expected_presence="absent",
     )
     assert verdict == "not-adjudicable:import-error"
 
@@ -1287,6 +1467,7 @@ def test_binding_verdict_does_not_confirm_a_removal_before_its_own_action_versio
         action_minor=14,
         impact="breaking",
         reference_minor=13,
+        expected_presence="present",
     )
     assert verdict == "not-adjudicable:import-error"
 
@@ -1299,6 +1480,7 @@ def test_binding_verdict_does_not_confirm_a_deprecation_only_import_error() -> N
         action_minor=13,
         impact="deprecated",
         reference_minor=13,
+        expected_presence="present",
     )
     assert verdict == "not-adjudicable:import-error"
 
@@ -1919,3 +2101,213 @@ def test_adjudicate_caches_c2_subject_probes_per_rule_and_interpreter() -> None:
         "confirmed",
     ]
     assert probe_counts == {13: 1}
+
+
+# --- PyPI top-1000 triage: C1 refutations need an observable subject ---------
+
+
+_REMOVAL_MINOR = 13
+
+
+def _absent_mismatch(error: str | None = None) -> dict[str, Any]:
+    return {
+        "status": "resolved",
+        "identity_match": False,
+        "subject_status": "absent",
+        "error": error,
+    }
+
+
+def test_binding_verdict_refutes_an_absent_subject_only_where_expected() -> None:
+    """A live binding with `S` gone is a fallback only once the registry expects it.
+
+    Where the registry still expects `S` present, its absence means `S` was
+    simply not observable (an aliased `from A import B as C`, a
+    platform-only or runtime-set attribute) and there is nothing to
+    compare - the shape behind most of the sweep's false `refuted-binding`
+    rows.
+    """
+    common = {
+        "subject": pypi_validate.SubjectDescriptor("cgi", ("escape",)),
+        "action_minor": 13,
+        "impact": "breaking",
+    }
+    verdict, _ = pypi_validate._binding_verdict(
+        _absent_mismatch(), reference_minor=11, expected_presence="present", **common
+    )
+    assert verdict == "not-adjudicable:module-not-importable"
+    verdict, _ = pypi_validate._binding_verdict(
+        _absent_mismatch(), reference_minor=13, expected_presence="absent", **common
+    )
+    assert verdict == "refuted-binding"
+    # A mismatch against a *present* subject is a refutation regardless.
+    verdict, _ = pypi_validate._binding_verdict(
+        _binding_result(identity_match=False),
+        reference_minor=11,
+        expected_presence="present",
+        **common,
+    )
+    assert verdict == "refuted-binding"
+
+
+def test_adjudicate_does_not_refute_an_aliased_from_import_at_the_reference() -> None:
+    """`from lib2to3.pygram import python_symbols as syms` names a nonexistent `A.syms`.
+
+    The reference interpreter (where the registry expects `S` present)
+    reports the alias artefact as absent; the documented outcome is
+    `not-adjudicable:module-not-importable`, never `refuted-binding`.
+    """
+    finding = _mapped_finding_fixture(
+        fingerprint="f1",
+        rule_id="CPY0027",
+        evidence={
+            "bound_names": ["syms"],
+            "syntax": "from-import",
+            "imported_module": "lib2to3.pygram",
+        },
+        action_version="3.13",
+        interpreters_needed=[12, 13],
+    )
+    runners = _make_run_probes(binding_results={"f1": _absent_mismatch()})
+    findings, _ = pypi_validate._adjudicate(
+        [finding],
+        installed=_installed(11, 12, 13),
+        reference_minor=11,
+        available_binding_minors=frozenset({11}),
+        run_binding_probes=runners.run_binding_probes,
+        run_subject_probes=runners.run_subject_probes,
+    )
+    (result,) = findings
+    assert result["adjudication_status"] == "not-adjudicable:module-not-importable"
+
+
+def test_adjudicate_still_refutes_a_fallback_at_the_removal_minor() -> None:
+    """The cross-check keeps catching a live fallback where `S` is registry-absent."""
+    finding = _cgi_finding(interpreters_needed=[12, 13])
+
+    def run_binding_probes(
+        minor: int, _probes: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        if minor == _REMOVAL_MINOR:
+            return {"f1": _absent_mismatch()}
+        return {"f1": _binding_result(identity_match=True)}
+
+    runners = _make_run_probes(binding_results={})
+    findings, _ = pypi_validate._adjudicate(
+        [finding],
+        installed=_installed(12, 13),
+        reference_minor=12,
+        available_binding_minors=frozenset({12, 13}),
+        run_binding_probes=run_binding_probes,
+        run_subject_probes=runners.run_subject_probes,
+    )
+    (result,) = findings
+    assert result["adjudication_status"] == "refuted-binding"
+
+
+def test_adjudicate_cross_check_does_not_refute_an_absent_subject_before_removal() -> (
+    None
+):
+    """An absent-subject mismatch at a pre-removal cross-check minor is not a fallback.
+
+    `cgi` is registry-present at 3.12, so a live binding with `S` absent
+    there is an observability gap exactly as at the reference; only the
+    removal minor may treat it as a fallback. C1 holds and C2 confirms.
+    """
+    finding = _cgi_finding(interpreters_needed=[12, 13])
+
+    def run_binding_probes(
+        minor: int, _probes: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        if minor == _REMOVAL_MINOR - 1:
+            return {"f1": _absent_mismatch()}
+        return {"f1": _binding_result(identity_match=True)}
+
+    runners = _make_run_probes(
+        binding_results={},
+        subject_status_by_minor={11: "present", 12: "present", 13: "absent"},
+    )
+    findings, _ = pypi_validate._adjudicate(
+        [finding],
+        installed=_installed(11, 12, 13),
+        reference_minor=11,
+        available_binding_minors=frozenset({11, 12, 13}),
+        run_binding_probes=run_binding_probes,
+        run_subject_probes=runners.run_subject_probes,
+    )
+    (result,) = findings
+    assert result["adjudication_status"] == "confirmed"
+
+
+def test_adjudicate_treats_a_slot_walk_failure_as_inconclusive_at_the_cross_check() -> (
+    None
+):
+    """`unittest.makeSuite` at 3.13 walks the real module and fails on `S`'s own slot.
+
+    The probe reports `identity_match=None`; the cross-check ignores
+    anything but a clean refutation, so the reference verdict stands and C2
+    confirms the removal.
+    """
+    finding = _mapped_finding_fixture(
+        fingerprint="f1",
+        rule_id="CPY0031",
+        match_kind="qualified-reference",
+        evidence={"qualified_names": ["unittest.makeSuite"]},
+        action_version="3.13",
+        interpreters_needed=[12, 13],
+    )
+
+    def run_binding_probes(
+        minor: int, _probes: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        if minor == _REMOVAL_MINOR:
+            return {
+                "f1": {
+                    "status": "resolved",
+                    "identity_match": None,
+                    "subject_status": "absent",
+                    "error": "AttributeError: module 'unittest' has no attribute",
+                }
+            }
+        return {"f1": _binding_result(identity_match=True)}
+
+    runners = _make_run_probes(
+        binding_results={}, subject_status_by_minor={12: "present", 13: "absent"}
+    )
+    findings, _ = pypi_validate._adjudicate(
+        [finding],
+        installed=_installed(12, 13),
+        reference_minor=12,
+        available_binding_minors=frozenset({12, 13}),
+        run_binding_probes=run_binding_probes,
+        run_subject_probes=runners.run_subject_probes,
+    )
+    (result,) = findings
+    assert result["adjudication_status"] == "confirmed"
+
+
+@pytest.mark.parametrize(
+    ("subject_status", "error", "identity_match", "expected"),
+    [
+        ("absent", "AttributeError: nope", None, True),
+        ("absent", None, None, False),
+        ("present", "AttributeError: nope", None, False),
+    ],
+)
+def test_probe_result_binding_fields_mirror_the_slot_walk_failure(
+    *,
+    subject_status: str,
+    error: str | None,
+    identity_match: bool | None,
+    expected: bool,
+) -> None:
+    """The validator's closed schema admits exactly what the probe can emit."""
+    item = {
+        "id": "b",
+        "kind": "binding",
+        "status": "resolved",
+        "identity_match": identity_match,
+        "subject_status": subject_status,
+        "error": error,
+    }
+    assert pypi_validate._probe_result_binding_fields_well_typed(item) is expected

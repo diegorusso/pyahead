@@ -1159,3 +1159,556 @@ def test_main_batch_mode_rejects_malformed_json(
     result = pypi_probe.main([])
     assert result == 1
     assert "not valid JSON" in capsys.readouterr().err
+
+
+# --- PyPI top-1000 triage: oracle defects found by the sweep -----------------
+
+
+def test_subject_probe_resolves_a_from_imported_submodule(tmp_path: Path) -> None:
+    """`from A import B` where `B` is a submodule is present, as Python resolves it.
+
+    A package only carries a submodule attribute once that submodule has
+    been imported, so a bare-interpreter `getattr` alone reported every
+    `from lib2to3 import refactor` as absent (52 false `refuted-timeline`
+    rows in the top-1000 sweep).
+    """
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "s",
+                "kind": "subject",
+                "owner_module": "email",
+                "attribute_path": ["mime"],
+            }
+        ],
+    )
+    assert results["s"]["status"] == "present"
+
+
+def test_subject_probe_reports_import_error_for_a_broken_submodule(
+    tmp_path: Path,
+) -> None:
+    """A submodule that exists but fails to import is unknown, not absent."""
+    (tmp_path / "brokenpkg").mkdir()
+    _write(tmp_path, "brokenpkg/__init__.py", "")
+    _write(tmp_path, "brokenpkg/sub.py", "raise RuntimeError('boom')\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "s",
+                "kind": "subject",
+                "owner_module": "brokenpkg",
+                "attribute_path": ["sub"],
+            }
+        ],
+    )
+    assert results["s"]["status"] == "import-error"
+    assert results["s"]["error"] == "RuntimeError: boom"
+
+
+def test_subject_probe_does_not_import_a_missing_attribute_of_a_class(
+    tmp_path: Path,
+) -> None:
+    """The submodule fallback applies to modules only; classes stay absent."""
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "s",
+                "kind": "subject",
+                "owner_module": "datetime",
+                "attribute_path": ["datetime", "definitely_missing_attr_xyz"],
+            }
+        ],
+    )
+    assert results["s"]["status"] == "absent"
+
+
+def test_binding_probe_confirms_a_classmethod_bound_on_every_access(
+    tmp_path: Path,
+) -> None:
+    """`datetime.datetime.utcnow` is a fresh bound method per access, one binding.
+
+    Plain `is` refuted all 61 genuine `utcnow`/`utcfromtimestamp` references
+    in the top-1000 sweep.
+    """
+    _write(tmp_path, "binder_utcnow.py", "import datetime\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "binder_utcnow",
+                "enclosing_scope": None,
+                "head": "datetime",
+                "attribute_path": ["datetime", "utcnow"],
+                "subject": _subject("datetime", ["datetime", "utcnow"]),
+            }
+        ],
+    )
+    assert results["b"]["status"] == "resolved"
+    assert results["b"]["identity_match"] is True
+
+
+def test_binding_probe_refutes_a_different_bound_method(tmp_path: Path) -> None:
+    """Bound-method equivalence is per underlying function, not per class."""
+    _write(tmp_path, "binder_now.py", "import datetime\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "binder_now",
+                "enclosing_scope": None,
+                "head": "datetime",
+                "attribute_path": ["datetime", "now"],
+                "subject": _subject("datetime", ["datetime", "utcnow"]),
+            }
+        ],
+    )
+    assert results["b"]["identity_match"] is False
+
+
+def test_same_object_compares_bound_methods_by_self_and_function() -> None:
+    """Python bound methods match on identical `__self__` and `__func__` only."""
+
+    class Owner:
+        @classmethod
+        def first(cls) -> None: ...
+
+        @classmethod
+        def second(cls) -> None: ...
+
+        def method(self) -> None: ...
+
+    assert Owner.first is not Owner.first
+    assert pypi_probe._same_object(Owner.first, Owner.first) is True
+    assert pypi_probe._same_object(Owner.first, Owner.second) is False
+    one, two = Owner(), Owner()
+    assert pypi_probe._same_object(one.method, one.method) is True
+    assert pypi_probe._same_object(one.method, two.method) is False
+    assert pypi_probe._same_object(Owner.first, Owner.method) is False
+    assert pypi_probe._same_object("a".join, "a".join) is True
+    assert pypi_probe._same_object("a".join, "b".join) is False
+    assert pypi_probe._same_object(object(), object()) is False
+
+
+def test_binding_probe_is_inconclusive_when_the_walk_fails_at_the_subjects_slot(
+    tmp_path: Path,
+) -> None:
+    """A reference walking the real owner and failing on `S`'s own attribute names `S`.
+
+    At an interpreter where `S` is already removed, `unittest.makeSuite(...)`
+    walks the genuine `unittest` module and fails exactly on `makeSuite`.
+    That is the site naming `S`'s slot while `S` is absent - not a binding to
+    a different object - so C1 has nothing to compare and must not refute
+    (16 false `refuted-binding` rows in the top-1000 sweep).
+    """
+    _write(tmp_path, "binder_slot.py", "import sys\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "binder_slot",
+                "enclosing_scope": None,
+                "head": "sys",
+                "attribute_path": ["definitely_missing_attr_xyz"],
+                "subject": _subject("sys", ["definitely_missing_attr_xyz"]),
+            }
+        ],
+    )
+    result = results["b"]
+    assert result["status"] == "resolved"
+    assert result["identity_match"] is None
+    assert result["subject_status"] == "absent"
+    assert result["error"].startswith("AttributeError")
+
+
+def test_binding_probe_still_refutes_a_shadow_missing_the_subjects_attribute(
+    tmp_path: Path,
+) -> None:
+    """Failing on the right attribute of the wrong parent is a genuine refutation."""
+    _write(tmp_path, "binder_fake_sys.py", "class sys:\n    pass\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "binder_fake_sys",
+                "enclosing_scope": None,
+                "head": "sys",
+                "attribute_path": ["definitely_missing_attr_xyz"],
+                "subject": _subject("sys", ["definitely_missing_attr_xyz"]),
+            }
+        ],
+    )
+    result = results["b"]
+    assert result["identity_match"] is False
+    assert result["subject_status"] == "absent"
+
+
+def test_binding_probe_still_refutes_a_walk_failing_before_the_subjects_slot(
+    tmp_path: Path,
+) -> None:
+    """An earlier step failing never counts as naming `S`'s slot."""
+    _write(tmp_path, "binder_early.py", "import sys\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "binder_early",
+                "enclosing_scope": None,
+                "head": "sys",
+                "attribute_path": ["definitely_missing_parent", "leaf"],
+                "subject": _subject("sys", ["definitely_missing_parent", "leaf"]),
+            }
+        ],
+    )
+    assert results["b"]["identity_match"] is False
+
+
+@pytest.mark.parametrize(
+    ("subject_status", "error", "identity_match", "expected"),
+    [
+        ("absent", "AttributeError: nope", None, True),
+        ("absent", "AttributeError: nope", False, True),
+        ("absent", None, None, False),
+        ("present", "AttributeError: nope", None, False),
+        ("present", "AttributeError: nope", True, False),
+    ],
+)
+def test_binding_fields_allow_an_inconclusive_slot_walk_failure_only(
+    *,
+    subject_status: str,
+    error: str | None,
+    identity_match: bool | None,
+    expected: bool,
+) -> None:
+    """The closed schema admits `(absent, error, None)` and nothing new besides."""
+    result = {
+        "id": "b",
+        "kind": "binding",
+        "status": "resolved",
+        "identity_match": identity_match,
+        "subject_status": subject_status,
+        "error": error,
+    }
+    assert pypi_probe._binding_fields_well_typed(result) is expected
+
+
+def test_binding_probe_walks_from_a_from_imported_prefix(tmp_path: Path) -> None:
+    """`from datetime import datetime; datetime.utcnow()` binds `S` via the class.
+
+    The finding records the canonical `datetime.datetime.utcnow`, but the
+    module global `datetime` is the class, so walking `.datetime.utcnow` from
+    it fails on the first step (31 false `refuted-binding` rows in the
+    top-1000 sweep). The later prefix must be tried too.
+    """
+    _write(tmp_path, "binder_from.py", "from datetime import datetime\n")
+    _write(tmp_path, "binder_os_path.py", "from os import path\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "class",
+                "kind": "binding",
+                "module": "binder_from",
+                "enclosing_scope": None,
+                "head": "datetime",
+                "attribute_path": ["datetime", "utcnow"],
+                "subject": _subject("datetime", ["datetime", "utcnow"]),
+            },
+            {
+                "id": "module",
+                "kind": "binding",
+                "module": "binder_os_path",
+                "enclosing_scope": None,
+                "head": "os",
+                "attribute_path": ["path", "join"],
+                "subject": _subject("os.path", ["join"]),
+            },
+        ],
+    )
+    assert results["class"]["identity_match"] is True
+    assert results["module"]["identity_match"] is True
+
+
+def test_binding_probe_still_refutes_a_shadow_via_a_later_prefix(
+    tmp_path: Path,
+) -> None:
+    """A shadow class bound to the recorded head is refuted by that head's own walk.
+
+    The later prefix `datetime.utcnow` also reaches the shadow's `None`, but a
+    later prefix never refutes; the recorded head `datetime` is visible and its
+    walk fails before `S`'s slot, so its refutation stands.
+    """
+    _write(tmp_path, "binder_shadow_cls.py", "class datetime:\n    utcnow = None\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "binder_shadow_cls",
+                "enclosing_scope": None,
+                "head": "datetime",
+                "attribute_path": ["datetime", "utcnow"],
+                "subject": _subject("datetime", ["datetime", "utcnow"]),
+            }
+        ],
+    )
+    assert results["b"]["status"] == "resolved"
+    assert results["b"]["identity_match"] is False
+
+
+def test_binding_probe_does_not_confirm_via_a_later_prefix_after_one_binds_elsewhere(
+    tmp_path: Path,
+) -> None:
+    """A saved `utcnow` global must not confirm a site whose `datetime` was rebound.
+
+    `from datetime import datetime` then `utcnow = datetime.utcnow` saves `S`
+    under the name of its last component, and `datetime` is rebound through
+    `globals()` to a replacement class. The recorded head fails on
+    `.datetime`; the later prefix `datetime.utcnow` reaches the replacement's
+    method, not `S`; and the last prefix, the module global `utcnow`, is `S`
+    itself. The site spelled `datetime.utcnow()` or `utcnow()`, and the probe
+    cannot tell which, so the saved global proves nothing: the guesses
+    conflict and the recorded head's refutation stands.
+    """
+    _write(
+        tmp_path,
+        "rebound_site.py",
+        "from datetime import datetime\n\n"
+        "utcnow = datetime.utcnow\n\n\n"
+        "class _Replacement:\n"
+        "    @classmethod\n"
+        "    def utcnow(cls):\n"
+        "        return None\n\n\n"
+        "globals()['datetime'] = _Replacement\n",
+    )
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "rebound_site",
+                "enclosing_scope": None,
+                "head": "datetime",
+                "attribute_path": ["datetime", "utcnow"],
+                "subject": _subject("datetime", ["datetime", "utcnow"]),
+            }
+        ],
+    )
+    assert results["b"]["status"] == "resolved"
+    assert results["b"]["identity_match"] is False
+
+
+def test_binding_probe_does_not_confirm_via_a_later_prefix_after_one_fails_elsewhere(
+    tmp_path: Path,
+) -> None:
+    """A saved `utcnow` global must not confirm when the rebound class lacks `utcnow`.
+
+    The same rebinding as the previous case, but the replacement class has
+    no `utcnow` at all, so the later prefix `datetime.utcnow` raises rather
+    than reaching another live object. A site that spelled it raises too;
+    the probe still cannot tell that spelling from `utcnow()`, so the failed
+    walk ends the guessing exactly as a walk onto a different object does,
+    and the saved global never confirms.
+    """
+    _write(
+        tmp_path,
+        "rebound_missing.py",
+        "from datetime import datetime\n\n"
+        "utcnow = datetime.utcnow\n\n\n"
+        "class _Replacement:\n"
+        "    pass\n\n\n"
+        "globals()['datetime'] = _Replacement\n",
+    )
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "rebound_missing",
+                "enclosing_scope": None,
+                "head": "datetime",
+                "attribute_path": ["datetime", "utcnow"],
+                "subject": _subject("datetime", ["datetime", "utcnow"]),
+            }
+        ],
+    )
+    assert results["b"]["status"] == "resolved"
+    assert results["b"]["identity_match"] is False
+
+
+def test_binding_probe_still_confirms_a_from_imported_prefix_beside_a_wrapper(
+    tmp_path: Path,
+) -> None:
+    """`from datetime import datetime` beside `def utcnow()` still confirms.
+
+    The later prefix `datetime.utcnow` reaches `S` before the last prefix,
+    the wrapper `utcnow`, is tried; the wrapper is no evidence of what the
+    site bound and never enters the decision.
+    """
+    _write(
+        tmp_path,
+        "wrapped_site.py",
+        "from datetime import datetime\n\n\n"
+        "def utcnow():\n"
+        "    return datetime.utcnow()\n",
+    )
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "wrapped_site",
+                "enclosing_scope": ["utcnow"],
+                "head": "datetime",
+                "attribute_path": ["datetime", "utcnow"],
+                "subject": _subject("datetime", ["datetime", "utcnow"]),
+            }
+        ],
+    )
+    assert results["b"]["status"] == "resolved"
+    assert results["b"]["identity_match"] is True
+
+
+@pytest.mark.parametrize(
+    ("source", "head", "attribute_path", "subject"),
+    [
+        (
+            (
+                "import datetime as dt\n\n\n"
+                "def utcnow():\n"
+                "    return dt.datetime.utcnow()\n"
+            ),
+            "datetime",
+            ["datetime", "utcnow"],
+            ("datetime", ["datetime", "utcnow"]),
+        ),
+        (
+            "import typing as t\n\n\nclass Text:\n    pass\n",
+            "typing",
+            ["Text"],
+            ("typing", ["Text"]),
+        ),
+        (
+            "import os as _os\n\npath = '/tmp'\n",
+            "os",
+            ["path", "join"],
+            ("os.path", ["join"]),
+        ),
+    ],
+    ids=("wrapper-function", "project-class", "string-global"),
+)
+def test_binding_probe_does_not_refute_via_an_unrelated_later_prefix_global(
+    tmp_path: Path,
+    source: str,
+    head: str,
+    attribute_path: list[str],
+    subject: tuple[str, list[str]],
+) -> None:
+    """A module global that merely shares a later component's name proves nothing.
+
+    The site imported under an alias, so the recorded head is not visible;
+    a wrapper `def utcnow()`, a project `class Text` or a string `path`
+    happens to share the name of a later component of the canonical dotted
+    name. Walking from it is a guess at the site's spelling, not evidence of
+    what the site bound, so it must not refute - the result stays
+    not-visible, as it was before later prefixes were tried at all.
+    """
+    _write(tmp_path, "aliased_site.py", source)
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "aliased_site",
+                "enclosing_scope": None,
+                "head": head,
+                "attribute_path": attribute_path,
+                "subject": _subject(*subject),
+            }
+        ],
+    )
+    assert results["b"]["status"] == "binding-not-visible"
+    assert results["b"]["identity_match"] is None
+
+
+def test_binding_probe_skips_a_later_prefix_the_callable_binds_locally(
+    tmp_path: Path,
+) -> None:
+    """A function-local `path` shadows the module-level `from os import path`.
+
+    The recorded head `os` is neither local nor global, so only the later
+    prefix `path` could decide - but inside `use()` that name is local for
+    the whole body by Python's scoping rules, so the module global is not
+    what the site bound. Confirming through it would be a false confirmation.
+    """
+    _write(
+        tmp_path,
+        "local_prefix.py",
+        "from os import path\n\n\n"
+        "def use():\n"
+        "    path = '/tmp'\n"
+        "    return path.join('a')\n",
+    )
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "b",
+                "kind": "binding",
+                "module": "local_prefix",
+                "enclosing_scope": ["use"],
+                "head": "os",
+                "attribute_path": ["path", "join"],
+                "subject": _subject("os.path", ["join"]),
+            }
+        ],
+    )
+    assert results["b"]["status"] == "binding-not-visible"
+    assert results["b"]["identity_match"] is None
+
+
+def test_subject_probe_reports_import_error_for_a_submodule_missing_a_dependency(
+    tmp_path: Path,
+) -> None:
+    """A submodule whose own import fails on a missing dependency is unknown.
+
+    The `ModuleNotFoundError` names the dependency, not the submodule, so it
+    is no evidence the submodule is absent - reporting it absent would turn
+    a present subject into a false `refuted-timeline`.
+    """
+    (tmp_path / "needypkg").mkdir()
+    _write(tmp_path, "needypkg/__init__.py", "")
+    _write(tmp_path, "needypkg/sub.py", "import definitely_missing_dependency_xyz\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "s",
+                "kind": "subject",
+                "owner_module": "needypkg",
+                "attribute_path": ["sub"],
+            }
+        ],
+    )
+    assert results["s"]["status"] == "import-error"
+    assert results["s"]["error"] == (
+        "ModuleNotFoundError: No module named 'definitely_missing_dependency_xyz'"
+    )

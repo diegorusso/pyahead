@@ -101,6 +101,7 @@ from pyahead.model import (
     Policy,
     QualifiedCallMatcher,
     QualifiedReferenceMatcher,
+    ReferenceContext,
     Registry,
     ScanCounts,
     ScanReport,
@@ -306,6 +307,32 @@ class _MatcherVisitor(cst.CSTVisitor):
             self._record_patch_guard_inference(node.test)
         return branches
 
+    def _annotation_is_deferred(self, node: cst.BaseExpression) -> bool:
+        """Whether an annotation reference is never evaluated at runtime.
+
+        The annotation of a local variable inside a function body is never
+        evaluated and never stored (PEP 526), so the reference cannot raise
+        on any interpreter and is a typing-only use. Every other annotation
+        stays a runtime use. Parameter, return, class-body and module-level
+        annotations run at definition time up to Python 3.13, and when they
+        are deferred instead, by ``from __future__ import annotations``
+        (PEP 563) or by the lazy evaluation PEP 649 gives them from 3.14,
+        runtime introspection such as ``typing.get_type_hints`` still
+        evaluates them. Deferral alone is therefore no evidence that the
+        reference never runs, and this rule errs toward reporting it.
+        """
+        current: cst.CSTNode = node
+        while (
+            parent := self.get_metadata(ParentNodeProvider, current, None)
+        ) is not None:
+            if isinstance(parent, cst.Annotation):
+                owner = self.get_metadata(ParentNodeProvider, parent, None)
+                return isinstance(owner, cst.AnnAssign) and isinstance(
+                    self.get_metadata(ScopeProvider, owner, None), FunctionScope
+                )
+            current = parent
+        return False
+
     def visit_If(self, node: cst.If) -> None:  # noqa: N802
         """Assign conservative lexical states to ``if``/``elif`` branches."""
         incoming = self._elif_reachability.get(id(node))
@@ -361,7 +388,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         """Leave a one-line branch suite."""
         self._leave_suite(original_node)
 
-    def _record_match(
+    def _record_match(  # noqa: PLR0913 - one override per independent match input.
         self,
         binding: IndexedMatcher,
         node: cst.CSTNode,
@@ -369,6 +396,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         evidence: tuple[tuple[str, str | tuple[str, ...]], ...],
         *,
         reachable_versions: frozenset[PythonMinor] | None = None,
+        usage_contexts: frozenset[UsageContext] | None = None,
     ) -> None:
         reachability = self._reachability
         # Empty lexical states still count toward syntactic fingerprint ordinals.
@@ -390,7 +418,11 @@ class _MatcherVisitor(cst.CSTVisitor):
                     if reachable_versions is None
                     else reachable_versions
                 ),
-                usage_contexts=reachability.usage_contexts,
+                usage_contexts=(
+                    reachability.usage_contexts
+                    if usage_contexts is None
+                    else usage_contexts
+                ),
                 evidence=evidence,
             )
         )
@@ -697,6 +729,10 @@ class _MatcherVisitor(cst.CSTVisitor):
             node,
             lambda child: self.get_metadata(ParentNodeProvider, child, None),
         )
+        deferred_annotation = (
+            reference_context is ReferenceContext.ANNOTATION
+            and self._annotation_is_deferred(node)
+        )
         for binding in self._indexed_bindings(node, self._index.qualified_references):
             matcher = binding.matcher
             if not isinstance(matcher, QualifiedReferenceMatcher):
@@ -718,12 +754,21 @@ class _MatcherVisitor(cst.CSTVisitor):
             )
             if guarded:
                 evidence = (*evidence, ("reachability_guard", "hasattr-and"))
+            usage_contexts: frozenset[UsageContext] | None = None
+            if deferred_annotation:
+                # Never evaluated at runtime: keep only the typing context so a
+                # runtime-only rule no longer applies, and say why.
+                usage_contexts = self._reachability.usage_contexts & {
+                    UsageContext.TYPING
+                }
+                evidence = (*evidence, ("annotation_evaluation", "deferred"))
             self._record_match(
                 binding,
                 node,
                 resolution.confidence,
                 evidence,
                 reachable_versions=reachable_versions,
+                usage_contexts=usage_contexts,
             )
 
     def visit_Name(self, node: cst.Name) -> None:  # noqa: N802

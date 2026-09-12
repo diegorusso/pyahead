@@ -262,8 +262,14 @@ def _installed_interpreters(
         minor = version_parts.get("minor")
         if not isinstance(minor, int) or minor in installed:
             continue
+        # Resolved to the real interpreter file: `uv python install` also
+        # links each interpreter into `~/.local/bin`, and `uv python list`
+        # reports that launcher link. The sandbox binds uv's managed install
+        # root, not `~/.local/bin`, so a bare-interpreter probe started
+        # through the link would fail at exec inside `bwrap` and every C2
+        # probe would surface as `probe-crashed`.
         installed[minor] = InstalledInterpreter(
-            minor=minor, version=version, path=Path(path)
+            minor=minor, version=version, path=Path(path).resolve()
         )
     return installed
 
@@ -541,7 +547,16 @@ def _uv_python_install_dir(uv: str, *, timeout: float) -> Path | None:
     if result.returncode != 0:
         return None
     directory = Path(result.stdout.strip())
-    return directory if directory.is_dir() else None
+    if not directory.is_dir():
+        return None
+    # Resolved for the same reason `_installed_interpreters` resolves each
+    # interpreter path: the sandbox binds this root and the probes exec the
+    # resolved interpreter file beneath it, so a symlink anywhere in the
+    # root's own path (a relocated `~/.local/share`, or
+    # `UV_PYTHON_INSTALL_DIR` pointing through a link) would otherwise leave
+    # that file outside every bound tree and fail every bare-interpreter
+    # probe at exec inside `bwrap`.
+    return directory.resolve()
 
 
 def _create_venv(uv: str, python_path: Path, venv_dir: Path, *, timeout: float) -> None:
@@ -1023,13 +1038,14 @@ def _module_not_found_name(error_text: object) -> str | None:
     return match.group(1) if match else None
 
 
-def _binding_verdict(
+def _binding_verdict(  # noqa: PLR0911, PLR0913 - one branch/input per C1 concern.
     result: dict[str, Any],
     *,
     subject: SubjectDescriptor,
     action_minor: int,
     impact: str,
     reference_minor: int,
+    expected_presence: str,
 ) -> tuple[str | None, dict[str, Any]]:
     """Return one of (verdict, evidence) or (None, evidence) when C1 holds.
 
@@ -1040,6 +1056,18 @@ def _binding_verdict(
     was removed. This is the strongest available confirmation - a
     `module-import-end-to-end` verdict - so it short-circuits C2 rather than
     falling through to a generic `not-adjudicable:import-error`.
+
+    Symmetrically, an identity mismatch derived only from `S` being *absent*
+    (the probe found a live binding but nothing to compare it against) is a
+    refutation only where the registry itself expects `S` to be gone by
+    `reference_minor` (`expected_presence == "absent"`): that is the
+    version-gated-fallback shape the cross-check exists to catch. Where the
+    registry still expects `S` to be present, its absence means `S` was not
+    observable at all - an aliased `from A import B as C` names the
+    nonexistent `A.C`, a platform-only attribute is missing on this host, a
+    runtime-set attribute like `sys.last_type` is unset in a fresh
+    interpreter - and C1 has nothing to compare, so the finding is
+    `not-adjudicable:module-not-importable` rather than wrongly refuted.
     """
     status = result.get("status")
     evidence = {
@@ -1067,6 +1095,8 @@ def _binding_verdict(
         return "not-adjudicable:probe-crashed", evidence
     identity_match = result.get("identity_match")
     if identity_match is False:
+        if result.get("subject_status") == "absent" and expected_presence == "present":
+            return "not-adjudicable:module-not-importable", evidence
         return "refuted-binding", evidence
     if identity_match is True:
         return None, evidence
@@ -1202,6 +1232,7 @@ def _extra_binding_refutation(
             action_minor=action_minor,
             impact=impact,
             reference_minor=minor,
+            expected_presence=_expected_presence(finding, minor),
         )
         if verdict == "refuted-binding":
             return evidence
@@ -1266,6 +1297,7 @@ def _run_binding_phase(
             action_minor=_action_version_minor(finding["action_version"]),
             impact=finding["impact"],
             reference_minor=reference_minor,
+            expected_presence=_expected_presence(finding, reference_minor),
         )
         if verdict is None:
             extra_evidence = _extra_binding_refutation(
@@ -1523,11 +1555,13 @@ def _probe_result_binding_fields_well_typed(item: dict[str, Any]) -> bool:
         return True
     if subject_status not in _SUBJECT_STATUS_VALUES:
         return False
-    expected = (
-        (False,)
-        if item["error"] is not None
-        else _RESOLVED_IDENTITY_MATCH_BY_SUBJECT_STATUS[subject_status]
-    )
+    expected: tuple[bool | None, ...]
+    if item["error"] is not None:
+        # Mirrors `pypi_probe.py`: a failed walk refutes, except when it
+        # stopped at `S`'s own slot while `S` is absent, which is inconclusive.
+        expected = (False, None) if subject_status == "absent" else (False,)
+    else:
+        expected = _RESOLVED_IDENTITY_MATCH_BY_SUBJECT_STATUS[subject_status]
     return identity_match in expected
 
 
@@ -1898,7 +1932,9 @@ def _process_package(  # noqa: C901, PLR0911 - one early return per closed shard
             options=options,
         )
 
-        probe_isolation_mode = "rlimit-only"
+        # `None` until a probe batch actually runs: a package with nothing to
+        # probe must not claim the unsandboxed `rlimit-only` fallback ran.
+        probe_isolation_mode: str | None = None
 
         def _run_binding_probes(
             minor: int, probes: list[dict[str, Any]]
@@ -2038,7 +2074,13 @@ def _run(arguments: argparse.Namespace) -> None:
     manifest_sha256 = _sha256_path(manifest_path)
     wheelhouse = arguments.wheelhouse.resolve(strict=True)
 
-    work_dir = arguments.work_dir
+    # Resolved like the manifest and wheelhouse above: the per-package venv
+    # and scratch home derive from this path and are handed to `bwrap` as
+    # bind sources, which bubblewrap looks up against the sandbox's old root
+    # rather than the caller's working directory, so a relative work
+    # directory (as the documented invocation uses) fails every install
+    # with "Can't find source path".
+    work_dir = arguments.work_dir.resolve()
     shard_dir = work_dir / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
 
