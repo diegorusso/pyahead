@@ -2467,7 +2467,15 @@ and Codex still cannot approve its own work.
 
 These do not block M0–M4 unless stated.
 
-1. **Licence confirmation:** Apache-2.0 is recommended; confirm before public release.
+1. **Licence confirmation:** ~~Apache-2.0 is recommended; confirm before public
+   release.~~ **Decided 13 September 2026: Apache-2.0, confirmed by the
+   repository owner.** `LICENSE` carries the full Apache License 2.0 text,
+   `pyproject.toml` declares `license = "Apache-2.0"` with `license-files`
+   pointing at it, and the OSI classifier matches. The four runtime
+   dependencies distribute compatibly: libcst and PyYAML are MIT, packaging is
+   Apache-2.0 or BSD-2-Clause, and pathspec is MPL-2.0, whose file-level
+   copyleft does not reach PyAhead's own sources because it is installed as a
+   separate distribution rather than incorporated.
 2. **Distribution-name availability:** Verify `pyahead` on PyPI before publishing. The import package remains `pyahead` even if the distribution name changes.
 3. **Hosted commercial entity and billing:** not required until private-beta demand exists.
 4. **Registry update channel:** bundled releases first; signed independent updates later.
