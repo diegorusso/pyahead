@@ -206,7 +206,7 @@ not a reconstruction of lost per-finding data.
 ## Task 1 validation result
 
 Validation ran on Linux with Python 3.13.5 and uv 0.11.21, against source
-revision `1ced030ea4fafb35d4ab25e41f2c76b97f49a1f9` plus this documentation
+the investigation branch plus this documentation
 change. No source, test, registry, dependency, or quality-policy file changed.
 
 - Preservation verification: four standalone standard-library tests passed.

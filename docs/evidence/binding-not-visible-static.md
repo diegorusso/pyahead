@@ -9,7 +9,6 @@ verdicts, revise the September sweep, or approve precision evidence. The
 [preserved baseline](binding-not-visible-baseline.md) remains the record of the
 surviving aggregates and their discrepancy with the published sweep.
 
-Source revision: `525a09719c64a11f7f5c8f9fc5211329f37844b4`.
 Registry revision:
 `3a2bf7aafb4480a41996e2bba8b4f2061d7a94f2727c083af094ba910865385e`.
 Host: Python 3.13.5, uv 0.11.21, Linux aarch64.

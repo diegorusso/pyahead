@@ -13,15 +13,14 @@ is met, so M9 remains blocked until an accountable reviewer signs this decision.
 
 ## Evidence identity
 
-- PyAhead revision reviewed: `89e0fb8cfa241b3b9e7db4828f5965c1be4f2a3d`
-- Released version: `0.2.0` at `4e307d6fc352d37a53b4ae40ab2fca0f419d8557`
+- Released version: `0.2.0`
 - Registry revision: `3a2bf7aafb44`
 - `docs/schema/evidence-v1.json` SHA-256:
   `93aa41b82e097e008bf7ae06b4d4b85e8e18ee76f6ad0c77b42439ade8dfcbca`
 - `docs/schema/report-v1.json` SHA-256:
   `9bcbd827df2fe5c57673877678e2b6f452bcfcf9c2ae3b701425884eafee4140`
-- Hosted verification: run `33528860664`, `headSha`
-  `4e307d6fc352d37a53b4ae40ab2fca0f419d8557`, conclusion `success`, 16 of 16 jobs
+- Hosted verification: run `33528860664`, conclusion `success`, 16 of 16 jobs,
+  on the released commit
 
 The provider under review is the M7 pytest deprecation-warning path. The M8
 dependency path is a separate analysis product with its own report contract and

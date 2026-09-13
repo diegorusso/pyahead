@@ -14,7 +14,6 @@ scan proves repository compatibility.
 
 ## Evidence identity
 
-- PyAhead revision reviewed: `d9ef40b322bf933e9caf203f908d3c9591f9c94b`
 - Registry revision: `3a2bf7aafb4480a41996e2bba8b4f2061d7a94f2727c083af094ba910865385e`
 - Corpus-result SHA-256: `e8d8ec3dbe32f556d4768675672566d58d03fa17beb783a3af66c52154974f6d`
 - Policy: Python 3.11 through 3.16, high-confidence findings only

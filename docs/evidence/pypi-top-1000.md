@@ -17,25 +17,18 @@ and that record stays as approved whatever is decided here.
 
 ## Evidence identity
 
-- PyAhead revision reviewed:
-  `7e0110a662cb7935b3ddc55fe14990e66e9f1e10`, the fifth and sixth reviews'
-  source fix and the last commit on this branch to change a source file.
-  Every commit after it, including the one that carries this revision of
-  the record, changed only this document and the plan, so the source files
-  of the branch head are those of `7e0110a`. The sweep, the post-triage
-  re-run and the report digest below were produced by the analyzer and
-  harness as landed by `4a279dbd2667c5ef60dc20ca85fe279b61c2f319`, which
-  the report block below names beside the revision reviewed. Four review
-  changes after `4a279db` changed the source without re-running the sweep:
-  `6178b96c1eb495fc34d6032db3c1de19af5f9064` narrowed the binding probe's
-  later-prefix walk, `9638826ef75028e8cbccd9d9a25653e406ffa677` narrowed
-  the analyzer's deferred-annotation rule to PEP 526,
-  `b75064416e37ed20bf27c30c4a0c6abd4dad68e6` resolved the uv managed-install
-  root before the sandbox binds it, and `7e0110a` stopped the later-prefix
-  walk at the first bound component that neither reaches `S` nor stops on
-  its slot, and made the corpus manifest loader reject a non-string
-  unresolved reason. What each can and cannot change in the figures below is
-  stated under Limitations; none was re-measured over the corpus.
+- Source reviewed: the branch head. Every commit after the fifth and sixth
+  reviews' source fix changed only this document and the plan, so the head's
+  source files are those of that fix. The sweep, the post-triage re-run and the
+  report digest below were produced by the analyzer and harness as they stood at
+  the triage commit. Four later review changes altered source without re-running
+  the sweep: the binding probe's later-prefix walk was narrowed; the analyzer's
+  deferred-annotation rule was narrowed to PEP 526; the uv managed-install root
+  was resolved before the sandbox binds it; and the later-prefix walk was stopped
+  at the first bound component that neither reaches `S` nor stops on its slot,
+  with the corpus manifest loader made to reject a non-string unresolved reason.
+  What each can and cannot change in the figures below is stated under
+  Limitations; none was re-measured over the corpus.
 - PyAhead version: `0.2.0`
 - Registry revision: `2026.07.31 (3a2bf7aafb44)`, 133 rules valid; full
   digest `3a2bf7aafb4480a41996e2bba8b4f2061d7a94f2727c083af094ba910865385e`,
@@ -78,7 +71,7 @@ post-triage report:
 ```text
 Corpus: PyPI top-1000, rank 1-1000, retrieved 2026-09-10, source https://hugovk.github.io/top-pypi-packages/top-pypi-packages.json
 Manifest SHA-256: bafc2107da4e6e774f5d5a7c8385e6da0ef7fc04ce553b326c127e761529872b
-PyAhead version: 0.2.0 (revision 7e0110a662cb7935b3ddc55fe14990e66e9f1e10; sweep run at 4a279dbd2667c5ef60dc20ca85fe279b61c2f319)
+PyAhead version: 0.2.0 (source as at the sixth review's fix; sweep run at the triage commit)
 Registry revision: 2026.07.31 (3a2bf7aafb44)
 Report SHA-256: bec273386131aa799adddfc4ccb67e04519432106bb9868082a31ae8e84cbb62
 
@@ -408,7 +401,7 @@ narrowly, provided it was named. Besides the five oracle fixes above:
   adjudication `isolation_mode` stays unset until a probe batch runs, so a
   package with no findings is not misreported as a fallback. Three unit tests.
   After the run, the third review added a fourth runner fix to the same file
-  in `b750644`: the uv managed-install root is resolved before the sandbox
+  the uv managed-install root is resolved before the sandbox
   binds it, so the resolved interpreter files the probes exec always lie
   under a bound tree (`test_uv_python_install_dir_resolves_a_symlinked_root`).
   On this host the root resolves to itself, so the sweep already ran with
@@ -422,7 +415,7 @@ aggregations are recorded rather than only the second.
 
 ## Verification
 
-On the sixth review's tree, `7e0110a`, the repository gate passed with each
+On the sixth review's tree the repository gate passed with each
 command exiting 0; the seventh, eighth and ninth reviews changed only this
 document and the plan, so every later commit on the branch has the same
 source files:
@@ -434,37 +427,36 @@ source files:
 | `uv run mypy src scripts` | Success: no issues found in 46 source files |
 | `uv run pytest` | 1970 passed, 11 skipped, 0 failed, exit 0, coverage 91.62% against the 90% floor, in 1171.29 s (19 min 31 s) |
 
-The same gate passed at `2eaea98` (1955 passed, 11 skipped), at `6178b96`
-(1965 passed, 11 skipped), at `9638826` (1964 passed, 11 skipped), at
-`b750644` (1965 passed, 11 skipped) and at `7983731` (1965 passed, 11
-skipped, in 1162.97 s); the pass counts differ only by the fixtures each
-review added or replaced. It passed again on the seventh review's tree
+The same gate passed on every earlier review tree, with 1955, 1965, 1964,
+1965 and 1965 passing and 11 skipped each time, the last in 1162.97 s; the
+pass counts differ only by the fixtures each review added or replaced. It passed again on the seventh review's tree
 (1970 passed, 11 skipped, exit 0, coverage 91.62%, in 1173.28 s), on the
 eighth review's tree (1970 passed, 11 skipped, exit 0, coverage 91.62%, in
 1223.73 s) and on the ninth review's tree (1970 passed, 11 skipped, exit 0,
-coverage 91.62%, in 1200.85 s), all of whose source files are those of
-`7e0110a`.
+coverage 91.62%, in 1200.85 s), all of whose source files are those of the
+sixth review's fix.
 
 Each fixed file was reverted alone to its `main` version and the test modules
 that cover it run in full, then the file restored and the modules run again:
 `scripts/pypi_probe.py` on the seventh review's tree, whose source files are
-those of `7e0110a`, because the sixth review changed the probe and added a
+those of the sixth review's fix, because the sixth review changed the probe and added a
 fixture after the fifth review's check; `scripts/pypi_corpus.py` on the fifth
-review's tree, the last to change it; `scripts/pypi_validate.py` at revision
-`b750644`; and the other two at `9638826`, since neither they nor their test
+review's tree, the last to change it; `scripts/pypi_validate.py` at the review that resolved the uv managed-install
+root; and the other two at the review that narrowed the deferred-annotation
+rule, since neither they nor their test
 modules changed afterwards. Every fix-specific test fails without its fix and
 passes with it; every other test in those modules, including the guard tests
 that assert a fix does not over-reach, passes both ways. The two later-prefix
 fixtures added by the first review pass against `main`, which had no
 later-prefix walk at all; that review recorded them failing against the
-pre-narrowing probe at `a4c753c`. The rebound-class fixture added by the
+pre-narrowing probe. The rebound-class fixture added by the
 fifth review
 (`test_binding_probe_does_not_confirm_via_a_later_prefix_after_one_binds_elsewhere`)
 and the failed-walk fixture added by the sixth
 (`test_binding_probe_does_not_confirm_via_a_later_prefix_after_one_fails_elsewhere`)
 pass against `main` for the same reason and are the 2 of 74 that fail
-against the probe at `7983731`, whose probe and corpus scripts are identical
-to those at `b750644`; the fifth review's two corpus fixtures fail against
+against the fifth review's probe, whose probe and corpus scripts are identical
+to the preceding review's; the fifth review's two corpus fixtures fail against
 that loader (2 of 109) with the `TypeError` the fix removes.
 
 | Fixed file | Test modules | Failing without the fix | Passing with it |
@@ -543,7 +535,7 @@ supersedes or complements Gate C is the reviewer's decision.
   and raise coverage. The 98.5% is therefore a floor with respect to the
   eight open rows, not with respect to a full re-adjudication.
 - After the second aggregation, the first review narrowed item 5 once more,
-  in `6178b96`: a later component of the canonical name may only confirm or
+  a later component of the canonical name may only confirm or
   be inconclusive, never refute, and a later component the enclosing
   callable binds locally is skipped. The sweep was not re-run under that
   oracle. The first half can only turn a refutation into a confirmation or
@@ -558,7 +550,7 @@ supersedes or complements Gate C is the reviewer's decision.
   so that count is unmeasured rather than known to be zero.
 - The second review narrowed the analyzer's deferred-annotation rule to the
   annotation of a local variable inside a function body (PEP 526), in
-  `9638826`; as first landed it also deferred every annotation under
+  the second narrowing; as first landed it also deferred every annotation under
   `from __future__ import annotations`. The 61 refreshed packages were
   scanned with the broader rule. The plan's per-package delta check
   recorded that the two PyAhead fixes removed exactly the distlib and anyio
@@ -568,13 +560,13 @@ supersedes or complements Gate C is the reviewer's decision.
   with identical fingerprints; the other 736 packages were scanned before
   either rule existed. No recorded figure depends on the PEP 563 half.
 - The third review resolved the uv managed-install root before the sandbox
-  binds it, in `b750644`, so that the resolved interpreter paths the runner
+  binds it, so that the resolved interpreter paths the runner
   records lie under a bound tree even when `uv python dir` reaches its root
   through a symlink. On this host that root is a real directory whose
   resolved path is itself, so the unresolved and resolved bind sources are
   the same string and every probe in the sweep already ran with the mount
   the fixed runner binds; no recorded figure can depend on this change.
-- The fifth and sixth reviews narrowed item 5 a third time, in `7e0110a`:
+- The fifth and sixth reviews narrowed item 5 a third time:
   the later components are tried in order, and the first that is bound
   settles the guessing unless its walk reaches `S` or stops on `S`'s slot -
   whether it completes on some other object or raises earlier, no component

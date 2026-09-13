@@ -9,7 +9,6 @@ per-rule/reason distribution. Task 4 owns the per-rule decision and any proposed
 change. This task changes no analyser, registry, oracle, adjudication vocabulary,
 protected instruction/design/CI file, or quality-policy table.
 
-Source revision: `4ad99319e9998d097346b39876c6cb87416a2729`.
 PyAhead: `0.2.0`. Registry revision:
 `3a2bf7aafb4480a41996e2bba8b4f2061d7a94f2727c083af094ba910865385e`.
 Host: Linux aarch64; development Python 3.13.5 and uv 0.11.21.

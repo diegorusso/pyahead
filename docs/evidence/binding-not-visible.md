@@ -30,7 +30,7 @@ therefore remains preferable to a confirmation based on an invented binding.
 ## Evidence identity and denominators
 
 Prepared on 13 September 2026 against source revision
-`1d7b36e166069875a3a039dd2d5671ae1a704877`, plus the characterization tests
+the investigation branch, plus the characterization tests
 described below. PyAhead is `0.2.0`; the registry revision is
 `3a2bf7aafb4480a41996e2bba8b4f2061d7a94f2727c083af094ba910865385e`.
 This task does not acquire a corpus or run third-party package probes.
@@ -272,7 +272,7 @@ completion, Task 5 remained pending.
 ## Task 5 completion
 
 Completed on 13 September 2026 against
-`c2f7ecf8b8c9c35447c6ffd40806d761611c656e`, following the explicit no-change
+this investigation, following the explicit no-change
 branch supported by the recommendation above. **No implementation change was
 made.** No tests or fixtures were added or changed, so a per-fixture
 fail-without-fix/pass-with-fix check is not applicable. Task 4's 20

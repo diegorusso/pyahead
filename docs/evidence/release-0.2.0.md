@@ -7,13 +7,12 @@ or released.
 ## Candidate identity
 
 - Version: `0.2.0`
-- Candidate commit: `4e307d6fc352d37a53b4ae40ab2fca0f419d8557`
 - Registry revision: `2026.07.31 (3a2bf7aafb44)`, 133 rules valid
 - Measurement host: Linux aarch64, CPython 3.13.5
 - Evidence assembled: 1 September 2026
 
-The candidate is CI-verified. Run `33528860664` concluded `success` on that exact
-`headSha` with all 16 jobs green, satisfying `docs/releasing.md` §1, which
+The candidate is CI-verified. Run `33528860664` concluded `success` on the
+released commit with all 16 jobs green, satisfying `docs/releasing.md` §1, which
 requires successful Linux, macOS, Windows, build, and install jobs for the
 released commit.
 
@@ -27,13 +26,13 @@ Windows CI had been failing on every candidate. Raw NTSTATUS failures in
 callers catch, so reading `pyproject.toml` through the rooted-input path failed
 and the CLI exited 2 where it should have exited 0, 1, or 3.
 
-| Commit | Windows test failures |
+| Stage | Windows test failures |
 | --- | ---: |
-| `de9805e` before any fix | 154 |
-| `12f6e13` after the NTSTATUS translation | 2 |
-| `47057e1` after guarding two descriptor-only tests | 0 |
+| Before any fix | 154 |
+| After the NTSTATUS translation | 2 |
+| After guarding two descriptor-only tests | 0 |
 
-`a273ace` maps `OBJECT_NAME_NOT_FOUND`, `OBJECT_PATH_NOT_FOUND`, and
+The NTSTATUS translation maps `OBJECT_NAME_NOT_FOUND`, `OBJECT_PATH_NOT_FOUND`, and
 `NO_SUCH_FILE` to `FileNotFoundError`; `ACCESS_DENIED` and `SHARING_VIOLATION` to
 `PermissionError`; and `NOT_A_DIRECTORY` to `NotADirectoryError`, keeping
 `.status` intact for the existing collision branch. Regression coverage is in
@@ -44,7 +43,7 @@ The two survivors were pre-existing rather than caused by that fix; they were
 invisible among 154. Both monkeypatch `supports_rooted_descriptor_reads` to
 `True` and intercept `os.open` calls carrying `dir_fd`, but Windows provides
 neither `os.supports_dir_fd` for `open`/`stat` nor `O_DIRECTORY`/`O_NOFOLLOW`, so
-they asserted against a path the platform cannot take. `47057e1` guards both with
+they asserted against a path the platform cannot take. The fix guards both with
 the capability they require. They still run unchanged on Linux and macOS, and
 Windows keeps its own fail-closed coverage in
 `test_windows_leaf_reparse_swap_fails_closed`.
@@ -56,7 +55,7 @@ to its implementing module and covering tests. No FAIL verdict was found.
 
 | Submilestone | Verdict | Gap recorded |
 | --- | --- | --- |
-| M8.5a | 1 gap | Native Windows tests lacked the missing-input case, the confirmed blocker root cause. Closed by `a273ace`. |
+| M8.5a | 1 gap | Native Windows tests lacked the missing-input case, the confirmed blocker root cause. Closed by the NTSTATUS translation. |
 | M8.5b | Pass | All 7 acceptance bullets pass. |
 | M8.5c | Pass | All 4 deliverables and 7 acceptance bullets pass. |
 | M8.5d | 1 gap | Doc/code drift between `docs/security-and-privacy.md` and `install_smoke.py` is not test-pinned. |
@@ -131,10 +130,9 @@ representative.
 
 ## Hosted CI
 
-Run `33528860664` on the released commit, `headSha`
-`4e307d6fc352d37a53b4ae40ab2fca0f419d8557`, conclusion `success`, 16 of 16 jobs
-green. Its parent `47057e1` was independently green in run `33503563286`, so the
-Windows fix and the version bump were each verified in isolation.
+Run `33528860664` on the released commit concluded `success`, 16 of 16 jobs
+green. Its parent was independently green in run `33503563286`, so the Windows
+fix and the version bump were each verified in isolation.
 
 | Job | Host | Python |
 | --- | --- | --- |
@@ -170,7 +168,7 @@ tool version. The `Unreleased` changelog section was cut as `0.2.0`.
 
 ## Change range
 
-19 commits since the last published release `ea25f72`: 82 files,
+19 commits since the last published release, M8: 82 files,
 16,263 insertions, 17,144 deletions.
 
 - M8.5a–g release hardening: rooted repository input, fail-closed pytest
@@ -194,8 +192,8 @@ M8.5a, M8.5b, M8.5c, M8.5f, M8.5g, and the controller removal; `AGENTS.md` and
 `.github/workflows/ci.yml` by M8.5g and the controller removal. Each change
 belonged to a milestone that required it.
 
-`docs/evidence/gate-c.md` is untouched, unchanged since its approval in
-`4af24de`. Gate C was neither re-approved nor restated.
+`docs/evidence/gate-c.md` is untouched, unchanged since its approval. Gate C
+was neither re-approved nor restated.
 
 ## Not done
 
