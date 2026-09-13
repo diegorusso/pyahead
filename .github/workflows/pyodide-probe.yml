@@ -1,0 +1,66 @@
+name: Pyodide probe
+
+# Scratch workflow for docs/plans/20260913-browser-scan-site.md Task 1. It is
+# not part of the CI or release contract and lives only on this branch; delete
+# the branch once Task 1's result is recorded.
+#
+# The development host has no JavaScript runtime, so the only way to answer
+# "does PyAhead actually run under Pyodide" is to run it here.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["pyodide-probe"]
+
+permissions:
+  contents: read
+
+jobs:
+  resolved:
+    name: Pyodide 314.0.6, published dependency metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # Pyodide 314.0.6 runs Python 3.14.2 and ships libcst 1.8.6, which
+      # satisfies the `libcst>=1.8,<2` floor this project already publishes.
+      - name: Install pinned Pyodide
+        run: npm install --no-save pyodide@314.0.6
+
+      - name: Probe
+        run: node .github/probe/pyodide-probe.mjs
+        env:
+          PROBE_MODE: resolved
+          PYAHEAD_VERSION: "0.2.1"
+
+  libcst16:
+    name: Pyodide 0.29.4, libcst 1.6.0 (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Records whether the `libcst>=1.8` floor could be lowered if the site ever
+    # has to target an older Pyodide. A failure here does not block the site.
+    continue-on-error: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install pinned Pyodide
+        run: npm install --no-save pyodide@0.29.4
+
+      - name: Probe
+        run: node .github/probe/pyodide-probe.mjs
+        env:
+          PROBE_MODE: libcst16
+          PYAHEAD_VERSION: "0.2.1"
