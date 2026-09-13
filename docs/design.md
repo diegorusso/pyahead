@@ -2476,7 +2476,12 @@ These do not block M0–M4 unless stated.
    Apache-2.0 or BSD-2-Clause, and pathspec is MPL-2.0, whose file-level
    copyleft does not reach PyAhead's own sources because it is installed as a
    separate distribution rather than incorporated.
-2. **Distribution-name availability:** Verify `pyahead` on PyPI before publishing. The import package remains `pyahead` even if the distribution name changes.
+2. **Distribution-name availability:** ~~Verify `pyahead` on PyPI before
+   publishing.~~ **Decided 13 September 2026: `pyahead` is available and will be
+   registered by the repository owner.** Both `https://pypi.org/pypi/pyahead/json`
+   and the simple index return 404, so no project holds the name. The import
+   package remains `pyahead`, which now matches the distribution name. The name is
+   claimed by the first upload, so it is unowned until that upload succeeds.
 3. **Hosted commercial entity and billing:** not required until private-beta demand exists.
 4. **Registry update channel:** bundled releases first; signed independent updates later.
 5. **First type-checker adapter:** evaluate machine-output stability before choosing mypy or another checker.
