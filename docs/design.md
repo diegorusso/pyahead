@@ -242,9 +242,11 @@ repository, so this line carries no abuse, disclosure or retention questions. It
 exists because a scan that needs no install is the cheapest way for someone to
 evaluate PyAhead.
 
-This depends on Pyodide's `libcst` build, which is currently `1.6.0` against a
-`libcst>=1.8` floor here. Lowering that floor is a prerequisite and is not
-assumed.
+Pyodide 314.0.6 runs Python 3.14.2 and ships `libcst 1.8.6`, which the
+published `libcst>=1.8,<2` floor already accepts, so `micropip install pyahead`
+resolves in the browser with no override and no change to this repository. That
+was measured on an Actions runner rather than assumed, and the plan for this
+line records the run.
 
 This is the last planned release line before `1.0`. The hosted service that
 previously held `0.3` is not being built; §18 records why.
