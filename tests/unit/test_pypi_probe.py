@@ -69,6 +69,80 @@ def _subject(owner_module: str, attribute_path: list[str]) -> dict[str, Any]:
     return {"owner_module": owner_module, "attribute_path": attribute_path}
 
 
+@pytest.mark.parametrize("name", ["AnyStr", "Text", "Hashable", "Sized"])
+@pytest.mark.parametrize(
+    ("construct", "visible"),
+    [
+        ("eager-signature", True),
+        ("future-signature", True),
+        ("aliased-signature", False),
+        ("local-import", False),
+        ("typing-guard", False),
+        ("false-guard-signature", False),
+        ("false-guard-local", False),
+    ],
+)
+def test_typing_annotation_binding_depends_on_import_visibility(
+    tmp_path: Path, name: str, construct: str, *, visible: bool
+) -> None:
+    """C1 visibility is independent of annotation syntax or future deferral."""
+    source = {
+        "eager-signature": (
+            f"from typing import {name}\ndef identity(value: {name}): return value\n"
+        ),
+        "future-signature": (
+            "from __future__ import annotations\n"
+            f"from typing import {name}\n"
+            f"def identity(value: {name}): return value\n"
+        ),
+        "aliased-signature": (
+            f"from typing import {name} as Alias\n"
+            "def identity(value: Alias): return value\n"
+        ),
+        "local-import": (
+            "def identity(value):\n"
+            f"    from typing import {name}\n"
+            f"    local: {name} = value\n"
+            "    return local\n"
+        ),
+        "typing-guard": (
+            "from __future__ import annotations\n"
+            "from typing import TYPE_CHECKING\n"
+            f"if TYPE_CHECKING:\n    from typing import {name}\n"
+            f"def identity(value: {name}): return value\n"
+        ),
+        "false-guard-signature": (
+            "from __future__ import annotations\n"
+            f"if False:\n    from typing import {name}\n"
+            f"def identity(value: {name}) -> {name}: return value\n"
+        ),
+        "false-guard-local": (
+            "from __future__ import annotations\n"
+            f"if False:\n    from typing import {name}\n"
+            "def identity(value):\n"
+            f"    local: {name} = value\n"
+            "    return local\n"
+        ),
+    }[construct]
+    _write(tmp_path, "annotation_sample.py", source)
+    result = _run_batch(
+        tmp_path,
+        [
+            {
+                "id": "annotation",
+                "kind": "binding",
+                "module": "annotation_sample",
+                "enclosing_scope": ["identity"],
+                "head": "typing",
+                "attribute_path": [name],
+                "subject": _subject("typing", [name]),
+            }
+        ],
+    )["annotation"]
+    assert result["status"] == ("resolved" if visible else "binding-not-visible")
+    assert result["identity_match"] is (True if visible else None)
+
+
 # --- subject probe -----------------------------------------------------
 
 
