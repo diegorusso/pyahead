@@ -1,0 +1,98 @@
+name: Release
+
+# Publication stays operator-controlled. This workflow runs only when an
+# operator pushes a `v*` tag, and the `pypi` environment gates the upload behind
+# a required reviewer, so a tag alone never publishes. It builds the
+# distributions once and publishes those exact files, so what reaches PyPI is
+# what the release evidence records.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify the tagged distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          version: "0.11.21" # Reviewed M8 dependency-resolver grammar.
+
+      - name: Build distributions
+        run: uv build --clear
+
+      - name: Confirm the built version matches the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          built="$(uv run --frozen pyahead --version | awk '{print $2}')"
+          if [ "$tag" != "$built" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match built version ${built}" >&2
+            exit 1
+          fi
+          test -f "dist/pyahead-${built}-py3-none-any.whl"
+          test -f "dist/pyahead-${built}.tar.gz"
+
+      - name: Smoke-test the built artifacts
+        run: |
+          uv run --frozen python scripts/install_smoke.py --dist-dir dist --kind wheel
+          uv run --frozen python scripts/install_smoke.py --dist-dir dist --kind sdist
+
+      - name: Record digests
+        run: |
+          python -c "import hashlib,pathlib; [print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name) for p in sorted(pathlib.Path('dist').iterdir()) if p.is_file() and p.name.startswith('pyahead')]" | tee dist-digests.txt
+
+      - name: Upload the distributions
+        uses: actions/upload-artifact@v5
+        with:
+          name: distributions
+          path: |
+            dist/pyahead-*.whl
+            dist/pyahead-*.tar.gz
+            dist-digests.txt
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Required reviewers on this environment are what keep publication an
+    # explicit operator action rather than a consequence of pushing a tag.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pyahead
+    permissions:
+      # Mints the short-lived OIDC token trusted publishing exchanges for an
+      # upload credential. No API token is stored in this repository.
+      id-token: write
+    steps:
+      - name: Download the built distributions
+        uses: actions/download-artifact@v6
+        with:
+          name: distributions
+          path: dist
+
+      - name: Remove the digest list from the upload set
+        run: rm -f dist/dist-digests.txt
+
+      - name: Publish
+        # No password or token input: its absence is what selects trusted
+        # publishing. Configure the publisher on PyPI against this repository,
+        # this workflow filename, and the `pypi` environment.
+        uses: pypa/gh-action-pypi-publish@release/v1

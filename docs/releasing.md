@@ -66,11 +66,29 @@ After approval, create one annotated `v<version>` tag on the verified commit and
 push that tag without rewriting it. Create a GitHub release from the same tag
 and attach the verified wheel, sdist, and digest list.
 
-Publish only those exact files through an account with multi-factor
-authentication or a narrowly scoped trusted-publishing identity. If a token is
-unavoidable, pass it through the publisher's environment mechanism and never
-write it to repository files or logs. Publication is operator-controlled; this
-repository intentionally provides no automatic release workflow in M6.
+Publish only those exact files. Two routes are supported.
+
+`.github/workflows/release.yml` publishes through PyPI trusted publishing when
+an operator pushes a `v*` tag. It builds the distributions once, refuses to
+continue if the built version does not match the tag, smoke-tests the wheel and
+sdist, records their digests, and publishes those same files. The upload runs in
+the `pypi` environment, whose required reviewers are what keep publication an
+explicit operator action rather than a consequence of pushing a tag. No API
+token is stored in this repository: the workflow requests a short-lived OIDC
+credential, and the publish step deliberately passes no password input.
+
+Because that workflow builds in CI, the published artifacts are the ones it
+built, not the ones built locally in §2. Record the workflow's digests in the
+release evidence when publishing this way.
+
+Uploading by hand remains valid and is preferable when the release evidence
+already pins locally built artifacts: publish those exact files through an
+account with multi-factor authentication. If a token is unavoidable, pass it
+through the publisher's environment mechanism and never write it to repository
+files or logs.
+
+Publication stays operator-controlled either way. M6 intentionally shipped no
+release workflow; the one above was added when publishing began.
 
 ## 5. Post-release checks
 

@@ -334,7 +334,9 @@ pyahead/
 ├── AGENTS.md                       # concise Codex working contract
 ├── .github/
 │   ├── pull_request_template.md
-│   └── workflows/ci.yml
+│   └── workflows/
+│       ├── ci.yml
+│       └── release.yml          # trusted publishing, operator-triggered
 ├── docs/
 │   ├── design.md                    # this document
 │   ├── usage.md
