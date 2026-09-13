@@ -57,14 +57,22 @@ jobs:
         run: |
           python -c "import hashlib,pathlib; [print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name) for p in sorted(pathlib.Path('dist').iterdir()) if p.is_file() and p.name.startswith('pyahead')]" | tee dist-digests.txt
 
+      # `path` is the dist directory alone, so the artifact holds the two
+      # distributions at its root. Mixing in a file from the workspace root
+      # would re-root the artifact there and nest them under `dist/`, which the
+      # publish step then reads as a distribution named `dist`.
       - name: Upload the distributions
         uses: actions/upload-artifact@v5
         with:
           name: distributions
-          path: |
-            dist/pyahead-*.whl
-            dist/pyahead-*.tar.gz
-            dist-digests.txt
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload the digest list
+        uses: actions/upload-artifact@v5
+        with:
+          name: digests
+          path: dist-digests.txt
           if-no-files-found: error
 
   publish:
@@ -88,8 +96,11 @@ jobs:
           name: distributions
           path: dist
 
-      - name: Remove the digest list from the upload set
-        run: rm -f dist/dist-digests.txt
+      - name: Confirm exactly the two distributions are staged
+        run: |
+          ls -1 dist
+          test "$(ls -1 dist | wc -l)" -eq 2
+          ls dist/pyahead-*.whl dist/pyahead-*.tar.gz >/dev/null
 
       - name: Publish
         # No password or token input: its absence is what selects trusted
