@@ -15,8 +15,8 @@ installed locally.
 Use an isolated tool environment after publication:
 
 ```console
-pipx install pyahead==0.2.0
-uvx pyahead==0.2.0 --version
+pipx install pyahead==0.2.1
+uvx pyahead==0.2.1 --version
 ```
 
 For a repository build:
@@ -24,7 +24,7 @@ For a repository build:
 ```console
 uv build
 python -m venv .pyahead-smoke
-.pyahead-smoke/bin/python -m pip install dist/pyahead-0.2.0-py3-none-any.whl
+.pyahead-smoke/bin/python -m pip install dist/pyahead-0.2.1-py3-none-any.whl
 .pyahead-smoke/bin/pyahead --version
 ```
 

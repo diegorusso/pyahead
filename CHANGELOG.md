@@ -6,6 +6,11 @@ stabilizing.
 
 ## Unreleased
 
+## 0.2.1 - 2026-09-13
+
+Precision fixes found by adjudicating the PyPI top-1000 against real
+interpreters. No public contract changes.
+
 ### Fixed
 
 - `sys.version_info[0]` compared against an integer, the Python 2/3 split

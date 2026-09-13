@@ -1,4 +1,4 @@
-PyAhead 0.2.0
+PyAhead 0.2.1
 Policy: Python 3.11 through 3.13
 Registry: 2026.07.31 (3a2bf7aafb44)
 

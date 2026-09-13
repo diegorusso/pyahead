@@ -25,7 +25,7 @@ analysis incomplete rather than silently clean. See
 
 ## Status
 
-Version `0.2.0` is the first public-alpha release. It provides deterministic
+Version `0.2.1` is the first published public-alpha release. It provides deterministic
 text, JSON, and SARIF 2.1.0 reports; strict project configuration; baselines and
 rule-specific suppressions; version-guard and typing-context reachability; a
 source-linked, coverage-audited CPython registry; opt-in pytest warning
@@ -63,16 +63,16 @@ prerequisite for the M7–M8 dynamic-evidence work.
 After the alpha is published, install it in an isolated tool environment:
 
 ```console
-pipx install pyahead==0.2.0
+pipx install pyahead==0.2.1
 # or run without a persistent tool environment
-uvx pyahead==0.2.0 --version
+uvx pyahead==0.2.1 --version
 ```
 
 Before publication, build and install the candidate from this repository:
 
 ```console
 uv build
-pipx install dist/pyahead-0.2.0-py3-none-any.whl
+pipx install dist/pyahead-0.2.1-py3-none-any.whl
 ```
 
 Installing PyAhead may contact the configured package index to obtain PyAhead
