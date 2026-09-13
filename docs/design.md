@@ -56,9 +56,11 @@ The product consists of three layers, delivered in this order:
 
 1. An open-source deterministic analyser and CLI.
 2. A reviewed, versioned compatibility registry.
-3. A hosted GitHub App that continuously rescans repositories and reports only newly introduced or newly known risks.
+3. A static site that runs the analyser in the visitor's browser, so a repository can be scanned without installing anything.
 
-The first implementation phase covers layers 1 and 2. The hosted service must not be built until the CLI passes the validation gates in section 22.
+Layers 1 and 2 shipped in `0.2`. Layer 3 is `0.3` and is described in §4.4.
+
+An earlier revision made layer 3 a hosted GitHub App performing continuous rescans. That is not being built; §18 records the decision and what it would have added that the browser site does not.
 
 ### 1.1 Why now
 
@@ -117,7 +119,6 @@ After the static analyser proves useful, PyAhead should add:
 - normalized runtime-warning evidence from tests;
 - test and import probes on actual target interpreters in customer CI;
 - C API compatibility rules;
-- a hosted GitHub App with check runs, history, triage, and registry-triggered rescans;
 - organisation-wide compatibility views.
 
 ### 2.3 Non-goals for the first public alpha
@@ -224,16 +225,29 @@ still an open decision in §25. They move to `0.2.x`, whichever release
 implements one, and neither blocks Gate D, which asks for one evidence provider
 working end to end rather than for every provider this section once listed.
 
-### 4.4 `0.3`: hosted private beta
+### 4.4 `0.3`: browser scan site
 
-Add:
+Add a static site, in a separate public repository published through GitHub
+Pages, where someone pastes a public repository URL and gets a report:
 
-- GitHub App installation;
-- scans on push and pull request;
-- GitHub Check annotations;
-- dashboard, history, and triage;
-- registry-triggered rescans;
-- strict source-retention and isolation controls.
+- PyAhead compiled to WebAssembly through Pyodide, running in the visitor's
+  browser;
+- source fetched by that browser from `raw.githubusercontent.com`, with one
+  `api.github.com` call to list the tree;
+- the `report-v1` document rendered as a page, and offered for download;
+- incompleteness shown rather than presented as a clean scan.
+
+Nothing is submitted to a server and nothing is published about anyone's
+repository, so this line carries no abuse, disclosure or retention questions. It
+exists because a scan that needs no install is the cheapest way for someone to
+evaluate PyAhead.
+
+This depends on Pyodide's `libcst` build, which is currently `1.6.0` against a
+`libcst>=1.8` floor here. Lowering that floor is a prerequisite and is not
+assumed.
+
+This is the last planned release line before `1.0`. The hosted service that
+previously held `0.3` is not being built; §18 records why.
 
 ### 4.5 `1.0`
 
@@ -312,15 +326,17 @@ pyahead explain CPY0001
 
 This prints the full timeline, matcher types, remediation, sources, registry certainty, and examples without scanning a repository.
 
-### 5.6 Hosted service
+### 5.6 Browser scan site
 
-1. Install the GitHub App on selected repositories.
-2. Confirm or override inferred Python policy.
-3. Receive a check run on the default branch and pull requests.
-4. See only newly introduced findings on a pull request.
-5. Receive a new scan when a registry update adds or changes a relevant rule, even if repository code has not changed.
+1. Open the site and paste a public repository URL.
+2. The page fetches that repository's Python files and runs the analyser in the
+   browser; nothing is uploaded and no account is needed.
+3. Read the report, or download it as `report-v1` JSON.
+4. Install the CLI to scan on a schedule, in CI, or against private code.
 
-That final behaviour is a principal reason for the hosted product to exist.
+The site exists to remove the install step from a first evaluation. Continuous
+rescanning when the registry moves, which an installed CLI or a service would
+give, is not part of it.
 
 ---
 
@@ -422,7 +438,6 @@ pyahead/
 - Package registry YAML under `pyahead.data` and load it through `importlib.resources`.
 - Use semantic versioning for the CLI and an independent content revision for the registry.
 - Recommended licence for the open CLI and registry: Apache-2.0. Confirm before the first public release.
-- Keep the eventual proprietary hosted service in a separate private repository that consumes the published core package. Do not place service code under the core repository's open-source licence by accident.
 
 ### 6.2 Initial dependencies
 
@@ -799,7 +814,7 @@ Compute the registry revision as a SHA-256 digest of canonicalized registry and 
 - a human release label such as `2026.07.31`; and
 - a short content digest such as `8e8128d`.
 
-Every report includes both. The hosted service uses the full digest in scan identity.
+Every report includes both.
 
 ---
 
@@ -1513,7 +1528,7 @@ own evidence state, and any incomplete row keeps exit code 3 precedence.
 
 Use `packaging` for metadata semantics and an isolated `uv` resolver adapter initially. Resolver use is opt-in, network-visible, separately timed out, and never part of the default static command.
 
-Do not execute build backends merely to discover metadata in the hosted service.
+Do not execute build backends merely to discover metadata.
 
 ### 17.3 PEP 702
 
@@ -1536,8 +1551,8 @@ The explicit pytest plugin captures `DeprecationWarning` and
 continues to control warning policy through `-W`; PyAhead adds bounded durable
 normalization, completeness metadata, and deterministic timeline linking.
 
-Dynamic execution occurs in the user's CI, not the hosted scanner. The evidence
-artifact is passed explicitly to `pyahead check --evidence`.
+Dynamic execution occurs in the user's CI. The evidence artifact is passed
+explicitly to `pyahead check --evidence`.
 
 ### 17.5 Compatibility probes
 
@@ -1560,136 +1575,24 @@ against real interpreters.
 
 ---
 
-## 18. Hosted GitHub service design
+## 18. Hosted service: not pursued
 
-The hosted service is a later phase, but its constraints influence the core API. Once Gate C passes, create it in a separate private repository and depend on released versions of the open `pyahead` core package. The diagrams and contracts below apply to that repository; do not scaffold the service inside `diegorusso/pyahead`.
+Earlier revisions specified a hosted GitHub App here: a Django and PostgreSQL
+service in a separate private repository, with webhook ingestion, job claiming,
+isolated scan workers, check-run publishing, a dashboard and registry-triggered
+rescans. It was scoped to `0.3`, carried by milestone M9 and gated by Gate E.
 
-### 18.1 Architecture
+That line is dropped. The project will not operate a service. §4.4 gives `0.3`
+to a static site that runs PyAhead in the visitor's browser. That reaches the
+same goal — letting someone try PyAhead without installing anything — with no
+server to run, no source retained and no account required.
 
-```mermaid
-flowchart TD
-    A["GitHub webhooks"] --> B["Django web process"]
-    B --> C["PostgreSQL job table"]
-    C --> D["Worker"]
-    D --> E["Ephemeral static-scan sandbox"]
-    R["Published registry snapshot"] --> D
-    E --> F["Finding persistence"]
-    F --> G["GitHub Checks and dashboard"]
-```
-
-Initial stack:
-
-- Django;
-- PostgreSQL;
-- one web process;
-- one worker process;
-- a PostgreSQL-backed job table using transactional claiming;
-- server-rendered HTML;
-- the same published `pyahead` Python package used by the CLI.
-
-Do not add Kubernetes, a separate SPA, Kafka, or multiple services for the private beta.
-
-### 18.2 GitHub App permissions
-
-Request the minimum required permissions:
-
-- Metadata: read;
-- Contents: read;
-- Pull requests: read;
-- Checks: write.
-
-Subscribe initially to:
-
-- installation and installation-repository changes;
-- push;
-- pull request events needed to scan head commits;
-- check-run rerequests.
-
-Only GitHub Apps can create check runs through the Checks API. Check annotations are sent in batches of at most 50 per API request.
-
-### 18.3 Webhook handling
-
-- Verify `X-Hub-Signature-256` against the raw request body with constant-time comparison before parsing.
-- Persist the GitHub delivery ID and reject duplicate deliveries idempotently.
-- Acknowledge valid webhooks quickly; enqueue work rather than scanning in the request.
-- Use a unique scan identity of repository, commit SHA, registry revision, configuration digest, and analyser version.
-- Treat deleted branches and superseded pull-request heads as cancellable work.
-
-### 18.4 Source handling
-
-1. Obtain a repository archive using a short-lived installation token.
-2. Enforce archive byte, expanded byte, file-count, and path-depth limits.
-3. Reject path traversal and unsafe symlinks.
-4. Place source in an ephemeral per-job directory.
-5. Start the analyser in a separate process with network disabled, resource limits, and a deadline.
-6. Do not initialize submodules or fetch Git LFS objects in the beta.
-7. Delete the source directory at job completion or failure.
-
-Persist only:
-
-- repository and commit identifiers;
-- configuration digest and effective policy;
-- rule IDs, fingerprints, repository-relative locations, and structured evidence;
-- finding state and triage metadata;
-- scan metrics and diagnostics.
-
-Do not persist repository source or full source snippets by default.
-
-### 18.5 Service data model
-
-Core entities:
-
-| Entity | Purpose |
-| --- | --- |
-| `GitHubInstallation` | Installation identity and account metadata. |
-| `Repository` | GitHub repository identity, default branch, policy, and enabled state. |
-| `RegistrySnapshot` | Immutable registry release and digest. |
-| `Scan` | Commit, analyser version, registry, status, timings, and diagnostics. |
-| `FindingIdentity` | Stable repository-scoped fingerprint and rule ID. |
-| `FindingOccurrence` | A finding as observed in a particular scan. |
-| `TriageDecision` | Open, accepted risk, false positive, or resolved; actor and reason. |
-| `WebhookDelivery` | Delivery ID and processing state for idempotency. |
-| `ScanJob` | Transactionally claimed background work. |
-
-Triage decisions attach to stable finding identity, not a line number.
-
-### 18.6 Check-run behaviour
-
-The check summary includes:
-
-- effective Python policy;
-- new versus existing counts;
-- earliest breaking version;
-- incomplete-scan status;
-- registry revision;
-- link to the full dashboard.
-
-Only new findings on changed lines should become pull-request annotations by default. Existing repository debt remains in the summary and dashboard.
-
-Conclusions:
-
-- `success`: complete scan and no gated new findings;
-- `failure`: complete scan with gated new breaking findings;
-- `neutral`: complete scan with non-gated debt or risk;
-- `action_required`: policy missing or scan incomplete in a way the user can fix;
-- `timed_out` or `cancelled`: corresponding job outcome.
-
-### 18.7 Registry-triggered rescans
-
-When a new registry snapshot is published:
-
-1. Determine repositories whose configured horizon intersects changed rules.
-2. Queue default-branch scans with a registry-update cause.
-3. Compare findings to the last successful scan.
-4. Notify only on newly relevant findings or materially changed timelines.
-
-This path must be rate limited and resumable.
-
-### 18.8 Product packaging
-
-The open CLI and registry remain free. Hosted scans for public repositories should also be free to create adoption and improve the rule corpus. Charge for active private repositories rather than developer seats; the value is continuous repository monitoring, not per-user editor access.
-
-The initial pricing hypothesis is a low-cost individual plan for a small number of private repositories and a team plan with organisation views and longer history. Do not hard-code price points into the domain model. Model entitlements such as active private repositories, history retention, notification channels, and organisation dashboards. The private beta uses manual allow-listing and no billing integration; add billing only after users demonstrate willingness to pay.
+What the service would have added and the browser site does not is continuous
+scanning: on push, on pull request, and when the registry moves. If that becomes
+worth building, it needs a fresh design rather than the one removed here; the
+constraints it placed on the core API, notably that scanning never executes
+target code and that reports carry a registry digest, are already honoured and
+recorded in their own sections.
 
 ---
 
@@ -1715,21 +1618,18 @@ The initial pricing hypothesis is a low-cost individual plan for a small number 
 - A registry update has a content digest.
 - The CLI does not auto-download or silently replace registry data in the alpha.
 - A future update command verifies integrity and supports pinning.
-- Hosted scans always record the exact immutable registry digest.
+- Every report records the exact immutable registry digest.
 
-### 19.3 Hosted service
+### 19.3 Browser scan site
 
-- Least-privilege GitHub App permissions.
-- Short-lived installation tokens.
-- Encrypted secrets and database connections.
-- Constant-time webhook signature validation.
-- Idempotent delivery handling.
-- Strict scan isolation, timeouts, and resource limits.
-- No test execution on hosted infrastructure in the beta.
-- No persistent source storage.
-- Tenant-scoped authorization on every repository object.
-- Audit records for triage and administrative actions.
-- A documented deletion path for installation and repository data.
+- Runs entirely in the visitor's browser; no repository content reaches any
+  server operated by this project.
+- Fetches only from `api.github.com` and `raw.githubusercontent.com`, over
+  HTTPS, and only from public repositories.
+- Never executes fetched repository content, and escapes it when rendering.
+- Stores nothing: no account, no history, no retained source or reports.
+- Pins the analyser and runtime versions, so a report names the analyser that
+  produced it.
 
 ### 19.4 Trust through explainability
 
@@ -1873,21 +1773,6 @@ Diagnostic codes are not rule IDs and use the `PYA` prefix.
 
 `--verbose` prints stage timings and inference evidence to stderr. It must not include source contents or sensitive environment variables.
 
-### 21.2 Hosted metrics
-
-Track:
-
-- webhook-to-check latency;
-- queue delay and scan duration;
-- source file count and bytes;
-- findings by rule, impact, and confidence;
-- incomplete and timed-out scan rate;
-- registry-triggered rescan volume;
-- triage outcomes, especially false positives;
-- installation and repository retention.
-
-Do not use private source text as metric labels or log payloads.
-
 ---
 
 ## 22. Validation gates
@@ -1925,15 +1810,6 @@ The project advances only when the preceding gate is met.
 - Evidence is clearly distinguished from static inference.
 - Conflicts do not silently overwrite either source.
 - Network and execution boundaries are explicit.
-
-### Gate E: hosted private beta
-
-- GitHub permissions and source-retention design reviewed.
-- Webhook signature and replay tests pass.
-- Static scans run in resource-bounded network-disabled workers.
-- Source is deleted after success and failure.
-- Check-run annotations are correctly batched.
-- Registry updates trigger idempotent rescans.
 
 ---
 
@@ -2104,7 +1980,7 @@ Acceptance:
 
 ### M7 — First dynamic evidence provider
 
-Recommended first choice: pytest warnings, because it is immediately useful and does not require hosted execution.
+Recommended first choice: pytest warnings, because it is immediately useful and executes only in the user's own CI.
 
 Deliverables:
 
@@ -2118,7 +1994,6 @@ Deliverables:
 Acceptance:
 
 - warning collection occurs in user CI;
-- the hosted scanner is not involved;
 - duplicate static and dynamic evidence is linked, not double counted;
 - unmatched warnings remain visible;
 - evidence from a different commit is rejected or visibly marked stale.
@@ -2136,7 +2011,7 @@ Deliverables:
 
 Acceptance:
 
-- no build backend executes during hosted metadata inspection;
+- no build backend executes during metadata inspection;
 - offline mode is deterministic;
 - a resolver timeout is incomplete evidence, not a compatibility failure;
 - environment markers are evaluated against the declared target;
@@ -2149,7 +2024,7 @@ post-M8 architecture and maintainability review. It is deliberately split into
 seven ordered, independently reviewed submilestones. Each submilestone receives
 one intentional commit only after its targeted tests, the complete repository
 suite, build and install checks, and a fresh read-only review pass. M8.5 does
-not add another evidence provider or begin hosted-service work.
+not add another evidence provider or begin `0.3` browser-site work.
 
 #### M8.5a — Rooted and bounded repository input
 
@@ -2336,33 +2211,8 @@ Acceptance:
   remain separately visible; and
 - no impact-order change, speculative optimization, large-module split, broad
   test reorganization, unused compatibility-symbol removal, generic provider or
-  dependency-injection framework, parallel scan, M9 service code, or M10 work is
-  included.
-
-### M9 — Hosted GitHub private beta
-
-Create a separate private service repository for this milestone. The core `diegorusso/pyahead` repository remains the open CLI and registry.
-
-Deliverables:
-
-- Django project and PostgreSQL schema;
-- GitHub App registration documentation;
-- signed/idempotent webhook ingestion;
-- job claiming and retry policy;
-- isolated source acquisition and static scan;
-- check-run publisher;
-- dashboard and triage;
-- registry rescan scheduler;
-- deletion and retention controls.
-
-Acceptance:
-
-- Gate E passes;
-- a private repository receives a correct check on push and pull request;
-- source is absent after scan completion and failure;
-- duplicate webhook delivery creates no duplicate scan;
-- more than 50 annotations are sent in correct batches;
-- a registry-only change can create a new check without a source commit.
+  dependency-injection framework, parallel scan, browser-site code, or M10
+  work is included.
 
 ### M10 — C API roadmap
 
@@ -2386,7 +2236,7 @@ This milestone requires its own design document before implementation.
 
 ### ADR-001: Python end to end
 
-**Decision:** Implement the analyser, CLI, registry tooling, and later Django service in Python.
+**Decision:** Implement the analyser, CLI and registry tooling in Python.
 
 **Reason:** Ecosystem integration, packaging semantics, warning handling, type metadata, and contributor accessibility outweigh hypothetical parser performance. Measure before considering a native component.
 
@@ -2426,17 +2276,19 @@ This milestone requires its own design document before implementation.
 
 **Reason:** Users think about a migration item, not six duplicated diagnostics.
 
-### ADR-008: Hosted tests run in customer CI
+### ADR-008: Dynamic evidence is produced in the user's CI
 
-**Decision:** The hosted beta performs static scans only; dynamic tests and warnings execute in the customer's CI.
+**Decision:** PyAhead performs static scans only; dynamic tests and warnings execute in the user's own CI and reach PyAhead as an artifact.
 
 **Reason:** Avoid running arbitrary code and naturally use the project's configured environment and secrets.
 
-### ADR-009: Server-rendered hosted UI
+### ADR-009: Server-rendered hosted UI (superseded)
 
 **Decision:** Django templates first, no SPA.
 
 **Reason:** The dashboard is workflow and data presentation, not a high-interaction client application.
+
+**Superseded:** there is no hosted dashboard. The `0.3` browser site renders a single report from static pages and needs no framework on either side. See §18.
 
 ### ADR-010: Separate certainty dimensions
 
@@ -2444,11 +2296,13 @@ This milestone requires its own design document before implementation.
 
 **Reason:** “High severity” cannot explain whether a future schedule is provisional or whether a name match is ambiguous.
 
-### ADR-011: Separate hosted-service repository
+### ADR-011: Separate hosted-service repository (superseded)
 
 **Decision:** Keep the Apache-licensed CLI and registry in `diegorusso/pyahead`; create the commercial hosted service in a separate private repository after Gate C.
 
 **Reason:** The service consumes a stable public core while retaining an independent deployment and licensing boundary. It also prevents premature Django scaffolding from distorting the analyser repository.
+
+**Superseded:** no hosted service is being built, so there is no second repository to separate. The reasoning still applies to the `0.3` browser site, which is also a separate repository consuming the published package, though it is Apache-licensed rather than commercial. See §18.
 
 ### ADR-012: Defer adoption validation until the public alpha is available
 
@@ -2484,7 +2338,9 @@ These do not block M0–M4 unless stated.
    and the simple index return 404, so no project holds the name. The import
    package remains `pyahead`, which now matches the distribution name. The name is
    claimed by the first upload, so it is unowned until that upload succeeds.
-3. **Hosted commercial entity and billing:** not required until private-beta demand exists.
+3. **Hosted commercial entity and billing:** ~~not required until private-beta
+   demand exists.~~ **Closed 13 September 2026: no hosted service will be built
+   (§18), so there is no entity to form and nothing to bill for.**
 4. **Registry update channel:** bundled releases first; signed independent updates later.
 5. **First type-checker adapter:** evaluate machine-output stability before choosing mypy or another checker.
 6. **First resolver adapter:** `uv` is recommended, but the provider interface must not make it irreplaceable.
@@ -2536,8 +2392,8 @@ precision calculation, false-positive regressions, incomplete diagnostics, and
 limitations, and that approval is recorded only after a non-empty evidence
 document exists inside the repository at `docs/evidence/gate-c.md`.
 
-M9 is refused because the hosted service belongs in a separate private
-repository. M10 is refused until `docs/c-api-design.md` exists.
+There is no M9: the hosted service is not being built, and §18 records why.
+M10 is refused until `docs/c-api-design.md` exists.
 
 ### 26.4 Operator review
 
@@ -2565,7 +2421,7 @@ Requirements:
 - Add a concise AGENTS.md that points Codex to docs/design.md, records the
   verification commands, and forbids opportunistic later-milestone work.
 - Add the minimal pyahead --version entry point and smoke test.
-- Do not implement the analyser, registry engine, Django, or hosted service yet.
+- Do not implement the analyser or registry engine yet.
 - Keep runtime dependencies aligned with docs/design.md; do not add unused
   dependencies merely as placeholders.
 - Run every command listed in M0 acceptance, build both wheel and sdist, install
@@ -2636,10 +2492,7 @@ These sources informed the design and should be rechecked when the relevant feat
 - [LibCST metadata providers](https://libcst.readthedocs.io/en/latest/metadata.html)
 - [Mypy PEP 702 diagnostics](https://mypy.readthedocs.io/en/latest/error_code_list2.html)
 - [Pytest warning capture](https://docs.pytest.org/en/stable/how-to/capture-warnings.html)
-- [GitHub Checks API](https://docs.github.com/en/rest/checks/runs)
 - [GitHub SARIF support](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support)
-- [GitHub App permission guidance](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)
-- [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
 
 ---
 
@@ -2656,4 +2509,4 @@ The initial technical success is not “many rules” or “an attractive dashbo
 - honest limitations;
 - a workflow maintainers trust enough to run continuously.
 
-That is the foundation on which dependency analysis, runtime evidence, C API expertise, and the hosted business can be built.
+That is the foundation on which dependency analysis, runtime evidence, and C API expertise can be built.

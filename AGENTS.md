@@ -4,7 +4,7 @@
 `README.md`, `pyproject.toml`, and current repository instructions before work.
 
 - Implement only the requested milestone. Never add later-milestone analyser,
-  registry, Django, hosted-service, or other features opportunistically.
+  registry, browser-site, or other features opportunistically.
 - Preserve public contracts and unrelated work. Record a justified design
   difference in `docs/design.md` in the same change.
 - Keep Python in `src/pyahead`, require Python 3.11+, and add only dependencies
@@ -19,8 +19,8 @@ weaken a threshold to make a change pass.
 
 Stop at Gate C before M7-M8; Gate C needs recorded corpus-precision evidence and
 accountable human approval, and no agent may approve its own precision evidence.
-Refuse M9 here — the hosted service belongs in a separate private repository —
-and refuse M10 until `docs/c-api-design.md` exists.
+There is no hosted service and no M9; refuse M10 until `docs/c-api-design.md`
+exists.
 
 ```console
 uv sync --frozen
