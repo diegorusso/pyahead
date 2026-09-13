@@ -4,9 +4,9 @@
 
 - Evidence: PyPI top-1000 — runtime-adjudicated precision of high-confidence
   findings
-- Decision date: _<date>_
-- Accountable reviewer: _<name, role>_
-- Decision: _<accepted as the recorded precision measurement | not accepted>_
+- Decision date: 13 September 2026
+- Accountable reviewer: Diego Russo, repository owner and product decision-maker
+- Decision: accepted as the recorded precision measurement
 
 The reviewer confirmed that the sweep's method, denominators and limitations
 are the ones they would have required. Accepting this record accepts two stated
@@ -16,6 +16,10 @@ the first aggregation's 201 disagreements were overwhelmingly defects in the
 runtime oracle rather than in PyAhead, so the headline figure is post-fix. This
 acceptance is a precision measurement for a pinned corpus, not a recall claim
 and not a general guarantee.
+
+Recorded on the reviewer's instruction, on the strength of this record and the
+qualifications stated above, which were put to them in summary before the
+decision. The reviewer did not independently re-perform the measurements.
 
 This document prepares the evidence for the validation sweep specified in
 `docs/pypi-validation.md`. It does not record an approval. Precision claims
@@ -104,7 +108,7 @@ Limitations restated: recall is not measured; findings with an action
 version above 3.15 are not-adjudicable:no-interpreter and excluded from
 adjudicated counts (0 in this run, the horizon being 3.15).
 
-Reviewed by: _<name>_, _<date>_
+Reviewed by: Diego Russo, 13 September 2026
 ```
 
 ## Corpus and coverage

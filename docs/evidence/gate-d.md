@@ -3,9 +3,9 @@
 ## Decision
 
 - Gate: D — dynamic evidence
-- Decision date: _<date>_
-- Accountable reviewer: _<name, role>_
-- Decision: _<approved to proceed to M9 | not approved>_
+- Decision date: 13 September 2026
+- Accountable reviewer: Diego Russo, repository owner and product decision-maker
+- Decision: approved to proceed to M9
 
 The reviewer confirmed that the M7 pytest deprecation-warning path is one
 evidence provider working end to end in CI, that observed evidence stays
@@ -13,6 +13,10 @@ separate from static inference, that a conflict is recorded rather than
 resolved, and that both the producing and consuming boundaries are explicit
 opt-ins. This approval does not claim that a second provider exists, nor that
 observed silence proves compatibility.
+
+Recorded on the reviewer's instruction, on the strength of this record and the
+qualifications stated above, which were put to them in summary before the
+decision. The reviewer did not independently re-perform the measurements.
 
 `docs/design.md` §4.3 previously scoped five items to `0.2` and `0.2.0` shipped
 three; §4.3 has since been reconciled with what shipped, and the two deferred
