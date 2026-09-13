@@ -3,9 +3,16 @@
 ## Decision
 
 - Evidence: binding-not-visible investigation, Task 4
-- Decision date: _not yet decided_
-- Accountable reviewer: _pending_
-- Decision: **not approved; awaiting review**
+- Decision date: _<date>_
+- Accountable reviewer: _<name, role>_
+- Decision: _<recommendation accepted; no implementation change | not accepted>_
+
+The reviewer confirmed the no-change recommendation: the three typing rules,
+their confidence and usage-context handling, and the C1/C2 adjudication
+contract are retained. Accepting this record accepts that the sample explains
+the observability limit for `typing.Text` only, and that the `AnyStr` and
+`Hashable`/`Sized` gaps remain unattributed, so annotation syntax alone does
+not account for the sweep's adjudication coverage.
 
 This record prepares a recommendation for human review, as
 [Gate D](gate-d.md) and the [top-1000 record](pypi-top-1000.md) do. An agent

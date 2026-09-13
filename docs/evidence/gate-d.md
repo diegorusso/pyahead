@@ -3,13 +3,21 @@
 ## Decision
 
 - Gate: D — dynamic evidence
-- Decision date: _not yet decided_
-- Accountable reviewer: _pending_
-- Decision: **not approved; awaiting review**
+- Decision date: _<date>_
+- Accountable reviewer: _<name, role>_
+- Decision: _<approved to proceed to M9 | not approved>_
 
-This document prepares the evidence for Gate D. It does not record an approval.
-Section 22 of `docs/design.md` advances the project only when the preceding gate
-is met, so M9 remains blocked until an accountable reviewer signs this decision.
+The reviewer confirmed that the M7 pytest deprecation-warning path is one
+evidence provider working end to end in CI, that observed evidence stays
+separate from static inference, that a conflict is recorded rather than
+resolved, and that both the producing and consuming boundaries are explicit
+opt-ins. This approval does not claim that a second provider exists, nor that
+observed silence proves compatibility.
+
+`docs/design.md` §4.3 previously scoped five items to `0.2` and `0.2.0` shipped
+three; §4.3 has since been reconciled with what shipped, and the two deferred
+providers are recorded there as `0.2.x` work. Gate D asks for one provider
+working end to end, which is satisfied independently of that deferral.
 
 ## Evidence identity
 

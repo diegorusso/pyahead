@@ -213,10 +213,16 @@ This is the first release to show to maintainers.
 Add, behind explicit commands or configuration:
 
 - dependency metadata and resolver evidence;
-- PEP 702/type-checker evidence;
 - pytest warning collection;
-- actual-interpreter compile/import/test probe ingestion;
-- evidence merging and conflict handling.
+- evidence merging and conflict handling for the providers that exist.
+
+`0.2.0` shipped these three. PEP 702 / type-checker evidence and
+actual-interpreter compile/import/test probe ingestion were scoped here
+originally and are deferred: §17 already records them as design constraints
+rather than implied current features, and the first type-checker adapter is
+still an open decision in §25. They move to `0.2.x`, whichever release
+implements one, and neither blocks Gate D, which asks for one evidence provider
+working end to end rather than for every provider this section once listed.
 
 ### 4.4 `0.3`: hosted private beta
 
