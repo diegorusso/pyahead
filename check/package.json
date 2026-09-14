@@ -5,6 +5,7 @@
   "description": "Verifies the pinned PyAhead still scans correctly under the pinned Pyodide.",
   "dependencies": {
     "pyodide": "314.0.6",
-    "ajv": "8.17.1"
+    "ajv": "8.17.1",
+    "playwright": "1.56.1"
   }
 }

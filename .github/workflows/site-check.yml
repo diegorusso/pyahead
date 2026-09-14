@@ -40,3 +40,10 @@ jobs:
 
       - name: Verify the renderer
         run: node check/render-check.mjs
+
+      - name: Install Chromium
+        working-directory: check
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify the site in a browser
+        run: node check/browser-check.mjs
