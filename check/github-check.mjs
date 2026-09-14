@@ -128,6 +128,20 @@ const target = { owner: "o", repo: "r", ref: null };
   check("surfaces a truncated tree", result.treeTruncated === true);
 }
 
+{
+  const result = await listPythonFiles(target, {
+    fetch: async () => tree([
+      blob("real.py"),
+      { type: "blob", mode: "120000", path: "link.py", size: 12 },
+      { type: "blob", mode: "120000", path: "certs/ca", size: 8 },
+      { type: "commit", path: "vendor/dep" },
+    ]),
+  });
+  check("never fetches a symlink as source", result.files.map((f) => f.path).join(",") === "real.py", JSON.stringify(result.files));
+  check("names the symlinks it did not follow", result.symlinks.join(",") === "link.py,certs/ca", JSON.stringify(result.symlinks));
+  check("names submodules it did not scan", result.submodules.join(",") === "vendor/dep", JSON.stringify(result.submodules));
+}
+
 await refuses("reports a missing repository", () => listPythonFiles(target, { fetch: async () => stubResponse({ status: 404 }) }), "not-found");
 await refuses("reports an empty repository", () => listPythonFiles(target, { fetch: async () => stubResponse({ status: 409 }) }), "empty-repository");
 await refuses("reports a repository with no Python", () => listPythonFiles(target, { fetch: async () => tree([blob("README.md")]) }), "no-python");

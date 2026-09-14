@@ -133,8 +133,18 @@ export async function listPythonFiles({ owner, repo, ref }, { fetch: fetchImpl =
   }
 
   const body = await response.json();
-  const python = (body.tree ?? [])
-    .filter((entry) => entry.type === "blob" && entry.path.endsWith(".py"))
+  const entries = body.tree ?? [];
+
+  // Two things in a tree hold source this page cannot bring over, and both are
+  // invisible if you filter for `.py` first. A symlink's blob contains the
+  // target path, not Python, so fetching one would scan a string; and PyAhead
+  // itself refuses to traverse directory symlinks, reporting that refusal as
+  // incompleteness. A submodule is a different repository entirely.
+  const symlinks = entries.filter((entry) => entry.mode === "120000").map((entry) => entry.path);
+  const submodules = entries.filter((entry) => entry.type === "commit").map((entry) => entry.path);
+
+  const python = entries
+    .filter((entry) => entry.type === "blob" && entry.mode !== "120000" && entry.path.endsWith(".py"))
     .sort((a, b) => a.path.localeCompare(b.path));
 
   if (python.length === 0) {
@@ -170,6 +180,8 @@ export async function listPythonFiles({ owner, repo, ref }, { fetch: fetchImpl =
     treeTruncated: Boolean(body.truncated),
     skippedTooLarge,
     skippedOverCap,
+    symlinks,
+    submodules,
     totalPythonFiles: python.length,
   };
 }

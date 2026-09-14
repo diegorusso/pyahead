@@ -30,6 +30,14 @@ export function incompletenessNotes(report, listing = {}, failed = []) {
   if (tooLarge > 0) {
     notes.push(`${pluralise(tooLarge, "file")} larger than PyAhead reads ${tooLarge === 1 ? "was" : "were"} skipped.`);
   }
+  const symlinks = listing.symlinks?.length ?? 0;
+  if (symlinks > 0) {
+    notes.push(`${pluralise(symlinks, "symlink")} ${symlinks === 1 ? "was" : "were"} not followed, so anything only reachable through ${symlinks === 1 ? "it" : "them"} was not scanned. PyAhead does not follow them either.`);
+  }
+  const submodules = listing.submodules?.length ?? 0;
+  if (submodules > 0) {
+    notes.push(`${pluralise(submodules, "submodule")} ${submodules === 1 ? "is a" : "are"} separate ${submodules === 1 ? "repository" : "repositories"} and ${submodules === 1 ? "was" : "were"} not scanned.`);
+  }
   if (failed.length > 0) {
     notes.push(`${pluralise(failed.length, "file")} could not be downloaded.`);
   }

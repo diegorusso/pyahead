@@ -104,6 +104,12 @@ console.log("\nincompleteness");
   check("names files PyAhead could not analyse", notes.some((note) => note.includes("could not fully analyse 1 file")));
   check("carries diagnostics through", notes.some((note) => note.startsWith("PYA1003")));
 }
+{
+  const notes = incompletenessNotes({ scan: {}, diagnostics: [] }, { symlinks: ["a/ca"], submodules: ["v/dep", "v/other"] }, []);
+  check("names an unfollowed symlink", notes.some((note) => note.includes("1 symlink was not followed")), JSON.stringify(notes));
+  check("says PyAhead does not follow them either", notes.some((note) => note.includes("does not follow them either")));
+  check("names unscanned submodules", notes.some((note) => note.includes("2 submodules are separate repositories")), JSON.stringify(notes));
+}
 check("a complete scan has no notes", incompletenessNotes({ scan: { files_incomplete: 0 }, diagnostics: [] }, {}, []).length === 0);
 
 console.log("\nmounting");
