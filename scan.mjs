@@ -36,6 +36,10 @@ _files = json.loads(_files_json)
 _opts = json.loads(_options_json)
 
 _root = pathlib.Path(${JSON.stringify(SCAN_ROOT)})
+# Step out first. On a second scan the working directory is the tree about to
+# be removed, and deleting the directory you are standing in aborts at the
+# Emscripten filesystem layer rather than raising something catchable.
+os.chdir("/")
 if _root.exists():
     shutil.rmtree(_root)
 _root.mkdir(parents=True)

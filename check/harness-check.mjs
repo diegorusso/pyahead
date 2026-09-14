@@ -162,4 +162,12 @@ async function main() {
   process.exit(failures.length === 0 ? 0 : 1);
 }
 
-await main();
+// Node's default handler dumps the whole minified Pyodide module when a fault
+// comes from inside it, and the log truncates the line before the message.
+try {
+  await main();
+} catch (error) {
+  console.error(`\nUNCAUGHT: ${error?.message ?? error}`);
+  console.error(String(error?.stack ?? "").split("\n").slice(1, 8).map((line) => line.slice(0, 200)).join("\n"));
+  process.exit(1);
+}
