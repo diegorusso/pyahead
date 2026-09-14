@@ -37,3 +37,6 @@ jobs:
 
       - name: Verify the fetching layer
         run: node check/github-check.mjs
+
+      - name: Verify the renderer
+        run: node check/render-check.mjs
