@@ -72,9 +72,9 @@ and that record stays as approved whatever is decided here.
   fallback.
 
 The manifest, wheelhouse, shards, report and worksheet live under `work/`,
-are gitignored, and are never committed; this record and the plan document
-`docs/plans/20260910-run-pypi-top-1000-validation.md` are the durable
-account. Per-package figures below are derived from those artifacts.
+are gitignored, and are never committed; this record and the protocol in
+`docs/pypi-validation.md` are the durable account. The plan that drove the run
+is on the `plans` branch. Per-package figures below are derived from those artifacts.
 
 ## Record
 

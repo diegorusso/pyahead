@@ -24,7 +24,10 @@ exists.
 
 The `gh-pages` branch holds the `0.3` browser site and shares no history with
 `main`. Never merge between them and never add site code to `main`: the site
-installs `pyahead` from PyPI like any other user.
+installs `pyahead` from PyPI like any other user. Work-package plans live on
+the `plans` branch for the same reason; do not recreate `docs/plans/` here. A
+plan being executed belongs on the branch doing that work and goes away when
+the work lands.
 
 ```console
 uv sync --frozen
