@@ -77,9 +77,17 @@ jobs:
           mkdir target && tar xzf target.tar.gz -C target --strip-components=1
           # The report must land beneath the project root, so write it there
           # and move it out afterwards.
-          cd target && pyahead check . \
+          cd target
+          set +e
+          pyahead check . \
             --baseline-python 3.11 --horizon-python 3.14 \
             --format json --output local.json --fail-on never
+          code=$?
+          set -e
+          # 3 means the scan was incomplete, which this target genuinely is:
+          # two files in it cannot be parsed. Incompleteness takes precedence
+          # over --fail-on never by design. Anything else is a real failure.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then exit "$code"; fi
           mv local.json ../local.json
 
       - name: Install check dependencies

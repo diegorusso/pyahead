@@ -88,6 +88,9 @@ check("the same number of files analysed", local.scan.files_analyzed === browser
   `${local.scan.files_analyzed} vs ${browserReport.scan.files_analyzed}`);
 check("identical findings", JSON.stringify(localFindings) === JSON.stringify(browserFindings),
   `\n    only in CLI: ${JSON.stringify(localFindings.filter((f) => !browserFindings.includes(f)))}\n    only in browser: ${JSON.stringify(browserFindings.filter((f) => !localFindings.includes(f)))}`);
+check("both sides call the scan incomplete",
+  (local.scan.files_incomplete > 0) === (browserReport.scan.files_incomplete > 0),
+  `${local.scan.files_incomplete} vs ${browserReport.scan.files_incomplete}`);
 check("identical summary counts", JSON.stringify(local.summary) === JSON.stringify(browserReport.summary),
   `${JSON.stringify(local.summary)} vs ${JSON.stringify(browserReport.summary)}`);
 
