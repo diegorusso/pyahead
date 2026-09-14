@@ -82,11 +82,14 @@ export function isUnsafePath(path) {
 /**
  * @param {object} config
  * @param {Function} config.loadPyodide  from the CDN in a browser, from the npm package under Node
- * @param {string}   [config.indexURL]   where Pyodide loads its own assets from
+ * @param {string}   [config.indexURL]   only when Pyodide cannot derive it: in a
+ *   browser it comes from the CDN module's own URL, and under Node from the
+ *   installed package. Node cannot import a remote module, so never hand it a
+ *   CDN URL there.
  * @param {string}   config.vendorBase   URL prefix the pinned wheels are served from
  * @param {Function} [config.onProgress] called with {stage, message}
  */
-export function createScanner({ loadPyodide, indexURL = PYODIDE_INDEX_URL, vendorBase, onProgress = () => {} }) {
+export function createScanner({ loadPyodide, indexURL, vendorBase, onProgress = () => {} }) {
   if (typeof loadPyodide !== "function") throw new TypeError("loadPyodide is required");
   if (typeof vendorBase !== "string") throw new TypeError("vendorBase is required");
 
@@ -98,7 +101,7 @@ export function createScanner({ loadPyodide, indexURL = PYODIDE_INDEX_URL, vendo
     if (booting) return booting;
     booting = (async () => {
       onProgress({ stage: "runtime", message: "Downloading the Python runtime" });
-      const pyodide = await loadPyodide({ indexURL });
+      const pyodide = await loadPyodide(indexURL ? { indexURL } : undefined);
 
       onProgress({ stage: "packages", message: "Loading the Python parser" });
       await pyodide.loadPackage(["micropip", "libcst", "pyyaml"]);

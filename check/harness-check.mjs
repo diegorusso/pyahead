@@ -18,15 +18,17 @@ import { dirname, join, normalize } from "node:path";
 import { loadPyodide } from "pyodide";
 import Ajv from "ajv/dist/2020.js";
 
-import { createScanner, isUnsafePath, PYAHEAD_VERSION, PYODIDE_VERSION, PYODIDE_INDEX_URL } from "../scan.mjs";
+import { createScanner, isUnsafePath, PYAHEAD_VERSION, PYODIDE_VERSION } from "../scan.mjs";
 
 const SITE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const SCHEMA_URL = `https://raw.githubusercontent.com/diegorusso/pyahead/v${PYAHEAD_VERSION}/docs/schema/report-v1.json`;
 
 // Everything the scan itself is allowed to reach. The site's own origin stands
-// in for the page; jsDelivr is the pinned Pyodide CDN. GitHub's hosts are not
-// here because the harness never fetches a repository — that is Task 4's code,
-// and it is checked separately.
+// in for the page; jsDelivr is the pinned Pyodide CDN, which Pyodide still uses
+// here for the packages the npm distribution does not carry. GitHub's hosts are
+// absent because the harness never fetches a repository — that is Task 4's
+// code, checked separately. The point of this list is to catch a reach for
+// PyPI, which is what vendoring the wheels exists to prevent.
 const ALLOWED_SCAN_HOSTS = new Set(["cdn.jsdelivr.net", "127.0.0.1"]);
 
 const MIME = { ".whl": "application/octet-stream", ".mjs": "text/javascript", ".html": "text/html", ".css": "text/css", ".py": "text/plain", ".json": "application/json" };
@@ -89,8 +91,9 @@ async function main() {
 
   const stages = [];
   const scanner = createScanner({
+    // No indexURL: the installed package resolves its own assets from disk, and
+    // Node cannot import the CDN module the browser uses.
     loadPyodide,
-    indexURL: PYODIDE_INDEX_URL,
     vendorBase,
     onProgress: ({ stage }) => stages.push(stage),
   });
