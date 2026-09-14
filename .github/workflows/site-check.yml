@@ -1,0 +1,36 @@
+name: Site check
+
+# Pages deploys this branch directly, so a failing check cannot stop a deploy.
+# This runs anyway: it is what makes a broken pin visible before it is merged.
+# Never merge a change to the pinned Pyodide or PyAhead version on a red run.
+
+on:
+  push:
+    branches: ["gh-pages"]
+  pull_request:
+    branches: ["gh-pages"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: Pinned PyAhead under pinned Pyodide
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the site
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install check dependencies
+        working-directory: check
+        run: npm install
+
+      - name: Verify the harness
+        run: node check/harness-check.mjs

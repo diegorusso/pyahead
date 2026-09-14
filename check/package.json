@@ -1,0 +1,10 @@
+{
+  "name": "pyahead-site-check",
+  "private": true,
+  "type": "module",
+  "description": "Verifies the pinned PyAhead still scans correctly under the pinned Pyodide.",
+  "dependencies": {
+    "pyodide": "314.0.6",
+    "ajv": "8.17.1"
+  }
+}
