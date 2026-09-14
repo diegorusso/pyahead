@@ -75,9 +75,12 @@ jobs:
         run: |
           curl -sL -o target.tar.gz https://codeload.github.com/psf/requests/tar.gz/refs/tags/v2.32.3
           mkdir target && tar xzf target.tar.gz -C target --strip-components=1
+          # The report must land beneath the project root, so write it there
+          # and move it out afterwards.
           cd target && pyahead check . \
             --baseline-python 3.11 --horizon-python 3.14 \
-            --format json --output ../local.json --fail-on never
+            --format json --output local.json --fail-on never
+          mv local.json ../local.json
 
       - name: Install check dependencies
         working-directory: check
