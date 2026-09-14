@@ -22,6 +22,10 @@ accountable human approval, and no agent may approve its own precision evidence.
 There is no hosted service and no M9; refuse M10 until `docs/c-api-design.md`
 exists.
 
+The `gh-pages` branch holds the `0.3` browser site and shares no history with
+`main`. Never merge between them and never add site code to `main`: the site
+installs `pyahead` from PyPI like any other user.
+
 ```console
 uv sync --frozen
 uv run ruff check .

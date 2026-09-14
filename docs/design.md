@@ -227,8 +227,9 @@ working end to end rather than for every provider this section once listed.
 
 ### 4.4 `0.3`: browser scan site
 
-Add a static site, in a separate public repository published through GitHub
-Pages, where someone pastes a public repository URL and gets a report:
+Add a static site, published through GitHub Pages from this repository's
+`gh-pages` branch, where someone pastes a public repository URL and gets a
+report:
 
 - PyAhead compiled to WebAssembly through Pyodide, running in the visitor's
   browser;
@@ -241,6 +242,10 @@ Nothing is submitted to a server and nothing is published about anyone's
 repository, so this line carries no abuse, disclosure or retention questions. It
 exists because a scan that needs no install is the cheapest way for someone to
 evaluate PyAhead.
+
+The site is static files on a branch that shares no history with `main`. It
+installs `pyahead` from PyPI exactly as any other user would, so nothing on
+`main` builds, imports, tests or ships it, and the two never merge.
 
 Pyodide 314.0.6 runs Python 3.14.2 and ships `libcst 1.8.6`, which the
 published `libcst>=1.8,<2` floor already accepts, so `micropip install pyahead`
@@ -2304,7 +2309,7 @@ This milestone requires its own design document before implementation.
 
 **Reason:** The service consumes a stable public core while retaining an independent deployment and licensing boundary. It also prevents premature Django scaffolding from distorting the analyser repository.
 
-**Superseded:** no hosted service is being built, so there is no second repository to separate. The reasoning still applies to the `0.3` browser site, which is also a separate repository consuming the published package, though it is Apache-licensed rather than commercial. See §18.
+**Superseded:** no hosted service is being built, so there is no second repository to separate. The `0.3` browser site does not revive the need for one: it is Apache-2.0 like everything here, installs `pyahead` from PyPI rather than from the working tree, and ships as static files on a `gh-pages` branch, so it draws neither a licensing nor a deployment boundary. See §18 and §4.4.
 
 ### ADR-012: Defer adoption validation until the public alpha is available
 
