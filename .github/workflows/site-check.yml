@@ -47,3 +47,45 @@ jobs:
 
       - name: Verify the site in a browser
         run: node check/browser-check.mjs
+
+  parity:
+    name: The browser answer matches the command line
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the site
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the published PyAhead
+        run: pip install "pyahead==0.2.1"
+
+      # The same tag the browser is pointed at, so any difference is the
+      # runtime and not the code being compared.
+      - name: Scan the parity target with the CLI
+        run: |
+          curl -sL -o target.tar.gz https://codeload.github.com/psf/requests/tar.gz/refs/tags/v2.32.3
+          mkdir target && tar xzf target.tar.gz -C target --strip-components=1
+          cd target && pyahead check . \
+            --baseline-python 3.11 --horizon-python 3.14 \
+            --format json --output ../local.json --fail-on never
+
+      - name: Install check dependencies
+        working-directory: check
+        run: npm install
+
+      - name: Install Chromium
+        working-directory: check
+        run: npx playwright install --with-deps chromium
+
+      - name: Compare, and measure three repositories
+        run: node check/parity-check.mjs
