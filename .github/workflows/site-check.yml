@@ -34,3 +34,6 @@ jobs:
 
       - name: Verify the harness
         run: node check/harness-check.mjs
+
+      - name: Verify the fetching layer
+        run: node check/github-check.mjs
