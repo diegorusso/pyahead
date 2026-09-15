@@ -20,6 +20,24 @@ const download = document.getElementById("download");
 let scanner = null;
 let downloadUrl = null;
 
+function isLaterVersion(version, reference) {
+  const [major, minor] = version.split(".").map(Number);
+  const [referenceMajor, referenceMinor] = reference.split(".").map(Number);
+  return major > referenceMajor || (major === referenceMajor && minor > referenceMinor);
+}
+
+function updateHorizon() {
+  for (const option of horizon.options) {
+    option.disabled = !isLaterVersion(option.value, baseline.value);
+  }
+  if (!isLaterVersion(horizon.value, baseline.value)) {
+    horizon.value = [...horizon.options].find((option) => !option.disabled)?.value ?? "";
+  }
+}
+
+baseline.addEventListener("change", updateHorizon);
+updateHorizon();
+
 function say(message) {
   status.textContent = message;
   status.hidden = message === "";
@@ -70,12 +88,17 @@ function offerDownload(report, name) {
 
 async function run(produceFiles, context) {
   reset();
+  const options = { baseline: baseline.value, horizon: horizon.value };
+  if (!isLaterVersion(options.horizon, options.baseline)) {
+    fail("Choose a look-ahead Python version greater than the oldest Python you support.");
+    return;
+  }
   busy(true);
   const started = performance.now();
   try {
     const { files, listing } = await produceFiles();
     const instance = await getScanner();
-    const { report } = await instance.scan(files, { baseline: baseline.value, horizon: horizon.value });
+    const { report } = await instance.scan(files, options);
     const elapsedSeconds = ((performance.now() - started) / 1000).toFixed(1);
 
     say("");

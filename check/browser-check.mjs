@@ -64,6 +64,44 @@ await page.goto(origin, { waitUntil: "load" });
 check("the page has its title", (await page.title()).includes("PyAhead"));
 check("the pins are written into the page", /PyAhead 0\.2\.1 · Pyodide 314\.0\.6/.test(await page.textContent("#pins")), await page.textContent("#pins"));
 
+console.log("\nchoosing a Python range");
+check("the default horizon remains 3.14", (await page.inputValue("#horizon")) === "3.14");
+await page.selectOption("#horizon", "3.12");
+check("3.11 can look ahead to 3.12", (await page.inputValue("#horizon")) === "3.12");
+await page.selectOption("#baseline", "3.12");
+check("raising the baseline advances an equal horizon", (await page.inputValue("#horizon")) === "3.13");
+check("an equal horizon cannot be selected", await page.locator("#horizon option").filter({ hasText: "3.12" }).evaluate((option) => option.matches(":disabled")));
+await page.selectOption("#baseline", "3.13");
+check("3.13 advances the horizon to 3.14", (await page.inputValue("#horizon")) === "3.14");
+check("only later horizons remain available", (await page.locator("#horizon option:enabled").allTextContents()).join(",") === "3.14,3.15");
+await page.selectOption("#horizon", "3.15");
+await page.selectOption("#baseline", "3.11");
+check("lowering the baseline preserves a valid horizon", (await page.inputValue("#horizon")) === "3.15");
+check("lowering the baseline makes 3.12 available again", await page.locator("#horizon option").filter({ hasText: "3.12" }).evaluate((option) => option.matches(":enabled")));
+
+console.log("\nrefusing invalid Python ranges before downloads");
+await page.fill("#repository", "https://github.com/owner/repo");
+const rangeRequests = [];
+const recordRangeRequest = (request) => rangeRequests.push(request.url());
+page.on("request", recordRangeRequest);
+for (const [base, trigger] of [["3.12", "#example"], ["3.13", "#submit"]]) {
+  await page.selectOption("#baseline", base);
+  // Bypass the disabled choices to exercise the check at scan time too.
+  await page.evaluate(() => {
+    const select = document.getElementById("horizon");
+    const option = [...select.options].find((option) => option.value === "3.12");
+    option.disabled = false;
+    select.value = "3.12";
+  });
+  await page.click(trigger);
+  await page.waitForSelector("#error:visible", { timeout: 10000 });
+  check(`${trigger} rejects horizon 3.12 with baseline ${base}`, (await page.textContent("#error")).includes("greater than"), await page.textContent("#error"));
+}
+page.off("request", recordRangeRequest);
+check("invalid ranges start no downloads", rangeRequests.length === 0, JSON.stringify(rangeRequests));
+await page.selectOption("#baseline", "3.11");
+await page.selectOption("#horizon", "3.14");
+
 console.log("\nrefusing bad input");
 await page.fill("#repository", "https://gitlab.com/owner/repo");
 await page.click("#submit");
