@@ -124,14 +124,32 @@ const started = Date.now();
 await page.click("[data-example]");
 check("scan inputs are locked while scanning", await page.locator("#repository").isDisabled() && await page.locator("#baseline").isDisabled() && await page.locator("#horizon").isDisabled());
 check("loading is announced accessibly", (await page.getAttribute("#status", "role")) === "status" && (await page.getAttribute("#scan-form", "aria-busy")) === "true");
-// Wait for either outcome. Waiting only for the report turns any error the
+
+// The scan runs in a worker. If it ever moves back to the main thread, this is
+// what fails: a blocked main thread cannot answer an evaluate or let a link be
+// clicked, and the page freezes for the whole scan while the CSS spinner keeps
+// turning on the compositor and makes it look alive.
+await new Promise((resolve) => setTimeout(resolve, 1500));
+const probeStarted = Date.now();
+const answered = await Promise.race([
+  page.evaluate(() => document.readyState).then(() => true),
+  new Promise((resolve) => setTimeout(() => resolve(false), 3000)),
+]);
+check("the main thread answers while scanning", answered, `blocked for over ${Date.now() - probeStarted}ms`);
+const linkClickable = await page
+  .locator("a[href='about.html']")
+  .first()
+  .click({ trial: true, timeout: 3000 })
+  .then(() => true, () => false);
+check("links stay clickable while scanning", linkClickable);
+
+// Wait for either outcome: waiting only for the report turns any error the
 // page reports into an indistinguishable five-minute timeout.
 await page.waitForSelector(".report, #error:visible", { timeout: 300000 });
 if (await page.locator("#error").isVisible()) {
   console.log(`  the page reported: ${await page.textContent("#error")}`);
   console.log(`  status line was:   ${await page.textContent("#status")}`);
   console.log(`  console errors:    ${consoleErrors.slice(0, 5).join(" | ") || "none"}`);
-  console.log(`  selects:           baseline=${await page.inputValue("#baseline")} horizon=${await page.inputValue("#horizon")}`);
 }
 const elapsed = (Date.now() - started) / 1000;
 console.log(`  first usable scan in ${elapsed.toFixed(1)}s, ~${(transferred / 1024 / 1024).toFixed(1)}MB transferred`);

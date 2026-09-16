@@ -1,6 +1,7 @@
 // Wiring: input to report. Everything below runs in the visitor's browser.
 
-import { createScanner, PYAHEAD_VERSION, PYODIDE_INDEX_URL, PYODIDE_VERSION } from "./scan.mjs";
+import { PYAHEAD_VERSION, PYODIDE_VERSION } from "./scan.mjs";
+import { createWorkerScanner } from "./scan-client.mjs";
 import { parseRepositoryUrl, listPythonFiles, fetchSources, RepositoryError, LIMITS } from "./github.mjs";
 import { buildReportView, mount } from "./render.mjs";
 import { pickSamples } from "./samples.mjs";
@@ -76,12 +77,10 @@ function busy(isBusy) {
   document.body.classList.toggle("busy", isBusy);
 }
 
-async function getScanner() {
+function getScanner() {
   if (scanner) return scanner;
-  // Imported by URL so the pinned version in scan.mjs stays the only one.
-  const { loadPyodide } = await import(`${PYODIDE_INDEX_URL}pyodide.mjs`);
-  scanner = createScanner({
-    loadPyodide,
+  // The runtime lives in a worker, so a scan never blocks the page.
+  scanner = createWorkerScanner({
     vendorBase: new URL("vendor/", document.baseURI).href,
     onProgress: ({ stage, message }) => {
       say(stage === "runtime" ? `${message} — a few megabytes, once per visit` : message);
@@ -108,7 +107,7 @@ async function run(produceFiles, context) {
   const started = performance.now();
   try {
     const { files, listing } = await produceFiles();
-    const instance = await getScanner();
+    const instance = getScanner();
     const { report } = await instance.scan(files, options);
     const elapsedSeconds = ((performance.now() - started) / 1000).toFixed(1);
 
