@@ -1,8 +1,10 @@
 // Wiring: input to report. Everything below runs in the visitor's browser.
 
-import { createScanner, PYAHEAD_VERSION, PYODIDE_INDEX_URL, PYODIDE_VERSION } from "./scan.mjs";
+import { PYAHEAD_VERSION, PYODIDE_VERSION } from "./scan.mjs";
+import { createWorkerScanner } from "./scan-client.mjs";
 import { parseRepositoryUrl, listPythonFiles, fetchSources, RepositoryError, LIMITS } from "./github.mjs";
 import { buildReportView, mount } from "./render.mjs";
+import { pickSamples } from "./samples.mjs";
 
 const EXAMPLE_FILES = ["app/storage.py", "app/net.py", "tests/test_storage.py"];
 
@@ -11,11 +13,15 @@ const input = document.getElementById("repository");
 const baseline = document.getElementById("baseline");
 const horizon = document.getElementById("horizon");
 const submit = document.getElementById("submit");
-const exampleButton = document.getElementById("example");
 const status = document.getElementById("status");
 const errorBox = document.getElementById("error");
 const results = document.getElementById("results");
 const download = document.getElementById("download");
+// Optional: the page works without it, so the redesign can place it whenever.
+const samples = document.getElementById("samples");
+const reportRegion = document.getElementById("report-region");
+const resultsTitle = document.getElementById("results-title");
+const submitLabel = document.getElementById("submit-label");
 
 let scanner = null;
 let downloadUrl = null;
@@ -52,6 +58,7 @@ function fail(message) {
 function reset() {
   errorBox.hidden = true;
   results.replaceChildren();
+  reportRegion.hidden = true;
   download.hidden = true;
   if (downloadUrl) {
     URL.revokeObjectURL(downloadUrl);
@@ -61,16 +68,19 @@ function reset() {
 
 function busy(isBusy) {
   submit.disabled = isBusy;
-  exampleButton.disabled = isBusy;
+  input.disabled = isBusy;
+  baseline.disabled = isBusy;
+  horizon.disabled = isBusy;
+  for (const chip of samples?.querySelectorAll("button") ?? []) chip.disabled = isBusy;
+  submitLabel.textContent = isBusy ? "Scanning…" : "Scan repository";
+  form.setAttribute("aria-busy", String(isBusy));
   document.body.classList.toggle("busy", isBusy);
 }
 
-async function getScanner() {
+function getScanner() {
   if (scanner) return scanner;
-  // Imported by URL so the pinned version in scan.mjs stays the only one.
-  const { loadPyodide } = await import(`${PYODIDE_INDEX_URL}pyodide.mjs`);
-  scanner = createScanner({
-    loadPyodide,
+  // The runtime lives in a worker, so a scan never blocks the page.
+  scanner = createWorkerScanner({
     vendorBase: new URL("vendor/", document.baseURI).href,
     onProgress: ({ stage, message }) => {
       say(stage === "runtime" ? `${message} — a few megabytes, once per visit` : message);
@@ -97,13 +107,16 @@ async function run(produceFiles, context) {
   const started = performance.now();
   try {
     const { files, listing } = await produceFiles();
-    const instance = await getScanner();
+    const instance = getScanner();
     const { report } = await instance.scan(files, options);
     const elapsedSeconds = ((performance.now() - started) / 1000).toFixed(1);
 
     say("");
     mount(buildReportView(report, { ...context, ...listing, elapsedSeconds }), document, results);
     offerDownload(report, context.repository?.replace("/", "-") ?? "example");
+    reportRegion.hidden = false;
+    resultsTitle.focus({ preventScroll: true });
+    reportRegion.scrollIntoView({ block: "start" });
   } catch (error) {
     fail(error instanceof RepositoryError ? error.message : `Something went wrong: ${error.message}`);
     throw error;
@@ -138,13 +151,36 @@ form.addEventListener("submit", async (event) => {
   }, { repository: label, ref: target.ref }).catch(() => {});
 });
 
-exampleButton.addEventListener("click", async () => {
-  await run(async () => {
-    say("Loading the example");
-    const entries = await Promise.all(EXAMPLE_FILES.map(async (path) => [path, await (await fetch(`example/${path}`)).text()]));
-    return { files: Object.fromEntries(entries), listing: { listing: {}, failed: [] } };
-  }, { repository: "the bundled example" }).catch(() => {});
-});
+function addChip(label, onClick, attributes = {}) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "chip";
+  chip.textContent = label;
+  Object.assign(chip.dataset, attributes);
+  chip.addEventListener("click", onClick);
+  samples.appendChild(chip);
+}
+
+if (samples) {
+  // First, and the only one that costs nothing: the bundled files are served
+  // from this origin, so it still works when GitHub's 60-an-hour limit is spent.
+  addChip("bundled example", () => {
+    run(async () => {
+      say("Loading the example");
+      const entries = await Promise.all(EXAMPLE_FILES.map(async (path) => [path, await (await fetch(`example/${path}`)).text()]));
+      return { files: Object.fromEntries(entries), listing: { listing: {}, failed: [] } };
+    }, { repository: "the bundled example" }).catch(() => {});
+  }, { example: "true" });
+
+  // Then a different three on every visit, so the page does not always
+  // demonstrate itself with the same repository.
+  for (const url of pickSamples(3)) {
+    addChip(url.replace("https://github.com/", ""), () => {
+      input.value = url;
+      form.requestSubmit();
+    }, { repo: url });
+  }
+}
 
 // Stated in the page, but the exact pins belong next to the thing they pin.
 document.getElementById("pins").textContent =

@@ -31,6 +31,22 @@ code it scans, installs its dependencies, or runs its tests.
 - Continuous monitoring. This is a one-shot scan. To scan on a schedule, in CI,
   or against private code, install the CLI: `pip install pyahead`.
 
+## Local preview
+
+No build step is needed. With Python 3.11 or later, run:
+
+```sh
+python3 serve.py
+```
+
+Open `http://127.0.0.1:8000`. Edits appear on refresh. To preview from another
+device on your network, run `python3 serve.py --bind 0.0.0.0` and open
+`http://<server-address>:8000`. Stop the server with Ctrl+C.
+
+The preview serves the public site assets, with caching disabled. Scanning
+still runs in the browser and needs internet access for the Python runtime
+and public GitHub source.
+
 ## Licence
 
 Apache-2.0, matching PyAhead itself. See [LICENSE](LICENSE).
