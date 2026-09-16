@@ -20,14 +20,17 @@ maintainer checks before the first publication.
 ## 2. Verify locally
 
 Use the locked environment, a clean distribution directory, and a newly created
-installer cache. The commands below use a POSIX shell. In PowerShell, create a
+installer cache. `--reinstall` is what populates that cache: without it, `uv
+sync` does nothing when the virtual environment is already current, the fresh
+cache stays empty, and the offline build below then fails with an
+unsatisfiable resolution rather than proving anything. The commands below use a POSIX shell. In PowerShell, create a
 unique empty directory under `[System.IO.Path]::GetTempPath()`, assign it to
 `$env:PYAHEAD_INSTALLER_CACHE`, and replace each
 `$PYAHEAD_INSTALLER_CACHE` below with that expression.
 
 ```console
 PYAHEAD_INSTALLER_CACHE=$(mktemp -d /tmp/pyahead-release-uv-cache.XXXXXX)
-uv sync --frozen --cache-dir "$PYAHEAD_INSTALLER_CACHE"
+uv sync --frozen --reinstall --cache-dir "$PYAHEAD_INSTALLER_CACHE"
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src scripts
@@ -80,6 +83,12 @@ credential, and the publish step deliberately passes no password input.
 Because that workflow builds in CI, the published artifacts are the ones it
 built, not the ones built locally in §2. Record the workflow's digests in the
 release evidence when publishing this way.
+
+They may nonetheless be the same files. At 0.2.2 the CI wheel and the wheel
+built locally in §2 had the same SHA-256, and PyPI published that digest, so
+the build is reproducible across the two hosts. Treat that as a property to
+check rather than one to rely on: compare the digests, and if they differ,
+find out why before publishing.
 
 Uploading by hand remains valid and is preferable when the release evidence
 already pins locally built artifacts: publish those exact files through an
