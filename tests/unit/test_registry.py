@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import NoReturn, cast
@@ -167,6 +168,36 @@ def test_release_metadata_changes_the_registry_revision(tmp_path: Path) -> None:
 
     assert before.revision != after.revision
     assert after.releases[-1].status is ReleaseStatus.PLANNED
+
+
+def test_bundled_registry_is_read_once() -> None:
+    """The bundled registry is immutable, so reading it twice is pure waste.
+
+    It cost about 0.6 seconds a call, which no one noticed in a one-shot CLI
+    run and which was the entire cost of a scan under WebAssembly, where the
+    analyser is called repeatedly in one process.
+    """
+    assert load_registry() is load_registry()
+
+
+def test_the_cached_bundled_registry_is_the_registry_on_disk() -> None:
+    """Caching must not be allowed to serve something other than the truth."""
+    cached = load_registry()
+    fresh = load_registry(_BUNDLED_REGISTRY)
+
+    assert cached.revision == fresh.revision
+    assert cached.release == fresh.release
+    assert [rule.id for rule in cached.rules] == [rule.id for rule in fresh.rules]
+
+
+def test_an_explicit_source_is_never_cached(tmp_path: Path) -> None:
+    """A path names a file that can change; the caller wants what is there."""
+    shutil.copytree(_BUNDLED_REGISTRY, tmp_path / "registry")
+
+    first = load_registry(tmp_path / "registry")
+    second = load_registry(tmp_path / "registry")
+
+    assert first is not second
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,18 @@ stabilizing.
 
 ## Unreleased
 
+### Fixed
+
+- The bundled registry is now read once per process instead of once per scan.
+  Reading it costs about 0.6 seconds, which nobody noticed in a one-shot
+  `pyahead check` and which was almost the entire cost of a repeated scan: four
+  scans in one process went from 0.62 seconds each to 0.62 and then 0.026. This
+  matters wherever the analyser is called more than once in a process, and most
+  sharply under WebAssembly, where re-parsing the registry dominated everything
+  the analyser actually had to do. A registry named explicitly with
+  `--registry` is still read every time, because a path names a file that can
+  change.
+
 ## 0.2.1 - 2026-09-13
 
 Precision fixes found by adjudicating the PyPI top-1000 against real

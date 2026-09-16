@@ -8,6 +8,7 @@ import stat
 from collections.abc import Iterator, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PurePosixPath
@@ -480,8 +481,8 @@ def _validate_coverage(
         raise RegistryError(message)
 
 
-def load_registry(source: Path | None = None) -> Registry:
-    """Load the bundled registry or an explicit registry index safely."""
+def _read_registry(source: Path | None) -> Registry:
+    """Read and validate a registry from the package data or a given path."""
     if source is None:
         files: _RegistryFiles = _PackageFiles(resources.files("pyahead.data.registry"))
         manifest_path = _MANIFEST_NAME
@@ -535,3 +536,27 @@ def load_registry(source: Path | None = None) -> Registry:
         releases=releases,
         coverage=tuple(coverage),
     )
+
+
+@lru_cache(maxsize=1)
+def _bundled_registry() -> Registry:
+    return _read_registry(None)
+
+
+def load_registry(source: Path | None = None) -> Registry:
+    """Load the bundled registry or an explicit registry index safely.
+
+    The bundled registry is read once per process and reused. It is immutable
+    data inside the installed package, so it cannot change while the process
+    runs, and `Registry` is frozen, so callers cannot alter what they share.
+    Reading it costs roughly 0.6 seconds, which is unnoticeable for a single
+    CLI run and dominates everything else wherever the analyser is called more
+    than once in a process — most sharply under WebAssembly, where it was the
+    whole cost of a scan.
+
+    An explicit source is never cached. It is a file on disk that can change,
+    and a caller who names one is asking for what is there now.
+    """
+    if source is not None:
+        return _read_registry(source)
+    return _bundled_registry()
