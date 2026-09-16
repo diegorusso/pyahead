@@ -6,6 +6,10 @@ stabilizing.
 
 ## Unreleased
 
+## 0.2.2 - 2026-09-16
+
+A performance fix with no public contract changes.
+
 ### Fixed
 
 - The bundled registry is now read once per process instead of once per scan.
