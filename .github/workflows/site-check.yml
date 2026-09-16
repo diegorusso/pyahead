@@ -50,7 +50,8 @@ jobs:
         env:
           BROWSER: chromium
 
-      # WebKit is what Safari is. Chromium passing is not evidence Safari does.
+      # WebKit is what Safari is, and Safari is where this page gets used.
+      # Chromium passing is not evidence that Safari does.
       - name: Verify the site in WebKit
         run: node check/browser-check.mjs
         env:

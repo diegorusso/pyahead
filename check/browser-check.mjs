@@ -14,8 +14,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, normalize } from "node:path";
 import * as playwright from "playwright";
 
-// Which engine. Chromium is the reference; WebKit is what Safari is, and
-// Safari is where this page actually gets used.
+// Which engine. CI runs this twice: Chromium because it is the reference, and
+// WebKit because it is what Safari is, and Safari is where the page is used.
 const ENGINE = process.env.BROWSER ?? "chromium";
 
 const SITE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -69,6 +69,8 @@ console.log(`loading the page in ${ENGINE} ${browser.version()}`);
 await page.goto(origin, { waitUntil: "load" });
 check("the page has its title", (await page.title()).includes("PyAhead"));
 check("the pins are written into the page", /PyAhead 0\.2\.1 · Pyodide 314\.0\.6/.test(await page.textContent("#pins")), await page.textContent("#pins"));
+check("results and download stay hidden before a scan", !(await page.locator("#report-region").isVisible()) && !(await page.locator("#download").isVisible()));
+check("the repository field has a visible label", await page.getByLabel("GitHub repository", { exact: true }).isVisible());
 
 console.log("\nchoosing a Python range");
 check("the default horizon remains 3.14", (await page.inputValue("#horizon")) === "3.14");
@@ -90,7 +92,7 @@ await page.fill("#repository", "https://github.com/owner/repo");
 const rangeRequests = [];
 const recordRangeRequest = (request) => rangeRequests.push(request.url());
 page.on("request", recordRangeRequest);
-for (const [base, trigger] of [["3.12", "#example"], ["3.13", "#submit"]]) {
+for (const [base, trigger] of [["3.12", "[data-example]"], ["3.13", "#submit"]]) {
   await page.selectOption("#baseline", base);
   // Bypass the disabled choices to exercise the check at scan time too.
   await page.evaluate(() => {
@@ -116,8 +118,12 @@ check("names the wrong host", (await page.textContent("#error")).includes("gitla
 check("no report was rendered", (await page.locator(".report").count()) === 0);
 
 console.log("\nscanning the bundled example");
+check("the bundled example is the first sample", (await page.locator("#samples button").first().getAttribute("data-example")) === "true");
+check("three repository samples are offered alongside it", (await page.locator("#samples button[data-repo]").count()) === 3);
 const started = Date.now();
-await page.click("#example");
+await page.click("[data-example]");
+check("scan inputs are locked while scanning", await page.locator("#repository").isDisabled() && await page.locator("#baseline").isDisabled() && await page.locator("#horizon").isDisabled());
+check("loading is announced accessibly", (await page.getAttribute("#status", "role")) === "status" && (await page.getAttribute("#scan-form", "aria-busy")) === "true");
 await page.waitForSelector(".report", { timeout: 300000 });
 const elapsed = (Date.now() - started) / 1000;
 console.log(`  first usable scan in ${elapsed.toFixed(1)}s, ~${(transferred / 1024 / 1024).toFixed(1)}MB transferred`);
@@ -138,10 +144,12 @@ check("links to CPython documentation", (await page.locator(".doc-link").count()
 check("offers the JSON download", await page.locator("#download").isVisible());
 check("the download is named", (await page.getAttribute("#download", "download")).endsWith(".pyahead.json"));
 check("a clean example shows no incompleteness banner", (await page.locator(".incomplete").count()) === 0);
+check("completion moves focus to the results", await page.locator("#results-title").evaluate((element) => element === document.activeElement));
+check("scan inputs are restored after completion", await page.locator("#repository").isEnabled() && await page.locator("#baseline").isEnabled() && await page.locator("#horizon").isEnabled());
 
 console.log("\nsecond scan reuses the cached runtime");
 const secondStarted = Date.now();
-await page.click("#example");
+await page.click("[data-example]");
 await page.waitForFunction(() => document.querySelectorAll(".finding").length === 5, null, { timeout: 120000 });
 const secondElapsed = (Date.now() - secondStarted) / 1000;
 console.log(`  second scan in ${secondElapsed.toFixed(1)}s`);
