@@ -124,7 +124,15 @@ const started = Date.now();
 await page.click("[data-example]");
 check("scan inputs are locked while scanning", await page.locator("#repository").isDisabled() && await page.locator("#baseline").isDisabled() && await page.locator("#horizon").isDisabled());
 check("loading is announced accessibly", (await page.getAttribute("#status", "role")) === "status" && (await page.getAttribute("#scan-form", "aria-busy")) === "true");
-await page.waitForSelector(".report", { timeout: 300000 });
+// Wait for either outcome. Waiting only for the report turns any error the
+// page reports into an indistinguishable five-minute timeout.
+await page.waitForSelector(".report, #error:visible", { timeout: 300000 });
+if (await page.locator("#error").isVisible()) {
+  console.log(`  the page reported: ${await page.textContent("#error")}`);
+  console.log(`  status line was:   ${await page.textContent("#status")}`);
+  console.log(`  console errors:    ${consoleErrors.slice(0, 5).join(" | ") || "none"}`);
+  console.log(`  selects:           baseline=${await page.inputValue("#baseline")} horizon=${await page.inputValue("#horizon")}`);
+}
 const elapsed = (Date.now() - started) / 1000;
 console.log(`  first usable scan in ${elapsed.toFixed(1)}s, ~${(transferred / 1024 / 1024).toFixed(1)}MB transferred`);
 
