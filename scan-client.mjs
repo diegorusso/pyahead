@@ -18,6 +18,7 @@ export function createWorkerScanner({ vendorBase, onProgress = () => {} }) {
       const handlers = pending.get(data.id);
       if (!handlers) return;
       if (data.type === "progress") {
+        handlers.onStage?.(data.stage);
         onProgress(data);
       } else if (data.type === "result") {
         pending.delete(data.id);
@@ -42,8 +43,26 @@ export function createWorkerScanner({ vendorBase, onProgress = () => {} }) {
   return {
     scan(files, options) {
       const id = ++nextId;
+      // Timing per stage, in the console. Without it a slow scan is just slow,
+      // and the interesting question — runtime load, wheel install, or the
+      // analysis itself — cannot be answered from the outside.
+      const started = performance.now();
+      const timings = [];
+      // Each event marks a stage beginning, so record when it began rather
+      // than attributing a duration to the wrong stage.
+      const timed = (stage) => timings.push(`${stage}@+${Math.round(performance.now() - started)}ms`);
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
+        pending.set(id, {
+          onStage: timed,
+          resolve: (result) => {
+            // The worker already reports a "done" stage; this marks the point
+            // the result actually reached the page.
+            timed("returned");
+            console.log(`[pyahead] scan ${id}: ${timings.join(" · ")} (${Math.round(performance.now() - started)}ms overall)`);
+            resolve(result);
+          },
+          reject,
+        });
         connect().postMessage({ id, files, options, vendorBase });
       });
     },

@@ -3,103 +3,135 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>About the PyAhead scan site</title>
-    <meta name="description" content="What the browser scanner does, what it cannot see, and where your data goes — nowhere." />
+    <meta name="theme-color" content="#f7f9f6" />
+    <title>About PyAhead — know what’s ahead</title>
+    <meta name="description" content="How PyAhead scans your Python code, what it can detect, and how it keeps the analysis in your browser." />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="wrap">
-      <header class="site">
-        <h1>About</h1>
-        <nav><a href="./">Scan</a> · <a href="https://github.com/diegorusso/pyahead">Source</a></nav>
-      </header>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site wrap">
+      <a class="brand" href="./" aria-label="PyAhead home">
+        <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="m7 8 8 8-8 8M17 8l8 8-8 8" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        PyAhead<span class="brand-dot">.</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="./">Scanner</a>
+        <a href="about.html" aria-current="page">About</a>
+        <a class="source-link" href="https://github.com/diegorusso/pyahead">GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header>
 
-      <article class="prose">
-        <p class="lede">
-          PyAhead forecasts what a Python upgrade will break in a codebase. It
-          reads source without running it, matches what it finds against a
-          reviewed registry of CPython deprecations and removals, and reports
-          each one with the version it lands in and why.
-        </p>
+    <main id="main" class="wrap">
+      <section class="intro about-intro" aria-labelledby="about-title">
+        <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> About PyAhead</p>
+        <h1 id="about-title">A clearer view of<br /><span>what’s changing.</span></h1>
+        <p class="lede">PyAhead reads your Python source, matches it against a reviewed registry
+          of CPython deprecations and removals, and shows you what needs attention before you upgrade.</p>
+        <a class="text-link" href="./">Try the scanner <span aria-hidden="true">→</span></a>
+      </section>
+      <div class="about-layout">
+        <nav class="contents" aria-label="On this page">
+          <p class="eyebrow">On this page</p>
+          <a href="#privacy">Your data &amp; privacy</a>
+          <a href="#detection">What it detects</a>
+          <a href="#limitations">What it cannot see</a>
+          <a href="#command-line">The command line</a>
+          <a href="#requirements">Requirements</a>
+        </nav>
+        <article class="prose">
+          <section id="privacy">
+            <h2>Where your data goes</h2>
+            <p>
+              Nowhere. There is no server here. This page is static files, and the
+              scan runs inside your own browser, so no repository content, URL or
+              report reaches any machine this project operates — there is no such
+              machine to reach.
+            </p>
+            <p>The page talks to exactly three hosts, all from your browser:</p>
+            <ul>
+              <li><code>cdn.jsdelivr.net</code> — the pinned Python runtime, compiled to WebAssembly.</li>
+              <li><code>api.github.com</code> — one request, to list a repository's files.</li>
+              <li><code>raw.githubusercontent.com</code> — the files themselves.</li>
+            </ul>
+            <p>
+              Nothing is stored between visits beyond your browser's ordinary cache
+              of those downloads.
+            </p>
+          </section>
 
-        <h2>Where your data goes</h2>
-        <p>
-          Nowhere. There is no server here. This page is static files, and the
-          scan runs inside your own browser, so no repository content, URL or
-          report reaches any machine this project operates — there is no such
-          machine to reach.
-        </p>
-        <p>The page talks to exactly three hosts, all from your browser:</p>
-        <ul>
-          <li><code>cdn.jsdelivr.net</code> — the pinned Python runtime, compiled to WebAssembly.</li>
-          <li><code>api.github.com</code> — one request, to list a repository's files.</li>
-          <li><code>raw.githubusercontent.com</code> — the files themselves.</li>
-        </ul>
-        <p>
-          Nothing is stored between visits beyond your browser's ordinary cache
-          of those downloads.
-        </p>
+          <section id="detection">
+            <h2>What it detects</h2>
+            <ul>
+              <li>Uses of CPython APIs that are deprecated or removed in a release you are moving toward.</li>
+              <li>Imports and attribute references, including aliased ones, resolved to their real target.</li>
+              <li>The version each change lands in, so you can see what is urgent and what is merely coming.</li>
+            </ul>
+          </section>
 
-        <h2>What it detects</h2>
-        <ul>
-          <li>Uses of CPython APIs that are deprecated or removed in a release you are moving toward.</li>
-          <li>Imports and attribute references, including aliased ones, resolved to their real target.</li>
-          <li>The version each change lands in, so you can see what is urgent and what is merely coming.</li>
-        </ul>
+          <section id="limitations">
+            <h2>What it cannot see</h2>
+            <ul>
+              <li>
+                <strong>Private repositories.</strong> This page is unauthenticated,
+                so it reads public source only. The command-line tool has no such
+                limit.
+              </li>
+              <li>
+                <strong>Whole large repositories.</strong> Files are fetched one by
+                one under a cap. A scan that hits a cap says so, prominently — an
+                incomplete scan is never presented as a clean one.
+              </li>
+              <li>
+                <strong>Anything that only exists at runtime.</strong> PyAhead is a
+                static analyser. A call reached only through <code>getattr</code> or
+                a plugin registry is invisible to it, and it says so rather than
+                guessing.
+              </li>
+              <li>
+                <strong>Your dependencies.</strong> The scan covers the source in the
+                repository, not the libraries it installs.
+              </li>
+              <li>
+                <strong>Whether the code runs at all.</strong> A finding is a
+                reference to something that changed, not proof that line executes.
+              </li>
+            </ul>
+            <p>
+              The full limitations are in
+              <a href="https://github.com/diegorusso/pyahead/blob/main/docs/usage.md">the usage documentation</a>,
+              and the boundaries the tool keeps are in
+              <a href="https://github.com/diegorusso/pyahead/blob/main/docs/security-and-privacy.md">security and privacy</a>.
+            </p>
+          </section>
 
-        <h2>What it cannot see</h2>
-        <ul>
-          <li>
-            <strong>Private repositories.</strong> This page is unauthenticated,
-            so it reads public source only. The command-line tool has no such
-            limit.
-          </li>
-          <li>
-            <strong>Whole large repositories.</strong> Files are fetched one by
-            one under a cap. A scan that hits a cap says so, prominently — an
-            incomplete scan is never presented as a clean one.
-          </li>
-          <li>
-            <strong>Anything that only exists at runtime.</strong> PyAhead is a
-            static analyser. A call reached only through <code>getattr</code> or
-            a plugin registry is invisible to it, and it says so rather than
-            guessing.
-          </li>
-          <li>
-            <strong>Your dependencies.</strong> The scan covers the source in the
-            repository, not the libraries it installs.
-          </li>
-          <li>
-            <strong>Whether the code runs at all.</strong> A finding is a
-            reference to something that changed, not proof that line executes.
-          </li>
-        </ul>
-        <p>
-          The full limitations are in
-          <a href="https://github.com/diegorusso/pyahead/blob/main/docs/usage.md">the usage documentation</a>,
-          and the boundaries the tool keeps are in
-          <a href="https://github.com/diegorusso/pyahead/blob/main/docs/security-and-privacy.md">security and privacy</a>.
-        </p>
+          <section id="command-line">
+            <h2>When to use the command line instead</h2>
+            <p>
+              This page exists to remove the install step from a first look. For
+              anything continuous — private code, a scan on every push, a gate in
+              CI — install the tool:
+            </p>
+            <pre class="terminal"><code><span>$</span> pip install pyahead
+<span>$</span> pyahead check .</code></pre>
+          </section>
 
-        <h2>When to use the command line instead</h2>
-        <p>
-          This page exists to remove the install step from a first look. For
-          anything continuous — private code, a scan on every push, a gate in
-          CI — install the tool:
-        </p>
-        <p><code>pip install pyahead</code>, then <code>pyahead check .</code></p>
+          <section id="requirements">
+            <h2>Requirements</h2>
+            <p>
+              A browser with WebAssembly, which means any current one, and a few
+              megabytes of download the first time you scan. The runtime stays
+              cached afterwards.
+            </p>
+          </section>
+        </article>
+      </div>
+    </main>
 
-        <h2>Requirements</h2>
-        <p>
-          A browser with WebAssembly, which means any current one, and a few
-          megabytes of download the first time you scan. The runtime stays
-          cached afterwards.
-        </p>
-      </article>
-
-      <footer>
-        <p>Apache-2.0. <a href="https://github.com/diegorusso/pyahead">Source and issues on GitHub</a>.</p>
-      </footer>
-    </div>
+    <footer class="site-footer wrap">
+      <div><a class="footer-brand" href="./">PyAhead<span>.</span></a><p>Read the code. See what’s ahead.</p></div>
+      <div class="footer-details"><p>Open source · Apache-2.0 · <a href="https://github.com/diegorusso/pyahead">Source &amp; issues</a></p></div>
+    </footer>
   </body>
 </html>

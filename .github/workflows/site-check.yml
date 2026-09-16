@@ -76,7 +76,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the published PyAhead
-        run: pip install "pyahead==0.2.1"
+        run: pip install "pyahead==0.2.2"
 
       # The same tag the browser is pointed at, so any difference is the
       # runtime and not the code being compared.

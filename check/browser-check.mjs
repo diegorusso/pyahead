@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, normalize } from "node:path";
 import * as playwright from "playwright";
 
+import { PYAHEAD_VERSION, PYODIDE_VERSION } from "../scan.mjs";
+
 // Which engine. CI runs this twice: Chromium because it is the reference, and
 // WebKit because it is what Safari is, and Safari is where the page is used.
 const ENGINE = process.env.BROWSER ?? "chromium";
@@ -69,7 +71,11 @@ page.on("crash", () => { consoleErrors.push("THE PAGE CRASHED: the renderer proc
 console.log(`loading the page in ${ENGINE} ${browser.version()}`);
 await page.goto(origin, { waitUntil: "load" });
 check("the page has its title", (await page.title()).includes("PyAhead"));
-check("the pins are written into the page", /PyAhead 0\.2\.1 · Pyodide 314\.0\.6/.test(await page.textContent("#pins")), await page.textContent("#pins"));
+// Derived from the constants rather than written out, so a version bump
+// cannot leave a stale assertion passing against the wrong number.
+const pins = await page.textContent("#pins");
+check("the pins are written into the page",
+  pins.includes(`PyAhead ${PYAHEAD_VERSION}`) && pins.includes(`Pyodide ${PYODIDE_VERSION}`), pins);
 check("results and download stay hidden before a scan", !(await page.locator("#report-region").isVisible()) && !(await page.locator("#download").isVisible()));
 check("the repository field has a visible label", await page.getByLabel("GitHub repository", { exact: true }).isVisible());
 
