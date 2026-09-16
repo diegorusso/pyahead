@@ -12,7 +12,11 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import * as playwright from "playwright";
+
+// Which engine. Chromium is the reference; WebKit is what Safari is, and
+// Safari is where this page actually gets used.
+const ENGINE = process.env.BROWSER ?? "chromium";
 
 const SITE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "cdn.jsdelivr.net"]);
@@ -44,7 +48,7 @@ function serveSite() {
 
 const { server, port } = await serveSite();
 const origin = `http://127.0.0.1:${port}`;
-const browser = await chromium.launch();
+const browser = await playwright[ENGINE].launch();
 const page = await browser.newPage();
 
 const hosts = new Set();
@@ -58,8 +62,10 @@ page.on("response", (response) => {
 });
 page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
 page.on("pageerror", (error) => consoleErrors.push(String(error)));
+// A dead renderer must be reported as a crash, not left to look like a timeout.
+page.on("crash", () => { consoleErrors.push("THE PAGE CRASHED: the renderer process died"); });
 
-console.log("loading the page");
+console.log(`loading the page in ${ENGINE} ${browser.version()}`);
 await page.goto(origin, { waitUntil: "load" });
 check("the page has its title", (await page.title()).includes("PyAhead"));
 check("the pins are written into the page", /PyAhead 0\.2\.1 · Pyodide 314\.0\.6/.test(await page.textContent("#pins")), await page.textContent("#pins"));

@@ -41,12 +41,20 @@ jobs:
       - name: Verify the renderer
         run: node check/render-check.mjs
 
-      - name: Install Chromium
+      - name: Install browsers
         working-directory: check
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium webkit
 
-      - name: Verify the site in a browser
+      - name: Verify the site in Chromium
         run: node check/browser-check.mjs
+        env:
+          BROWSER: chromium
+
+      # WebKit is what Safari is. Chromium passing is not evidence Safari does.
+      - name: Verify the site in WebKit
+        run: node check/browser-check.mjs
+        env:
+          BROWSER: webkit
 
   parity:
     name: The browser answer matches the command line
