@@ -22,6 +22,7 @@ const SITE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "cdn.jsdelivr.net"]);
 const MIME = { ".whl": "application/octet-stream", ".mjs": "text/javascript", ".html": "text/html", ".css": "text/css", ".py": "text/plain", ".json": "application/json" };
 
+const EXAMPLE_FILE_COUNT = 3;
 const failures = [];
 function check(description, condition, detail = "") {
   if (condition) console.log(`  ok    ${description}`);
@@ -174,12 +175,23 @@ check("completion moves focus to the results", await page.locator("#results-titl
 check("scan inputs are restored after completion", await page.locator("#repository").isEnabled() && await page.locator("#baseline").isEnabled() && await page.locator("#horizon").isEnabled());
 
 console.log("\nsecond scan reuses the cached runtime");
+// Wall-clock was the old test, and it is a guess: a loaded runner can make a
+// warm scan look slow. The actual claim is that nothing is downloaded again,
+// so measure that instead.
+const secondScanRequests = [];
+const recordSecondScan = (request) => secondScanRequests.push(new URL(request.url()).hostname);
+page.on("request", recordSecondScan);
 const secondStarted = Date.now();
 await page.click("[data-example]");
 await page.waitForFunction(() => document.querySelectorAll(".finding").length === 5, null, { timeout: 120000 });
 const secondElapsed = (Date.now() - secondStarted) / 1000;
-console.log(`  second scan in ${secondElapsed.toFixed(1)}s`);
-check("the second scan is much faster", secondElapsed < elapsed / 2, `${secondElapsed.toFixed(1)}s vs ${elapsed.toFixed(1)}s`);
+page.off("request", recordSecondScan);
+console.log(`  second scan in ${secondElapsed.toFixed(1)}s, ${secondScanRequests.length} requests`);
+check("the runtime is not downloaded again", !secondScanRequests.includes("cdn.jsdelivr.net"), JSON.stringify([...new Set(secondScanRequests)]));
+check("the wheels are not downloaded again",
+  secondScanRequests.filter((host) => host === "127.0.0.1").length <= EXAMPLE_FILE_COUNT,
+  `${secondScanRequests.filter((host) => host === "127.0.0.1").length} same-origin requests, expected at most the ${EXAMPLE_FILE_COUNT} example files`);
+check("the second scan is no slower than the first", secondElapsed <= elapsed, `${secondElapsed.toFixed(1)}s vs ${elapsed.toFixed(1)}s`);
 
 console.log("\nhosts contacted");
 for (const host of [...hosts].sort()) check(`${host} is declared`, ALLOWED_HOSTS.has(host));

@@ -13,13 +13,18 @@ import { createScanner, PYODIDE_INDEX_URL } from "./scan.mjs";
 
 let scanner = null;
 
-async function getScanner(vendorBase, post) {
+// The scanner is built once, but its progress callback must report against
+// whichever scan is running now. Closing over the first scan's reply channel
+// would silently drop every later scan's progress.
+let report = () => {};
+
+async function getScanner(vendorBase) {
   if (scanner) return scanner;
   const { loadPyodide } = await import(`${PYODIDE_INDEX_URL}pyodide.mjs`);
   scanner = createScanner({
     loadPyodide,
     vendorBase,
-    onProgress: (progress) => post({ type: "progress", ...progress }),
+    onProgress: (progress) => report({ type: "progress", ...progress }),
   });
   return scanner;
 }
@@ -27,8 +32,9 @@ async function getScanner(vendorBase, post) {
 self.addEventListener("message", async ({ data }) => {
   const { id, files, options, vendorBase } = data;
   const post = (message) => self.postMessage({ id, ...message });
+  report = post;
   try {
-    const instance = await getScanner(vendorBase, post);
+    const instance = await getScanner(vendorBase);
     post({ type: "result", result: await instance.scan(files, options) });
   } catch (error) {
     // Error objects do not survive structured cloning intact, so send what the
