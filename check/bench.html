@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JS speed check</title>
+    <style>
+      body { margin: 0 auto; padding: 2rem 1.25rem; max-width: 34rem;
+             font: 1rem/1.6 system-ui, -apple-system, sans-serif; }
+      button { font: inherit; padding: .6rem 1.1rem; border-radius: 6px;
+               border: 1px solid #888; background: #f3f3f3; cursor: pointer; }
+      #out { margin-top: 1.5rem; font-family: ui-monospace, Menlo, monospace;
+             font-size: .85rem; white-space: pre-wrap; }
+      .warn { color: #a53c36; font-weight: 600; }
+      dl { font-size: .8rem; color: #555; }
+      dt { font-weight: 600; margin-top: .5rem; }
+    </style>
+  </head>
+  <body>
+    <h1>JS speed check</h1>
+    <!--
+      A diagnostic, not part of the site. It exists because a Safari on one
+      machine ran this loop at 1,119ms against Firefox's 38ms on the same
+      hardware, with a spread of 1.0x across twelve runs — a flat 29x, which is
+      a setting rather than load. Keep it for re-testing after changing one.
+    -->
+    <p>
+      Runs the same integer loop twelve times and reports the spread. Keep this
+      window frontmost and <strong>do not open Web Inspector</strong> — an
+      attached inspector drops Safari out of its optimising tiers, which is
+      exactly what we are trying to measure.
+    </p>
+    <button id="run">Run</button>
+    <div id="out"></div>
+    <dl id="env"></dl>
+    <script>
+      const RUNS = 12;
+      const out = document.getElementById("out");
+
+      // A run while the page is hidden is throttled and tells us nothing, so
+      // notice rather than averaging the result in.
+      let hidden = false;
+      document.addEventListener("visibilitychange", () => { hidden = hidden || document.hidden; });
+
+      function once() {
+        const started = performance.now();
+        let total = 0;
+        for (let i = 0; i < 5e7; i++) total += i % 7;
+        return { ms: performance.now() - started, total };
+      }
+
+      document.getElementById("run").addEventListener("click", async () => {
+        hidden = false;
+        out.textContent = "running…";
+        const times = [];
+        for (let run = 0; run < RUNS; run++) {
+          // Yield so the button repaints and the page stays responsive.
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          times.push(once().ms);
+          out.textContent = `run ${run + 1}/${RUNS}: ${times.at(-1).toFixed(0)}ms`;
+        }
+        const sorted = [...times].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)];
+        out.innerHTML =
+          `runs   ${times.map((t) => t.toFixed(0)).join(", ")}\n` +
+          `min    ${sorted[0].toFixed(0)}ms\n` +
+          `median ${median.toFixed(0)}ms\n` +
+          `max    ${sorted.at(-1).toFixed(0)}ms\n` +
+          `spread ${(sorted.at(-1) / sorted[0]).toFixed(1)}x` +
+          (hidden ? `\n<span class="warn">the page was hidden during the run — those numbers are throttled, run it again while watching</span>` : "");
+      });
+
+      document.getElementById("env").innerHTML = [
+        ["cores", navigator.hardwareConcurrency ?? "unknown"],
+        ["memory (GB, approx)", navigator.deviceMemory ?? "not reported"],
+        ["reduced motion", matchMedia("(prefers-reduced-motion: reduce)").matches],
+        ["user agent", navigator.userAgent],
+      ].map(([k, v]) => `<dt>${k}</dt><dd>${String(v)}</dd>`).join("");
+    </script>
+  </body>
+</html>
