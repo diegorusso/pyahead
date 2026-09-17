@@ -19,10 +19,10 @@ stabilizing.
   headline names the alias actually used. `collections.ByteString` (CPY0165)
   does not recommend `collections.abc.ByteString`, which is deprecated in
   3.12 in turn.
-- Nineteen rules for the Python 3.9 removals, censused from the "What's New
-  in Python 3.9 — Removed" section (CPY0166–CPY0184): `sys.callstats`,
-  `sys.getcheckinterval` and `setcheckinterval`; the `dummy_threading` and
-  `_dummy_thread` modules; `wave.openfp`; the old `plistlib` API —
+- Seventeen rules for the Python 3.9 removals, censused from the "What's New
+  in Python 3.9 — Removed" section (CPY0166–CPY0184, with CPY0169 and
+  CPY0170 retired): `sys.callstats`, `sys.getcheckinterval` and
+  `setcheckinterval`; `wave.openfp`; the old `plistlib` API —
   `readPlist`, `writePlist`, `readPlistFromBytes`, `writePlistToBytes`,
   `Data`, and the `use_builtin_types` keyword of `load` and `loads`;
   `base64.encodestring` and `decodestring`; `fractions.gcd`; the `buffering`
@@ -34,6 +34,12 @@ stabilizing.
   says so. The instance-method removals on that page — `Thread.isAlive`,
   `array.tostring`, `Element.getchildren`, `HTMLParser.unescape` and the
   rest — are recorded as not statically detectable rather than guessed at.
+  Rules for `dummy_threading` and `_dummy_thread` were written and then
+  retired the same day: the top-1000 sweep refuted every one of their eleven
+  adjudicable findings, because those modules only ever existed to be the
+  `except ImportError` fallback and every real reference to them is dead code
+  on Python 3. Their census entry records that with the packages it was seen
+  in.
 - Nine rules from the "What's New in Python 3.9 — Deprecated" and "3.10 —
   Deprecated" sections (CPY0185–CPY0193): the `symbol` module, removed in
   3.10 with the old parser; the `binhex` module and the four `binascii` hqx

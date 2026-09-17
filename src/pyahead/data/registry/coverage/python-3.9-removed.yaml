@@ -59,8 +59,15 @@ entries:
     note: >-
       A C API function; reserved for the separately designed C API roadmap.
   - source_key: dummy-thread-modules
-    disposition: implemented
-    rules: [CPY0169, CPY0170]
+    disposition: not-applicable
+    note: >-
+      dummy_threading and _dummy_thread existed only to be the ImportError
+      fallback on interpreters built without threading, so every real
+      reference sits in an except branch that never executes on Python 3.
+      Rules for them (CPY0169, CPY0170, now retired) were refuted on all 11
+      adjudicable findings in the 2026-09-17 top-1000 sweep — pip, distlib,
+      joblib, future, celery, cffi, sortedcontainers — and confirmed on none.
+      No working code depends on these modules.
   - source_key: aifc-sunau-wave-openfp
     disposition: partial
     rules: [CPY0171]

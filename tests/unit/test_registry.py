@@ -30,7 +30,7 @@ from pyahead.registry.schema import (
 )
 
 _SHA256_HEX_LENGTH = 64
-_CURATED_RULE_COUNT = 189
+_CURATED_RULE_COUNT = 187
 _COVERAGE_SOURCE_COUNT = 17
 _BUNDLED_REGISTRY = Path(__file__).parents[2] / "src/pyahead/data/registry"
 
