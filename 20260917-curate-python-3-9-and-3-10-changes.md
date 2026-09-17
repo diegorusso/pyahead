@@ -140,21 +140,47 @@ literals followed by keywords; the `complex` dunder removals; every C API item.
 
 ## Implementation Steps
 
-### Task 0: Decisions
+### Task 0: Decisions — made 17 September 2026
 
-- [ ] decide #1 — rule granularity for many-subject entries
-- [ ] decide #2 — Gate C evidence: re-run at 3.8 or restate scope
-- [ ] decide #3 — whether the `asyncio` loop parameter is in or out
+- [x] #1 — **one rule per removed object; one rule per removed change.** The
+      deciding fact: a finding's headline is its rule's *subject*, and
+      `CPY0093` already reports `utcnow` for a line using `utcfromtimestamp`.
+      So the 25 `collections` aliases are 25 rules, while the `asyncio` loop
+      parameter is one rule with a module subject and 18 matchers, because
+      "asyncio" is true of every match. (`CPY0093`'s headline is a wart worth
+      fixing separately.)
+- [x] #2 — **restate now, re-run once.** Dated scope notes added to
+      `docs/evidence/gate-c.md` and `docs/evidence/pypi-top-1000.md`; the
+      top-1000 protocol runs again after Task 3, when there is a full set to
+      measure.
+- [x] #3 — **in.** The call-shape matcher expresses `required_keywords: [loop]`
+      directly and treats `**kwargs` as unknown. The 18 signatures were read
+      from the 3.10 documentation's "Removed the loop parameter" notes, which
+      also settled that `Future` and `Task` kept it.
 
-### Task 1: Batch 1 — the 3.10 module removals and the ABC aliases
+**Batching changed while doing Task 1.** A rule cannot be loaded without a
+coverage manifest claiming it, and a manifest must disposition every entry on
+its page — so batches follow source pages, not tiers. `symbol` therefore moves
+to the 3.9 Deprecated page, where its census entry lives.
 
-- [ ] `parser` (#2) and `symbol` (#3), the latter only after verifying its 3.10
-      removal at source
-- [ ] `formatter` (#4)
-- [ ] the `collections` ABC aliases (#1), in the granularity decided in Task 0
-- [ ] fixtures, coverage, gate
+### Task 1: the "What's New in 3.10 — Removed" page — done
 
-### Task 2: Batch 2 — the 3.9 function removals
+- [x] `parser` (#2) — CPY0138
+- [x] `formatter` (#4) — CPY0139, deprecation verified at the 3.4 page
+- [x] the `asyncio` loop parameter (#5) — CPY0140, 18 matchers
+- [x] the 25 `collections` ABC aliases (#1) — CPY0141–CPY0165
+- [x] census `python-3.10-removed`: 9 keys, every bullet dispositioned
+- [x] fixtures generated under intent assertions; one caught a real problem —
+      `collections.abc.ByteString`, the supposed replacement for #1's last
+      alias, is itself deprecated in 3.12 (CPY0044); CPY0165's remediation
+      says so
+- [x] gate: 2059 tests, 161 rules, 14 manifests, 0 unclassified
+
+`symbol` (#3) verified removed in 3.10 — its documentation page exists at
+3.9 and returns 404 at 3.10 — but its census entry is on the 3.9 Deprecated
+page, so it is written with Task 3.
+
+### Task 2: the "What's New in 3.9 — Removed" page
 
 - [ ] `base64.encodestring`/`decodestring` (#6)
 - [ ] `fractions.gcd` (#7)
@@ -163,7 +189,7 @@ literals followed by keywords; the `complex` dunder removals; every C API item.
 - [ ] `plistlib` old API (#10)
 - [ ] fixtures, coverage, gate
 
-### Task 3: Batch 3 — modules and the rest of Tier 1
+### Task 3: the two Deprecated pages, 3.9 and 3.10
 
 - [ ] `dummy_threading`/`_dummy_thread` (#11)
 - [ ] `aifc`/`sunau`/`wave.openfp` (#12), after checking the PEP 594 rules
@@ -172,7 +198,7 @@ literals followed by keywords; the `complex` dunder removals; every C API item.
 - [ ] the `asyncio` loop parameter (#5), if Task 0 said yes
 - [ ] fixtures, coverage, gate
 
-### Task 4: Batch 4 — Tier 2 with existing-rule checks
+### Task 4: leftovers with existing-rule checks
 
 - [ ] #15 through #20, each first checked against the existing rule it may
       already belong to; skip #21–#23 unless a reason appears
