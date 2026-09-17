@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0181
+title: "The buffering parameter is removed from bz2.BZ2File"
+summary: >-
+  The buffering parameter of bz2.BZ2File is ignored since Python 3.0, where passing it warns, and removed in Python 3.9. Only the keyword form is detected; a third positional argument cannot be told apart statically.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: bz2.BZ2File
+
+timeline:
+  - event: deprecated
+    python: "3.0"
+    certainty: released
+    source: python-3.9-removed
+  - event: removed
+    python: "3.9"
+    certainty: released
+    source: python-3.9-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: bz2.BZ2File
+    required_keywords: [buffering]
+
+remediation:
+  summary: >-
+    Drop the argument and pass an already-open file object to control buffering.
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.9-removed
+    title: "What's New in Python 3.9 — Removed"
+    url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+
+tags: [stdlib, bz2, parameter-removal]

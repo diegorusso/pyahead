@@ -19,6 +19,21 @@ stabilizing.
   headline names the alias actually used. `collections.ByteString` (CPY0165)
   does not recommend `collections.abc.ByteString`, which is deprecated in
   3.12 in turn.
+- Nineteen rules for the Python 3.9 removals, censused from the "What's New
+  in Python 3.9 — Removed" section (CPY0166–CPY0184): `sys.callstats`,
+  `sys.getcheckinterval` and `setcheckinterval`; the `dummy_threading` and
+  `_dummy_thread` modules; `wave.openfp`; the old `plistlib` API —
+  `readPlist`, `writePlist`, `readPlistFromBytes`, `writePlistToBytes`,
+  `Data`, and the `use_builtin_types` keyword of `load` and `loads`;
+  `base64.encodestring` and `decodestring`; `fractions.gcd`; the `buffering`
+  keyword of `bz2.BZ2File` (keyword form only; a positional third argument is
+  not claimed); the `encoding` keyword of `json.loads`; and
+  `asyncio.Task.current_task` and `all_tasks`. `aifc.openfp` and
+  `sunau.openfp` have no rule of their own: any use of them already reports
+  the removal of those modules in 3.13, so their census entry is partial and
+  says so. The instance-method removals on that page — `Thread.isAlive`,
+  `array.tostring`, `Element.getchildren`, `HTMLParser.unescape` and the
+  rest — are recorded as not statically detectable rather than guessed at.
 
 ### Changed
 

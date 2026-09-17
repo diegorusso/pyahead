@@ -1,0 +1,86 @@
+{
+  "cases": [
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.9",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "no-competing-project-module",
+          "rule_id": "CPY0170",
+          "usage_contexts": [
+            "runtime"
+          ]
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "direct import",
+      "paths": [
+        "positive/import_direct.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.9",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "no-competing-project-module",
+          "rule_id": "CPY0170",
+          "usage_contexts": [
+            "runtime"
+          ]
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "from import",
+      "paths": [
+        "positive/from_import.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [
+        "PYA2001"
+      ],
+      "name": "local module shadows the standard library",
+      "paths": [
+        "consumer.py"
+      ],
+      "root": "negative/local_module"
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "threading and a bare string",
+      "paths": [
+        "negative/unrelated.py"
+      ],
+      "root": "."
+    }
+  ],
+  "policy": {
+    "baseline_python": "3.8",
+    "horizon_python": "3.13"
+  },
+  "rule_id": "CPY0170",
+  "schema_version": 1
+}

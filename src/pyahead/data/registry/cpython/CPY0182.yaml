@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0182
+title: "The encoding parameter is removed from json.loads"
+summary: >-
+  The encoding parameter of json.loads() is ignored since Python 3.1, warns since Python 3.8, and is removed in Python 3.9.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: json.loads
+
+timeline:
+  - event: deprecated
+    python: "3.1"
+    certainty: released
+    source: python-3.9-removed
+  - event: removed
+    python: "3.9"
+    certainty: released
+    source: python-3.9-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: json.loads
+    required_keywords: [encoding]
+
+remediation:
+  summary: >-
+    Drop the argument; decode bytes before passing them, or pass str.
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.9-removed
+    title: "What's New in Python 3.9 — Removed"
+    url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+
+tags: [stdlib, json, parameter-removal]

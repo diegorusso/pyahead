@@ -59,7 +59,7 @@
         "3.12",
         "3.13"
       ],
-      "registry_revision": "1d9c6f4799860b62d7e02c5cc7796c940f762ec91d8de2a3039121a31c8605c6",
+      "registry_revision": "754d3d3bc376703b3ce42676fa50adf4338486c9a5f7cc918440fad0bb72e60c",
       "remediation": {
         "summary": "Replace the specific cgi functionality in use. There is no single drop-in replacement for the complete module."
       },
@@ -132,7 +132,7 @@
   },
   "registry": {
     "release": "2026.09.17",
-    "revision": "1d9c6f4799860b62d7e02c5cc7796c940f762ec91d8de2a3039121a31c8605c6"
+    "revision": "754d3d3bc376703b3ce42676fa50adf4338486c9a5f7cc918440fad0bb72e60c"
   },
   "scan": {
     "files_analyzed": 1,

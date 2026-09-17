@@ -1,0 +1,45 @@
+schema_version: 1
+id: CPY0184
+title: "asyncio.Task.all_tasks is removed"
+summary: >-
+  asyncio.Task.all_tasks() is deprecated in Python 3.7 and removed in Python 3.9.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: asyncio.Task.all_tasks
+
+timeline:
+  - event: deprecated
+    python: "3.7"
+    certainty: released
+    source: python-3.9-removed
+  - event: removed
+    python: "3.9"
+    certainty: released
+    source: python-3.9-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: asyncio.Task.all_tasks
+
+remediation:
+  summary: >-
+    Call asyncio.all_tasks().
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.9-removed
+    title: "What's New in Python 3.9 — Removed"
+    url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+
+tags: [stdlib, asyncio, function-removal]

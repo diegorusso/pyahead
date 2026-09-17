@@ -1,0 +1,131 @@
+schema_version: 1
+source:
+  id: python-3.9-removed
+  title: "What's New in Python 3.9 — Removed"
+  url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+  checked_on: "2026-09-17"
+
+# The ordered keys are independently pinned by tests. Parent bullets and every
+# API-bearing nested bullet in the selected section receive their own entry.
+# Census taken from the page's HTML, in the page's order.
+source_keys:
+  - unittest-mock-version
+  - nntplib-nntp-xpath-xgtitle
+  - array-array-tostring-fromstring
+  - sys-callstats
+  - sys-getcheckinterval-setcheckinterval
+  - pyimport-cleanup
+  - dummy-thread-modules
+  - aifc-sunau-wave-openfp
+  - threading-thread-isalive
+  - elementtree-getchildren-getiterator
+  - plistlib-legacy-api
+  - pygen-needsfinalizing
+  - base64-encodestring-decodestring
+  - fractions-gcd
+  - bz2-bz2file-buffering
+  - json-loads-encoding
+  - asyncio-with-await-lock
+  - sys-getcounts-showalloccount
+  - typing-namedtuple-field-types
+  - symtable-symboltable-has-exec
+  - asyncio-task-current-task-all-tasks
+  - html-parser-htmlparser-unescape
+
+entries:
+  - source_key: unittest-mock-version
+    disposition: not-applicable
+    note: >-
+      An erroneous attribute that never described the package; nothing reads
+      it on purpose.
+  - source_key: nntplib-nntp-xpath-xgtitle
+    disposition: not-statically-detectable
+    note: >-
+      Methods on an NNTP instance, which the static alpha cannot type. The
+      nntplib module itself is removed in Python 3.13 (CPY0013).
+  - source_key: array-array-tostring-fromstring
+    disposition: not-statically-detectable
+    note: >-
+      Methods on array instances; arbitrary receiver types are outside the
+      static alpha.
+  - source_key: sys-callstats
+    disposition: implemented
+    rules: [CPY0166]
+  - source_key: sys-getcheckinterval-setcheckinterval
+    disposition: implemented
+    rules: [CPY0167, CPY0168]
+  - source_key: pyimport-cleanup
+    disposition: c-api-roadmap
+    note: >-
+      A C API function; reserved for the separately designed C API roadmap.
+  - source_key: dummy-thread-modules
+    disposition: implemented
+    rules: [CPY0169, CPY0170]
+  - source_key: aifc-sunau-wave-openfp
+    disposition: partial
+    rules: [CPY0171]
+    note: >-
+      wave.openfp is detected. aifc.openfp and sunau.openfp are covered by the
+      removal of those modules in Python 3.13 (CPY0002, CPY0019); a scan whose
+      horizon is below 3.13 will not hear that the aliases went in 3.9.
+  - source_key: threading-thread-isalive
+    disposition: not-statically-detectable
+    note: >-
+      A method on Thread instances and subclasses; arbitrary receiver types
+      are outside the static alpha.
+  - source_key: elementtree-getchildren-getiterator
+    disposition: not-statically-detectable
+    note: >-
+      Methods on Element and ElementTree instances; arbitrary receiver types
+      are outside the static alpha.
+  - source_key: plistlib-legacy-api
+    disposition: implemented
+    rules: [CPY0172, CPY0173, CPY0174, CPY0175, CPY0176, CPY0177]
+  - source_key: pygen-needsfinalizing
+    disposition: c-api-roadmap
+    note: >-
+      A C API function; reserved for the separately designed C API roadmap.
+  - source_key: base64-encodestring-decodestring
+    disposition: implemented
+    rules: [CPY0178, CPY0179]
+  - source_key: fractions-gcd
+    disposition: implemented
+    rules: [CPY0180]
+  - source_key: bz2-bz2file-buffering
+    disposition: partial
+    rules: [CPY0181]
+    note: >-
+      The keyword form is detected. buffering was also the third positional
+      parameter, and a positional argument there cannot be told apart from an
+      intentional compresslevel statically.
+  - source_key: json-loads-encoding
+    disposition: implemented
+    rules: [CPY0182]
+  - source_key: asyncio-with-await-lock
+    disposition: not-statically-detectable
+    note: >-
+      Whether the awaited expression in a with statement is an asyncio lock
+      needs a receiver type the static alpha does not infer.
+  - source_key: sys-getcounts-showalloccount
+    disposition: not-applicable
+    note: >-
+      Existed only in a special COUNT_ALLOCS build of the interpreter; no
+      distributed Python had it.
+  - source_key: typing-namedtuple-field-types
+    disposition: not-statically-detectable
+    note: >-
+      An attribute read on user-defined NamedTuple classes and instances;
+      arbitrary receiver types are outside the static alpha.
+  - source_key: symtable-symboltable-has-exec
+    disposition: not-statically-detectable
+    note: >-
+      A method on SymbolTable instances; arbitrary receiver types are outside
+      the static alpha.
+  - source_key: asyncio-task-current-task-all-tasks
+    disposition: implemented
+    rules: [CPY0183, CPY0184]
+  - source_key: html-parser-htmlparser-unescape
+    disposition: not-statically-detectable
+    note: >-
+      Called on HTMLParser subclasses as self.unescape(); arbitrary receiver
+      types are outside the static alpha.

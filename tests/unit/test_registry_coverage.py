@@ -63,6 +63,10 @@ _PINNED_SOURCE_INVENTORIES = {
         22,
         "885ef0ae29b74c6088ba445ba1cf69ac56ee5696ebb12fe4429f5c21872077d9",
     ),
+    "python-3.9-removed": (
+        22,
+        "d417d292a03e57776d6ba424f9979f574f79ef4f3e798944bebb328df8b6ce02",
+    ),
     "python-3.10-removed": (
         9,
         "ec121c1ea8af4ab47f204aab078cec728ddebf01c43648cac197d58f811c6db3",

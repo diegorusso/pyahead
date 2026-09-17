@@ -1,0 +1,45 @@
+schema_version: 1
+id: CPY0178
+title: "base64.encodestring is removed"
+summary: >-
+  base64.encodestring() is an alias of base64.encodebytes(), deprecated in Python 3.1 and removed in Python 3.9.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: base64.encodestring
+
+timeline:
+  - event: deprecated
+    python: "3.1"
+    certainty: released
+    source: python-3.9-removed
+  - event: removed
+    python: "3.9"
+    certainty: released
+    source: python-3.9-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: base64.encodestring
+
+remediation:
+  summary: >-
+    Call base64.encodebytes().
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.9-removed
+    title: "What's New in Python 3.9 — Removed"
+    url: "https://docs.python.org/3.9/whatsnew/3.9.html#removed"
+
+tags: [stdlib, base64, alias-removal]
