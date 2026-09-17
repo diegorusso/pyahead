@@ -34,6 +34,17 @@ stabilizing.
   says so. The instance-method removals on that page — `Thread.isAlive`,
   `array.tostring`, `Element.getchildren`, `HTMLParser.unescape` and the
   rest — are recorded as not statically detectable rather than guessed at.
+- Nine rules from the "What's New in Python 3.9 — Deprecated" and "3.10 —
+  Deprecated" sections (CPY0185–CPY0193): the `symbol` module, removed in
+  3.10 with the old parser; the `binhex` module and the four `binascii` hqx
+  functions, removed in 3.11; `ast.Index` and `ast.ExtSlice`, deprecated in
+  3.9 and still importable at 3.14 with no removal scheduled; and the
+  `random` parameter of `random.shuffle`, removed in 3.11, detected both as a
+  keyword and as a second positional argument since `shuffle` never took
+  another. Both pages are fully censused — 19 and 36 entries — and most of the
+  3.10 page turns out to be already covered by the rules for the 3.11 and
+  3.12 removals that followed, which the census now records as duplicates of
+  those rules rather than leaving implicit.
 
 ### Changed
 

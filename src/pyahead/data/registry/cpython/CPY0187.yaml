@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0187
+title: "binascii.b2a_hqx is removed"
+summary: >-
+  binascii.b2a_hqx() belongs to the binhex4 support deprecated in Python 3.9 and removed in Python 3.11.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: binascii.b2a_hqx
+
+timeline:
+  - event: deprecated
+    python: "3.9"
+    certainty: released
+    source: python-3.9-deprecated
+  - event: removed
+    python: "3.11"
+    certainty: released
+    source: python-3.11-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: binascii.b2a_hqx
+
+remediation:
+  summary: >-
+    Drop binhex4 encoding; the format is obsolete and has no standard-library replacement.
+  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.9-deprecated
+    title: "What's New in Python 3.9 — Deprecated"
+    url: "https://docs.python.org/3.9/whatsnew/3.9.html#deprecated"
+  - id: python-3.11-removed
+    title: "What's New in Python 3.11 — Removed"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+
+tags: [stdlib, binascii, function-removal]

@@ -183,6 +183,15 @@ rules:
   - cpython/CPY0182.yaml
   - cpython/CPY0183.yaml
   - cpython/CPY0184.yaml
+  - cpython/CPY0185.yaml
+  - cpython/CPY0186.yaml
+  - cpython/CPY0187.yaml
+  - cpython/CPY0188.yaml
+  - cpython/CPY0189.yaml
+  - cpython/CPY0190.yaml
+  - cpython/CPY0191.yaml
+  - cpython/CPY0192.yaml
+  - cpython/CPY0193.yaml
 coverage:
   - coverage/cpython-84131.yaml
   - coverage/cpython-94101.yaml
@@ -199,3 +208,5 @@ coverage:
   - coverage/python-deprecations.yaml
   - coverage/python-3.10-removed.yaml
   - coverage/python-3.9-removed.yaml
+  - coverage/python-3.9-deprecated.yaml
+  - coverage/python-3.10-deprecated.yaml

@@ -1,0 +1,234 @@
+schema_version: 1
+source:
+  id: python-3.10-deprecated
+  title: "What's New in Python 3.10 — Deprecated"
+  url: "https://docs.python.org/3.10/whatsnew/3.10.html#deprecated"
+  checked_on: "2026-09-17"
+
+# The ordered keys are independently pinned by tests. Parent bullets and every
+# API-bearing nested bullet in the selected section receive their own entry.
+# The threading bullet nests eight method bullets and the ssl bullet nests
+# six feature bullets; each gets its own key. Most entries on this page are
+# already classified from the 3.11 and 3.12 removals that followed, and are
+# recorded as duplicates of those rules.
+source_keys:
+  - numeric-literal-followed-by-keyword
+  - import-semantics-cleanup-overview
+  - distutils-namespace
+  - random-randrange-non-integer
+  - importlib-load-module-methods
+  - zipimporter-load-module
+  - import-system-load-module-importwarning
+  - import-system-find-module-importwarning
+  - import-system-find-loader-importwarning
+  - importlib-find-module-implementations
+  - importlib-abc-finder
+  - imp-and-legacy-import-helpers
+  - import-system-module-repr-fallback
+  - importlib-module-repr-methods
+  - sqlite3-optimizedunicode
+  - sqlite3-enable-shared-cache
+  - threading-camelcase-methods
+  - threading-currentthread
+  - threading-activecount
+  - threading-condition-notifyall
+  - threading-event-isset
+  - threading-thread-setname
+  - threading-thread-getname
+  - threading-thread-isdaemon
+  - threading-thread-setdaemon
+  - pathlib-path-link-to
+  - cgi-log
+  - ssl-legacy-features
+  - ssl-op-no-constants
+  - ssl-protocol-constants
+  - ssl-wrap-socket
+  - ssl-match-hostname
+  - ssl-rand-pseudo-bytes-rand-egd
+  - ssl-npn-features
+  - pythonthreaddebug
+  - typing-io-typing-re
+
+entries:
+  - source_key: numeric-literal-followed-by-keyword
+    disposition: not-statically-detectable
+    note: >-
+      A tokenizer-level pattern such as 0in x. It is syntactic, but no matcher
+      in the static alpha expresses token adjacency, and libcst normalises the
+      spacing away.
+  - source_key: import-semantics-cleanup-overview
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      An overview of the entries that follow; the APIs it names are classified
+      individually below.
+  - source_key: distutils-namespace
+    disposition: duplicate
+    rules: [CPY0023]
+    note: Classified from the 3.12 removal.
+  - source_key: random-randrange-non-integer
+    disposition: not-statically-detectable
+    note: >-
+      Whether an argument is an integer is a runtime property; only a literal
+      could be judged.
+  - source_key: importlib-load-module-methods
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Methods on loader instances; exact class-qualified references are
+      covered by the rules for the 3.12 removals, and arbitrary receivers are
+      outside the static alpha.
+  - source_key: zipimporter-load-module
+    disposition: duplicate
+    rules: [CPY0114]
+    note: >-
+      Classified from the pending 3.15 removal; exact zipimporter-qualified
+      references are detected there.
+  - source_key: import-system-load-module-importwarning
+    disposition: not-applicable
+    note: >-
+      Describes a warning the import system itself emits when it falls back
+      to a finder's load_module; it is not a call in user code.
+  - source_key: import-system-find-module-importwarning
+    disposition: not-applicable
+    note: >-
+      Describes a warning the import system itself emits; it is not a call in
+      user code.
+  - source_key: import-system-find-loader-importwarning
+    disposition: not-applicable
+    note: >-
+      Describes a warning the import system itself emits; it is not a call in
+      user code.
+  - source_key: importlib-find-module-implementations
+    disposition: duplicate
+    rules: [CPY0074]
+    note: >-
+      Classified from the 3.12 removal, where the entry is partial: exact
+      class-qualified references are detected, arbitrary receivers are not.
+  - source_key: importlib-abc-finder
+    disposition: duplicate
+    rules: [CPY0074]
+    note: Classified from the 3.12 removal.
+  - source_key: imp-and-legacy-import-helpers
+    disposition: duplicate
+    rules: [CPY0024, CPY0025, CPY0074, CPY0084]
+    note: >-
+      imp, pkgutil.ImpImporter and ImpLoader, and the importlib.util helpers
+      are classified from the 3.12 removal. importlib.find_loader is covered
+      there as partial under CPY0074.
+  - source_key: import-system-module-repr-fallback
+    disposition: not-applicable
+    note: >-
+      Describes the import system's own fallback order for __repr__; it is not
+      a call in user code.
+  - source_key: importlib-module-repr-methods
+    disposition: duplicate
+    rules: [CPY0084]
+    note: Classified from the 3.12 removal.
+  - source_key: sqlite3-optimizedunicode
+    disposition: duplicate
+    rules: [CPY0070]
+    note: Classified from the 3.12 removal.
+  - source_key: sqlite3-enable-shared-cache
+    disposition: duplicate
+    rules: [CPY0070]
+    note: Classified from the 3.12 removal.
+  - source_key: threading-camelcase-methods
+    disposition: duplicate
+    rules: [CPY0125]
+    note: The parent bullet; each method is classified below.
+  - source_key: threading-currentthread
+    disposition: duplicate
+    rules: [CPY0125]
+    note: Exact threading-qualified references are detected.
+  - source_key: threading-activecount
+    disposition: duplicate
+    rules: [CPY0125]
+    note: Exact threading-qualified references are detected.
+  - source_key: threading-condition-notifyall
+    disposition: duplicate
+    rules: [CPY0125]
+    note: >-
+      Exact class-qualified references are detected; calls on Condition
+      instances require type inference.
+  - source_key: threading-event-isset
+    disposition: duplicate
+    rules: [CPY0125]
+    note: >-
+      Exact class-qualified references are detected; calls on Event instances
+      require type inference.
+  - source_key: threading-thread-setname
+    disposition: duplicate
+    rules: [CPY0125]
+    note: >-
+      Exact class-qualified references are detected; calls on Thread instances
+      require type inference.
+  - source_key: threading-thread-getname
+    disposition: duplicate
+    rules: [CPY0125]
+    note: >-
+      Exact class-qualified references are detected; calls on Thread instances
+      require type inference.
+  - source_key: threading-thread-isdaemon
+    disposition: duplicate
+    rules: [CPY0125]
+    note: >-
+      Exact class-qualified references are detected; calls on Thread instances
+      require type inference.
+  - source_key: threading-thread-setdaemon
+    disposition: duplicate
+    rules: [CPY0125]
+    note: >-
+      Exact class-qualified references are detected; calls on Thread instances
+      require type inference.
+  - source_key: pathlib-path-link-to
+    disposition: duplicate
+    rules: [CPY0071]
+    note: Classified from the 3.12 removal.
+  - source_key: cgi-log
+    disposition: duplicate
+    rules: [CPY0001]
+    note: The cgi module is removed in Python 3.13, which covers every name in it.
+  - source_key: ssl-legacy-features
+    disposition: duplicate
+    rules: [CPY0026, CPY0067, CPY0119, CPY0120, CPY0121, CPY0122, CPY0123]
+    note: The parent bullet; each feature is classified below.
+  - source_key: ssl-op-no-constants
+    disposition: duplicate
+    rules: [CPY0120, CPY0121]
+    note: All six OP_NO_* constants are matched between the two rules.
+  - source_key: ssl-protocol-constants
+    disposition: partial
+    rules: [CPY0122, CPY0123]
+    note: >-
+      PROTOCOL_SSLv3, TLSv1, TLSv1_1, TLSv1_2 and TLS are matched.
+      PROTOCOL_SSLv2 exists only against an OpenSSL built with SSLv2, which no
+      supported build is, and PROTOCOL_SSLv23 is an alias of PROTOCOL_TLS that
+      is not matched by name.
+  - source_key: ssl-wrap-socket
+    disposition: duplicate
+    rules: [CPY0026]
+    note: Classified from the 3.12 removal.
+  - source_key: ssl-match-hostname
+    disposition: duplicate
+    rules: [CPY0067]
+    note: Classified from the 3.12 removal.
+  - source_key: ssl-rand-pseudo-bytes-rand-egd
+    disposition: partial
+    rules: [CPY0026]
+    note: >-
+      RAND_pseudo_bytes is matched. RAND_egd exists only on builds whose
+      OpenSSL supports EGD and is not matched by name.
+  - source_key: ssl-npn-features
+    disposition: duplicate
+    rules: [CPY0119]
+    note: Classified from the pending removal.
+  - source_key: pythonthreaddebug
+    disposition: not-applicable
+    note: >-
+      An environment variable honoured only by debug builds of the
+      interpreter; not a construct in source code.
+  - source_key: typing-io-typing-re
+    disposition: duplicate
+    rules: [CPY0079]
+    note: Both submodules are matched by the one rule.

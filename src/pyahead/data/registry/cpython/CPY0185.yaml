@@ -1,0 +1,51 @@
+schema_version: 1
+id: CPY0185
+title: "The symbol module is removed"
+summary: >-
+  The symbol standard-library module is deprecated in Python 3.9 alongside parser, when CPython switched to the PEG parser, and removed in Python 3.10.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: symbol
+
+timeline:
+  - event: deprecated
+    python: "3.9"
+    certainty: released
+    source: python-3.9-deprecated
+  - event: removed
+    python: "3.10"
+    certainty: released
+    source: python-3.10-changelog
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: module-import
+    module: symbol
+  - kind: literal-dynamic-import
+    module: symbol
+    confidence: medium
+
+remediation:
+  summary: >-
+    Use the ast module; the grammar symbol numbers of the old parser have no replacement.
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#deprecated"
+  automation: null
+
+sources:
+  - id: python-3.9-deprecated
+    title: "What's New in Python 3.9 — Deprecated"
+    url: "https://docs.python.org/3.9/whatsnew/3.9.html#deprecated"
+  - id: python-3.10-changelog
+    title: "Python 3.10 changelog — bpo-40939, remove the old parser and the symbol module"
+    url: "https://docs.python.org/3.10/whatsnew/changelog.html"
+
+tags: [stdlib, module-removal, pep-617]

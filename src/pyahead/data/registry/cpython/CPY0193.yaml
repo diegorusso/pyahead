@@ -1,0 +1,52 @@
+schema_version: 1
+id: CPY0193
+title: "The random parameter is removed from random.shuffle"
+summary: >-
+  The optional random parameter of random.shuffle() is deprecated in Python 3.9 and removed in Python 3.11. Both the keyword form and a second positional argument are detected, since shuffle never took another second argument.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: random.shuffle
+
+timeline:
+  - event: deprecated
+    python: "3.9"
+    certainty: released
+    source: python-3.9-deprecated
+  - event: removed
+    python: "3.11"
+    certainty: released
+    source: python-3.11-random
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: random.shuffle
+    required_keywords: [random]
+  - kind: call-shape
+    qualified_name: random.shuffle
+    min_positional_args: 2
+
+remediation:
+  summary: >-
+    Drop the argument. To shuffle with a specific generator, call that generator's own shuffle method, for example random.Random(seed).shuffle(x).
+  documentation_url: "https://docs.python.org/3.11/library/random.html#random.shuffle"
+  automation: null
+
+sources:
+  - id: python-3.9-deprecated
+    title: "What's New in Python 3.9 — Deprecated"
+    url: "https://docs.python.org/3.9/whatsnew/3.9.html#deprecated"
+  - id: python-3.11-random
+    title: "random — Generate pseudo-random numbers (Python 3.11)"
+    url: "https://docs.python.org/3.11/library/random.html#random.shuffle"
+
+tags: [stdlib, random, parameter-removal]
