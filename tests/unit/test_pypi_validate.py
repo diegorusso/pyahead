@@ -214,13 +214,17 @@ def test_reference_candidates_are_every_satisfying_minor_lowest_first() -> None:
 
 def test_reference_candidates_exclude_minors_the_wheel_cannot_install() -> None:
     """A cp311 wheel pins its candidates to 3.11 whatever the floor declares."""
+    # The platform tag comes from the host: a wheel tagged for another
+    # architecture is installable nowhere, and the test would then assert on
+    # an empty tuple for a reason unrelated to the minor.
+    platform = next(iter(cpython_tags(python_version=(3, 11)))).platform
     installed = _installed(8, 9, 10, 11, 12)
     candidates = pypi_validate._reference_candidates(
         ">=3.8",
         installed,
         baseline_minor=8,
         horizon_minor=15,
-        filename="demo-1.0-cp311-cp311-manylinux2014_aarch64.whl",
+        filename=f"demo-1.0-cp311-cp311-{platform}.whl",
         is_wheel=True,
     )
     assert candidates == (installed[11],)
