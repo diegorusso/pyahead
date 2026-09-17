@@ -291,12 +291,43 @@ def _reference_interpreter(  # noqa: PLR0913 - mirrors the manifest entry's own 
     claims to support, and installing under a tag-incompatible venv would
     fail for a reason unrelated to anything this harness is measuring.
     """
+    candidates = _reference_candidates(
+        requires_python,
+        installed,
+        baseline_minor=baseline_minor,
+        horizon_minor=horizon_minor,
+        filename=filename,
+        is_wheel=is_wheel,
+    )
+    return candidates[0] if candidates else None
+
+
+def _reference_candidates(  # noqa: PLR0913 - mirrors the manifest entry's own fields.
+    requires_python: str | None,
+    installed: Mapping[int, InstalledInterpreter],
+    *,
+    baseline_minor: int,
+    horizon_minor: int,
+    filename: str,
+    is_wheel: bool,
+) -> tuple[InstalledInterpreter, ...]:
+    """Every installed minor the entry could be scanned under, lowest first.
+
+    The first is the reference the package claims to support. Its dependency
+    tree may not install there from a one-artifact-per-package wheelhouse:
+    the current release of a dependency can require a newer Python than the
+    package still declares, or ship only a wheel tagged for the interpreter
+    the corpus was acquired with. The runner then moves to the next candidate
+    and records why, so the scan happens at the lowest floor the package
+    actually installs at rather than being skipped.
+    """
     specifier: SpecifierSet | None = None
     if requires_python:
         try:
             specifier = SpecifierSet(requires_python)
         except InvalidSpecifier:
             specifier = None
+    candidates: list[InstalledInterpreter] = []
     for minor in range(baseline_minor, horizon_minor + 1):
         candidate = installed.get(minor)
         if candidate is None:
@@ -306,8 +337,8 @@ def _reference_interpreter(  # noqa: PLR0913 - mirrors the manifest entry's own 
             continue
         if is_wheel and not pypi_corpus.wheel_supports_minor(filename, minor):
             continue
-        return candidate
-    return None
+        candidates.append(candidate)
+    return tuple(candidates)
 
 
 def _registry_window_floor() -> int:
@@ -1826,14 +1857,81 @@ def _provision_binding_venvs(  # noqa: PLR0913 - one venv input per provisioning
     return binding_venvs
 
 
-def _process_package(  # noqa: C901, PLR0911 - one early return per closed shard status.
+@dataclass(frozen=True)
+class _InstalledUnder:
+    """Where a package finally installed, and every candidate it did not."""
+
+    reference: InstalledInterpreter | None
+    site_packages: Path | None
+    isolation_mode: str | None
+    error: str | None
+    fallback: list[dict[str, str | int]]
+
+
+def _install_under_first_candidate(
+    entry: PackageEntry,
+    candidates: tuple[InstalledInterpreter, ...],
+    *,
+    package_dir: Path,
+    options: RunOptions,
+) -> _InstalledUnder:
+    """Try each candidate reference, lowest first, until the package installs.
+
+    Each candidate the package would not install under is recorded with its
+    reason, so a reference above the declared floor is explained in the shard
+    rather than silent.
+    """
+    venv_dir = package_dir / "venv"
+    scratch_home = package_dir / "home"
+    fallback: list[dict[str, str | int]] = []
+    isolation_mode: str | None = None
+    install_error: str | None = None
+    for candidate in candidates:
+        if package_dir.exists():
+            shutil.rmtree(package_dir)
+        package_dir.mkdir(parents=True, exist_ok=True)
+        scratch_home.mkdir(parents=True, exist_ok=True)
+        try:
+            _create_venv(
+                options.uv, candidate.path, venv_dir, timeout=_VENV_TIMEOUT_SECONDS
+            )
+        except (PypiValidateError, subprocess.TimeoutExpired) as error:
+            install_error = str(error)
+            isolation_mode = None
+        else:
+            # Resolved from the bare venv, before any third-party code is
+            # installed into it: querying it after install would run the just
+            # installed distribution's `.pth`/`sitecustomize.py` startup code
+            # outside the bwrap/rlimit isolation that `_install_distribution`
+            # and the probes use.
+            site_packages = _site_packages_dir(
+                venv_dir / "bin" / "python", timeout=options.timeout
+            )
+            isolation_mode, install_error = _install_distribution(
+                entry, venv_dir=venv_dir, scratch_home=scratch_home, options=options
+            )
+            if install_error is None:
+                return _InstalledUnder(
+                    candidate, site_packages, isolation_mode, None, fallback
+                )
+        fallback.append(
+            {
+                "minor": candidate.minor,
+                "version": candidate.version,
+                "reason": install_error,
+            }
+        )
+    return _InstalledUnder(None, None, isolation_mode, install_error, fallback)
+
+
+def _process_package(  # noqa: C901 - one early return per closed shard status.
     entry: PackageEntry,
     *,
     installed: Mapping[int, InstalledInterpreter],
     options: RunOptions,
 ) -> dict[str, Any]:
     base = _package_base(entry, manifest_sha256=options.manifest_sha256)
-    reference = _reference_interpreter(
+    candidates = _reference_candidates(
         entry.requires_python,
         installed,
         baseline_minor=options.baseline_minor,
@@ -1841,7 +1939,7 @@ def _process_package(  # noqa: C901, PLR0911 - one early return per closed shard
         filename=entry.filename,
         is_wheel=entry.is_wheel,
     )
-    if reference is None:
+    if not candidates:
         return {
             **base,
             "status": "skipped",
@@ -1850,51 +1948,39 @@ def _process_package(  # noqa: C901, PLR0911 - one early return per closed shard
             "interpreter": None,
         }
 
-    interpreter_info = {
-        "reference_minor": reference.minor,
-        "reference_version": reference.version,
-    }
     package_dir = options.work_dir / "tmp" / f"{entry.rank:04d}"
     venv_dir = package_dir / "venv"
     scratch_home = package_dir / "home"
-    isolation_mode: str | None = None
     try:
-        package_dir.mkdir(parents=True, exist_ok=True)
-        scratch_home.mkdir(parents=True, exist_ok=True)
+        installed_under = _install_under_first_candidate(
+            entry, candidates, package_dir=package_dir, options=options
+        )
+        reference = installed_under.reference
+        site_packages = installed_under.site_packages
+        isolation_mode = installed_under.isolation_mode
+        install_error = installed_under.error
+        fallback = installed_under.fallback
 
-        try:
-            _create_venv(
-                options.uv, reference.path, venv_dir, timeout=_VENV_TIMEOUT_SECONDS
-            )
-        except (PypiValidateError, subprocess.TimeoutExpired) as error:
+        if reference is None or site_packages is None:
+            last = candidates[-1]
             return {
                 **base,
                 "status": "install-failed",
-                "reason": str(error),
-                "isolation_mode": None,
-                "interpreter": interpreter_info,
-            }
-
-        # Resolved from the bare venv, before any third-party code is
-        # installed into it: querying it after install would run the just
-        # installed distribution's `.pth`/`sitecustomize.py` startup code
-        # outside the bwrap/rlimit isolation that `_install_distribution`
-        # and the probes use.
-        site_packages = _site_packages_dir(
-            venv_dir / "bin" / "python", timeout=options.timeout
-        )
-
-        isolation_mode, install_error = _install_distribution(
-            entry, venv_dir=venv_dir, scratch_home=scratch_home, options=options
-        )
-        if install_error is not None:
-            return {
-                **base,
-                "status": "install-failed",
-                "reason": install_error,
+                "reason": install_error or "install failed under every candidate",
                 "isolation_mode": isolation_mode,
-                "interpreter": interpreter_info,
+                "interpreter": {
+                    "reference_minor": last.minor,
+                    "reference_version": last.version,
+                    "reference_fallback": fallback,
+                },
             }
+
+        interpreter_info: dict[str, Any] = {
+            "reference_minor": reference.minor,
+            "reference_version": reference.version,
+        }
+        if fallback:
+            interpreter_info["reference_fallback"] = fallback
 
         dist_info = _distribution_info_dir(
             site_packages, normalized_name=_normalized_name(entry.name)

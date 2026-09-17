@@ -181,6 +181,51 @@ def test_reference_interpreter_ignores_an_unparseable_specifier() -> None:
     assert reference == installed[11]
 
 
+def test_reference_candidates_are_every_satisfying_minor_lowest_first() -> None:
+    """The floor comes first; the rest are where the runner may fall back to.
+
+    A package's dependency tree may not install at its declared floor from a
+    one-artifact wheelhouse — a dependency's current release can require a
+    newer Python, or ship only a wheel tagged for the acquiring interpreter —
+    so the runner tries each candidate in turn and records why it moved.
+    """
+    installed = _installed(8, 9, 10, 11, 12)
+    candidates = pypi_validate._reference_candidates(
+        ">=3.9",
+        installed,
+        baseline_minor=8,
+        horizon_minor=15,
+        filename="demo-1.0-py3-none-any.whl",
+        is_wheel=True,
+    )
+    assert candidates == (installed[9], installed[10], installed[11], installed[12])
+    assert (
+        _reference_interpreter(
+            ">=3.9",
+            installed,
+            baseline_minor=8,
+            horizon_minor=15,
+            filename="demo-1.0-py3-none-any.whl",
+            is_wheel=True,
+        )
+        == candidates[0]
+    )
+
+
+def test_reference_candidates_exclude_minors_the_wheel_cannot_install() -> None:
+    """A cp311 wheel pins its candidates to 3.11 whatever the floor declares."""
+    installed = _installed(8, 9, 10, 11, 12)
+    candidates = pypi_validate._reference_candidates(
+        ">=3.8",
+        installed,
+        baseline_minor=8,
+        horizon_minor=15,
+        filename="demo-1.0-cp311-cp311-manylinux2014_aarch64.whl",
+        is_wheel=True,
+    )
+    assert candidates == (installed[11],)
+
+
 def test_reference_interpreter_returns_none_when_nothing_satisfies() -> None:
     """A `>=3.99` constraint that no installed interpreter can satisfy yields None."""
     reference = _reference_interpreter(
