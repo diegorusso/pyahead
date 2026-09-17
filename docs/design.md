@@ -225,7 +225,7 @@ still an open decision in §25. They move to `0.2.x`, whichever release
 implements one, and neither blocks Gate D, which asks for one evidence provider
 working end to end rather than for every provider this section once listed.
 
-### 4.4 `0.3`: browser scan site
+### 4.4 `0.3`: browser scan site — delivered
 
 Add a static site, published through GitHub Pages from this repository's
 `gh-pages` branch, where someone pastes a public repository URL and gets a
@@ -252,6 +252,19 @@ published `libcst>=1.8,<2` floor already accepts, so `micropip install pyahead`
 resolves in the browser with no override and no change to this repository. That
 was measured on an Actions runner rather than assumed, and the plan for this
 line records the run.
+
+**Delivered 17 September 2026** at `https://www.diegor.it/pyahead/`, served
+from `gh-pages`. Every item above is in place, and the acceptance measurements
+are in the plan for this line on the `plans` branch: the page and the installed
+CLI produce identical findings for the same repository at the same commit,
+three repositories of different sizes were scanned in a browser, and the
+largest exceeds the cap and reports itself incomplete.
+
+No package version marks this line. The site pins a published `pyahead` and
+installs it from PyPI like any other user, so delivering it required no change
+to the analyser — `0.2.2` is current, and tagging a `0.3.0` that ships no code
+would record a version nobody installs. The line is delivered by the site
+existing, not by a release.
 
 This is the last planned release line before `1.0`. The hosted service that
 previously held `0.3` is not being built; §18 records why.

@@ -5,6 +5,19 @@ repository without importing or executing its code, then presents one timeline
 for each known CPython deprecation, removal, call change, or behavior change that
 matches the source.
 
+## Try it without installing anything
+
+[**www.diegor.it/pyahead**](https://www.diegor.it/pyahead/) scans a public
+GitHub repository in your browser. PyAhead runs there as WebAssembly: the page
+fetches the repository's Python files, analyses them on your machine, and
+renders the report. Nothing is uploaded, nothing is stored, and no account is
+needed — there is no server to send anything to.
+
+It reads public repositories only, and fetches file by file under a cap, so a
+large repository produces a scan that says it is incomplete rather than one
+that looks clean. For private code, continuous scanning, or CI, install the
+command below.
+
 ## Limitations — read before use
 
 PyAhead is a public alpha. A clean scan is **not proof of compatibility**. The
