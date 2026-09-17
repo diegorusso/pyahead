@@ -76,12 +76,13 @@ release metadata. PyAhead reports provenance and rejects versions outside the
 registry analysis window, which is Python 3.8 through 3.16 for the bundled
 registry.
 
-Coverage is not uniform across that window. The registry was curated for
-changes landing in 3.11 and later, and carries only a handful of events
-between 3.8 and 3.10. A project on 3.8 will see everything that breaks it on
-the way to 3.12 or 3.13 — that is where the coverage is deepest — but a clean
-result for changes *within* 3.8 to 3.10 reflects the registry's thinness there,
-not the code's safety.
+Coverage follows the CPython pages that have been censused: the "What's New"
+Deprecated and Removed sections for 3.9, 3.10, 3.12, 3.13 and 3.14, PEP 594,
+and the deprecations index. Every entry on a censused page has a recorded
+disposition, so a change from one of those pages is either a rule, covered by
+another rule, or recorded as outside static analysis with the reason. The
+3.11 "What's New" sections are not yet censused: the 3.11 removals that were
+announced on the 3.9 page have rules, others may not.
 
 A strict project configuration can declare the complete policy:
 
@@ -611,9 +612,9 @@ prevent further silent degradation.
 
 The public alpha deliberately does not:
 
-- claim uniform coverage across its analysis window: changes landing between
-  Python 3.8 and 3.10 are sparsely represented, so a scan with a baseline below
-  3.11 finds the 3.11+ changes it was curated for and little else before them;
+- claim coverage of a CPython release whose "What's New" sections have not
+  been censused; as of registry `2026.09.17` that is 3.11, and the coverage
+  manifests under `pyahead.data.registry.coverage` are the authoritative list;
 
 - prove runtime, test, dependency-resolution, packaging, or platform
   compatibility;

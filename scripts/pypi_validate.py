@@ -31,6 +31,7 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version
 
 from pyahead._human_text import SafeArgumentParser, escape_terminal_text
+from pyahead.registry import load_registry
 from pyahead.versions import InvalidPythonMinorError, PythonMinor
 from scripts import pypi_corpus
 
@@ -41,7 +42,6 @@ if TYPE_CHECKING:
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PROBE_SCRIPT = _REPO_ROOT / "scripts" / "pypi_probe.py"
-_BASELINE_MINOR = 11
 _SUPPORTED_MAJOR = 3
 _MAX_REPORT_BYTES = 64 * 1024 * 1024
 _STDERR_TAIL_BYTES = 4000
@@ -308,6 +308,18 @@ def _reference_interpreter(  # noqa: PLR0913 - mirrors the manifest entry's own 
             continue
         return candidate
     return None
+
+
+def _registry_window_floor() -> int:
+    """Return the oldest minor the bundled registry admits as a baseline.
+
+    The sweep scans each package at its own floor, and that floor cannot be
+    lower than the registry window. It used to be the constant 11; when the
+    window opened at 3.8 that constant silently scanned every package at 3.11
+    and never exercised a rule whose event fell before it. Reading the window
+    from the registry means the sweep measures what the registry claims.
+    """
+    return min(release.python.minor for release in load_registry().releases)
 
 
 def _action_version_minor(value: object) -> int:
@@ -2103,7 +2115,7 @@ def _run(arguments: argparse.Namespace) -> None:
         work_dir=work_dir,
         timeout=arguments.timeout,
         horizon_minor=horizon.minor,
-        baseline_minor=_BASELINE_MINOR,
+        baseline_minor=_registry_window_floor(),
         bwrap=bwrap,
         uv=uv,
         manifest_sha256=manifest_sha256,

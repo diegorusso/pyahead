@@ -272,7 +272,7 @@ spirit of the 100-repository corpus protocol in
 [`corpus-review.md`](corpus-review.md).
 
 ```console
-uv python install 3.11 3.12 3.13 3.14 3.15
+uv python install 3.8 3.9 3.10 3.11 3.12 3.13 3.14 3.15
 uv run python scripts/pypi_corpus.py acquire \
   --manifest work/pypi-manifest.json \
   --wheelhouse work/pypi-wheelhouse \
