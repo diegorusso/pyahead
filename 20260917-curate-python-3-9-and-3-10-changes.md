@@ -203,26 +203,30 @@ page, so it is written with Task 3.
       recorded as not statically detectable, 2 C API, 2 not applicable
 - [x] gate: 2078 tests, 180 rules, 15 manifests, 0 unclassified
 
-### Task 3: the two Deprecated pages, 3.9 and 3.10
+### Task 3: the two Deprecated pages, 3.9 and 3.10 — done
 
-- [ ] `symbol` (#3) — removal verified; its entry is on the 3.9 page
-- [ ] `binhex` and the `binascii` hqx functions (#14)
-- [ ] `ast.Index`, `ExtSlice`, `Suite`, `Param`, `AugLoad`, `AugStore` (#15),
-      removal version verified first
-- [ ] `random.shuffle(random=)` (#16)
-- [ ] `sqlite3.OptimizedUnicode`, `enable_shared_cache` (#17)
-- [ ] the `importlib` legacy functions (#18), `threading.activeCount` (#19),
-      `typing.re` (#20) — each checked against the existing rule it may already
-      belong to, and dispositioned `duplicate` where it does
-- [ ] census both pages: 18 and 34 keys; most 3.10 entries will be
-      `duplicate` of existing rules, which is the point of the census
-- [ ] fixtures, coverage, gate
+- [x] `symbol` (#3) — CPY0185. Its 3.9 documentation has no deprecation note,
+      so the removal was verified against interpreters (importable at 3.9,
+      `ModuleNotFoundError` at 3.10) and cited to the 3.10 changelog entry
+- [x] `binhex` and the four `binascii` hqx functions (#14) — CPY0186–CPY0190.
+      The 3.11 Removed page spells one "rldecode_hqx"; the rule does not
+- [x] `ast.Index`, `ExtSlice` (#15) — CPY0191, CPY0192, deprecated only: both
+      still importable at 3.14.6, removal unscheduled. `Suite`, `Param`,
+      `AugLoad`, `AugStore` are `not-applicable` on the page's own word that
+      Python 3 never generated or accepted them
+- [x] `random.shuffle(random=)` (#16) — CPY0193, keyword and positional forms;
+      the 3.11 Removed page does not mention it, the `random` module page does
+- [x] `sqlite3` (#17), `importlib` (#18), `threading` (#19), `typing.re`
+      (#20) — all already carried by CPY0070, CPY0024/0025/0074/0084, CPY0125,
+      CPY0079; recorded as `duplicate` of those rules
+- [x] census both pages: 19 and 36 keys, 0 unclassified
+- [x] gate: 2087 tests, 189 rules, 17 manifests
 
-### Task 4: leftovers with existing-rule checks
+### Task 4: leftovers — nothing left
 
-- [ ] #15 through #20, each first checked against the existing rule it may
-      already belong to; skip #21–#23 unless a reason appears
-- [ ] fixtures, coverage, gate
+Every candidate in the tables above is now either a rule, a recorded
+duplicate of an existing rule, or dispositioned as out of scope with the
+reason. #21–#23 were absorbed by Task 2 and Task 3.
 
 ### Task 5: Close
 
