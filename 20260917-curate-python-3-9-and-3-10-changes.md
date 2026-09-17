@@ -238,13 +238,19 @@ reason. #21–#23 were absorbed by Task 2 and Task 3.
       It hardcoded 3.11, which would have scanned every package there and
       exercised none of the new rules; it now reads the window from the
       registry. Python 3.8 installed for the (3.8, 3.9) adjudication pairs
-- [ ] **the precision sweep is running**: `/var/tmp/pyahead-sweep-2`, corpus
-      retrieved 2026-09-17T16:35Z, 999 packages (`pywin32` unresolved),
-      four shards, ~3 hours. 799 packages are pure and scan at their declared
-      floor; the ~150 CPython-tagged wheels pin to their tag, and their
-      pre-3.11 findings will be not-adjudicable — a property of one-artifact
-      acquisition, to be stated in the record
-- [ ] aggregate, triage every disagreement, write the evidence record
+- [x] the precision sweep ran twice. The first pass scanned 494 of 999:
+      at a 3.8–3.10 reference, 467 packages could not install their
+      dependency tree from a one-artifact wheelhouse acquired under 3.11. The
+      runner now falls back upward to the lowest floor a package installs at
+      and records every rejected candidate; the second pass scanned 796
+- [x] aggregated and triaged: 1439 findings, 98.49% agreement, 82.6%
+      adjudicated, 18 refuted. **Eleven refutations were CPY0169 and CPY0170**
+      — every adjudicable finding those two rules produced — all `except
+      ImportError` fallbacks that never run on Python 3. Both retired, IDs
+      reserved, census entry says why. The other seven are the September
+      record's open rows, unchanged
+- [x] evidence record: `docs/evidence/pypi-top-1000-2026-09-17.md`, prepared
+      and awaiting the owner's approval
 - [ ] release — a minor bump, since inferred policy changed; then re-pin the
       site and add 3.8, 3.9 and 3.10 to its baseline menu
 
@@ -254,5 +260,16 @@ reason. #21–#23 were absorbed by Task 2 and Task 3.
    for projects declaring `requires-python` below 3.11; these rules change
    their findings further. That is a minor bump under semantic versioning, not
    a patch.
-2. **Watch the false-positive rate** on the first real 3.8 projects scanned.
-   Nothing in this plan measures precision on the new rules; the corpus does.
+2. **Approve or reject the evidence record.** The sweep measured the new
+   rules; the record recommends release and an agent cannot approve it.
+3. **Decide on import-fallback reachability.** Fifteen of the sweep's
+   eighteen refutations are an import inside `except ImportError:` after a
+   primary import that always succeeds on 3.x. The September record called
+   extending the reachability grammar to this a roadmap decision; two sweeps
+   have now made the same case. It is the single largest remaining source of
+   false positives.
+4. **Census the 3.11 "What's New" sections.** The one release between 3.8
+   and 3.14 whose pages have no manifest; `docs/usage.md` names it as the gap.
+5. **Consider a multi-interpreter wheelhouse.** 120 of 250 not-adjudicable
+   findings are CPython-tagged wheels that cannot be installed under the
+   older interpreter a probe needs.
