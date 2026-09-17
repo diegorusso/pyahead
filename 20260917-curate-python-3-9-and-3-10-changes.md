@@ -228,15 +228,25 @@ Every candidate in the tables above is now either a rule, a recorded
 duplicate of an existing rule, or dispositioned as out of scope with the
 reason. #21–#23 were absorbed by Task 2 and Task 3.
 
-### Task 5: Close
+### Task 5: Close — in progress
 
-- [ ] bump the registry label
-- [ ] act on decision #2: re-run or restate Gate C
-- [ ] update the coverage sentence in `docs/usage.md`, which currently says
-      3.8–3.10 is sparse
-- [ ] release; then re-pin the site and add 3.8, 3.9 and 3.10 to its baseline
-      menu, which cannot happen before the release because the site installs
-      the published package
+- [x] registry label: already `2026.09.17`, set when the window opened; the
+      three batches share it
+- [x] `docs/usage.md` states coverage by censused page and names the 3.11
+      "What's New" sections as the gap
+- [x] the validation harness scans each package at the registry's own floor.
+      It hardcoded 3.11, which would have scanned every package there and
+      exercised none of the new rules; it now reads the window from the
+      registry. Python 3.8 installed for the (3.8, 3.9) adjudication pairs
+- [ ] **the precision sweep is running**: `/var/tmp/pyahead-sweep-2`, corpus
+      retrieved 2026-09-17T16:35Z, 999 packages (`pywin32` unresolved),
+      four shards, ~3 hours. 799 packages are pure and scan at their declared
+      floor; the ~150 CPython-tagged wheels pin to their tag, and their
+      pre-3.11 findings will be not-adjudicable — a property of one-artifact
+      acquisition, to be stated in the record
+- [ ] aggregate, triage every disagreement, write the evidence record
+- [ ] release — a minor bump, since inferred policy changed; then re-pin the
+      site and add 3.8, 3.9 and 3.10 to its baseline menu
 
 ## Post-Completion (operator, not automatable)
 
