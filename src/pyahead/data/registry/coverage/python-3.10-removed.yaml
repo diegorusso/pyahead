@@ -1,0 +1,86 @@
+schema_version: 1
+source:
+  id: python-3.10-removed
+  title: "What's New in Python 3.10 — Removed"
+  url: "https://docs.python.org/3.10/whatsnew/3.10.html#removed"
+  checked_on: "2026-09-17"
+
+# The ordered keys are independently pinned by tests. Parent bullets and every
+# API-bearing nested bullet in the selected section receive their own entry.
+# The asyncio bullet's nested bullets state motivation, not APIs, and share
+# its single key. The census was taken from the page's HTML, not a summary of
+# it: a summarised read of this section omitted formatter, the collections
+# aliases and the asyncio loop parameter.
+source_keys:
+  - complex-special-methods
+  - markupbase-parserbase-error
+  - unicodedata-ucnhash-capi
+  - parser-module
+  - pyparser-c-api-functions
+  - formatter-module
+  - pymodule-getwarningsmodule
+  - collections-abc-aliases
+  - asyncio-loop-parameter
+
+entries:
+  - source_key: complex-special-methods
+    disposition: not-applicable
+    note: >-
+      The removed complex dunder methods always raised TypeError, so no working
+      code depends on them; removal changes the exception, not the outcome.
+  - source_key: markupbase-parserbase-error
+    disposition: not-applicable
+    note: >-
+      _markupbase is private and undocumented, and html.parser.HTMLParser lost
+      its error() in Python 3.5.
+  - source_key: unicodedata-ucnhash-capi
+    disposition: c-api-roadmap
+    note: >-
+      An internal PyCapsule for C extensions; reserved for the separately
+      designed C API roadmap.
+  - source_key: parser-module
+    disposition: implemented
+    rules: [CPY0138]
+  - source_key: pyparser-c-api-functions
+    disposition: c-api-roadmap
+    note: >-
+      PyParser_SimpleParse* and PyNode_Compile are C API; reserved for the
+      separately designed C API roadmap.
+  - source_key: formatter-module
+    disposition: implemented
+    rules: [CPY0139]
+  - source_key: pymodule-getwarningsmodule
+    disposition: c-api-roadmap
+    note: >-
+      A C API function; reserved for the separately designed C API roadmap.
+  - source_key: collections-abc-aliases
+    disposition: implemented
+    rules:
+      - CPY0141
+      - CPY0142
+      - CPY0143
+      - CPY0144
+      - CPY0145
+      - CPY0146
+      - CPY0147
+      - CPY0148
+      - CPY0149
+      - CPY0150
+      - CPY0151
+      - CPY0152
+      - CPY0153
+      - CPY0154
+      - CPY0155
+      - CPY0156
+      - CPY0157
+      - CPY0158
+      - CPY0159
+      - CPY0160
+      - CPY0161
+      - CPY0162
+      - CPY0163
+      - CPY0164
+      - CPY0165
+  - source_key: asyncio-loop-parameter
+    disposition: implemented
+    rules: [CPY0140]

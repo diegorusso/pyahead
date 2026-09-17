@@ -1,0 +1,109 @@
+schema_version: 1
+id: CPY0140
+title: "The loop parameter is removed from asyncio's high-level API"
+summary: >-
+  Passing loop= to asyncio's high-level functions and synchronisation classes
+  is deprecated in Python 3.8 and removed in Python 3.10; the running loop is
+  used instead. Low-level constructors such as asyncio.Future and asyncio.Task
+  keep the parameter and are not matched.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: asyncio
+
+timeline:
+  - event: deprecated
+    python: "3.8"
+    certainty: released
+    source: python-3.8-asyncio
+  - event: removed
+    python: "3.10"
+    certainty: released
+    source: python-3.10-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+# One matcher per signature the Python 3.10 documentation marks
+# "Changed in version 3.10: Removed the loop parameter" — eighteen, read from
+# the asyncio-task, asyncio-sync, asyncio-queue, asyncio-stream and
+# asyncio-subprocess pages rather than recalled.
+matchers:
+  - kind: call-shape
+    qualified_name: asyncio.BoundedSemaphore
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.Condition
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.Event
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.Lock
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.Queue
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.Semaphore
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.as_completed
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.create_subprocess_exec
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.create_subprocess_shell
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.gather
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.open_connection
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.open_unix_connection
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.shield
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.sleep
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.start_server
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.start_unix_server
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.wait
+    required_keywords: [loop]
+  - kind: call-shape
+    qualified_name: asyncio.wait_for
+    required_keywords: [loop]
+
+remediation:
+  summary: >-
+    Drop the loop argument; these APIs use the running event loop. Where a
+    specific loop is genuinely needed, call the coroutine from within that
+    loop rather than passing it in.
+  documentation_url: "https://docs.python.org/3.10/whatsnew/3.10.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.8-asyncio
+    title: "What's New in Python 3.8 — asyncio"
+    url: "https://docs.python.org/3/whatsnew/3.8.html#asyncio"
+  - id: python-3.10-removed
+    title: "What's New in Python 3.10 — Removed"
+    url: "https://docs.python.org/3.10/whatsnew/3.10.html#removed"
+
+tags: [stdlib, asyncio, parameter-removal]

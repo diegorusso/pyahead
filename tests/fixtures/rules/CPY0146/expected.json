@@ -1,0 +1,124 @@
+{
+  "cases": [
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0146",
+          "usage_contexts": [
+            "runtime",
+            "typing"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0146",
+          "usage_contexts": [
+            "runtime",
+            "typing"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0146",
+          "usage_contexts": [
+            "runtime",
+            "typing"
+          ]
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "attribute reference in a base class and annotations",
+      "paths": [
+        "positive/attribute.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0146",
+          "usage_contexts": [
+            "runtime",
+            "typing"
+          ]
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "from-import of the alias",
+      "paths": [
+        "positive/from_import.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "collections.abc names are not a match",
+      "paths": [
+        "negative/collections_abc.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "another collections name and a bare string",
+      "paths": [
+        "negative/other_name.py"
+      ],
+      "root": "."
+    }
+  ],
+  "policy": {
+    "baseline_python": "3.8",
+    "horizon_python": "3.13"
+  },
+  "rule_id": "CPY0146",
+  "schema_version": 1
+}

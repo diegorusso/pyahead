@@ -136,6 +136,34 @@ rules:
   - cpython/CPY0135.yaml
   - cpython/CPY0136.yaml
   - cpython/CPY0137.yaml
+  - cpython/CPY0138.yaml
+  - cpython/CPY0139.yaml
+  - cpython/CPY0140.yaml
+  - cpython/CPY0141.yaml
+  - cpython/CPY0142.yaml
+  - cpython/CPY0143.yaml
+  - cpython/CPY0144.yaml
+  - cpython/CPY0145.yaml
+  - cpython/CPY0146.yaml
+  - cpython/CPY0147.yaml
+  - cpython/CPY0148.yaml
+  - cpython/CPY0149.yaml
+  - cpython/CPY0150.yaml
+  - cpython/CPY0151.yaml
+  - cpython/CPY0152.yaml
+  - cpython/CPY0153.yaml
+  - cpython/CPY0154.yaml
+  - cpython/CPY0155.yaml
+  - cpython/CPY0156.yaml
+  - cpython/CPY0157.yaml
+  - cpython/CPY0158.yaml
+  - cpython/CPY0159.yaml
+  - cpython/CPY0160.yaml
+  - cpython/CPY0161.yaml
+  - cpython/CPY0162.yaml
+  - cpython/CPY0163.yaml
+  - cpython/CPY0164.yaml
+  - cpython/CPY0165.yaml
 coverage:
   - coverage/cpython-84131.yaml
   - coverage/cpython-94101.yaml
@@ -150,3 +178,4 @@ coverage:
   - coverage/python-3.14-removed.yaml
   - coverage/python-3.14-deprecated.yaml
   - coverage/python-deprecations.yaml
+  - coverage/python-3.10-removed.yaml

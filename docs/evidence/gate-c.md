@@ -1,5 +1,17 @@
 # Gate C evidence and approval
 
+## Scope note, 17 September 2026
+
+The measurements in this record were taken with the registry analysis window
+opening at Python 3.11. On 17 September 2026 the window opened at 3.8, and the
+registry began gaining rules whose events fall in 3.9 and 3.10, starting with
+twenty-eight for the 3.10 removals. For a project whose baseline is inferred
+below 3.11, those rules produce findings this record did not measure. Nothing
+here is retracted: the precision claim holds for the policy it names, and the
+newly reachable population is unmeasured rather than measured badly. The plan
+for that curation, on the `plans` branch, schedules a fresh run of this
+protocol once the 3.9 and 3.10 pages are fully censused.
+
 ## Decision
 
 - Gate: C — public-alpha precision

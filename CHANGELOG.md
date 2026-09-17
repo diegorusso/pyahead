@@ -6,6 +6,20 @@ stabilizing.
 
 ## Unreleased
 
+### Added
+
+- Twenty-eight rules for the Python 3.10 removals, censused from the
+  "What's New in Python 3.10 — Removed" section: the `parser` and `formatter`
+  modules (CPY0138, CPY0139); the `loop` parameter removed from eighteen
+  `asyncio` high-level signatures (CPY0140), one call-shape matcher per
+  signature the 3.10 documentation marks, with `asyncio.Future` and
+  `asyncio.Task` deliberately unmatched because they kept it; and the
+  twenty-five `collections` aliases of `collections.abc` classes
+  (CPY0141–CPY0165), deprecated since 3.3, one rule per alias so a finding's
+  headline names the alias actually used. `collections.ByteString` (CPY0165)
+  does not recommend `collections.abc.ByteString`, which is deprecated in
+  3.12 in turn.
+
 ### Changed
 
 - The registry analysis window now opens at Python 3.8 instead of 3.11, so a

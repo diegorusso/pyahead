@@ -1,0 +1,50 @@
+schema_version: 1
+id: CPY0161
+title: "collections.ItemsView is removed"
+summary: >-
+  collections.ItemsView is an alias of collections.abc.ItemsView kept for code
+  written before Python 3.3. It is deprecated in Python 3.3 and removed in
+  Python 3.10.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime, typing]
+
+subject:
+  kind: class
+  name: collections.ItemsView
+
+timeline:
+  - event: deprecated
+    python: "3.3"
+    certainty: released
+    source: python-3.9-collections
+  - event: removed
+    python: "3.10"
+    certainty: released
+    source: python-3.10-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: collections.ItemsView
+
+remediation:
+  summary: >-
+    Import ItemsView from collections.abc.
+  documentation_url: "https://docs.python.org/3.9/library/collections.html"
+  automation: null
+
+sources:
+  - id: python-3.9-collections
+    title: "collections — Container datatypes (Python 3.9)"
+    url: "https://docs.python.org/3.9/library/collections.html"
+  - id: python-3.10-removed
+    title: "What's New in Python 3.10 — Removed"
+    url: "https://docs.python.org/3.10/whatsnew/3.10.html#removed"
+
+tags: [stdlib, collections, alias-removal]

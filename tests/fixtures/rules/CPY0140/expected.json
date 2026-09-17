@@ -1,0 +1,417 @@
+{
+  "cases": [
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "loop keyword on two high-level APIs",
+      "paths": [
+        "positive/keyword_loop.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        },
+        {
+          "action_version": "3.10",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.8",
+            "3.9",
+            "3.10",
+            "3.11",
+            "3.12",
+            "3.13"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0140",
+          "usage_contexts": [
+            "runtime"
+          ]
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "every signature the 3.10 documentation lists",
+      "paths": [
+        "positive/every_documented_signature.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "Future and Task keep the parameter",
+      "paths": [
+        "negative/retained_on_low_level_api.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "no loop argument",
+      "paths": [
+        "negative/no_loop_argument.py"
+      ],
+      "root": "."
+    },
+    {
+      "expected_findings": [],
+      "expected_inference_codes": [],
+      "name": "a keyword splat leaves the shape unknown",
+      "paths": [
+        "negative/unknown_with_kwargs.py"
+      ],
+      "root": "."
+    }
+  ],
+  "policy": {
+    "baseline_python": "3.8",
+    "horizon_python": "3.13"
+  },
+  "rule_id": "CPY0140",
+  "schema_version": 1
+}

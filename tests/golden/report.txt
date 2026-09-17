@@ -1,6 +1,6 @@
 PyAhead 0.2.2
 Policy: Python 3.11 through 3.13
-Registry: 2026.09.17 (521a360014d6)
+Registry: 2026.09.17 (1d9c6f479986)
 
 Python 3.13 — 1 upgrade blocker
   CPY0001  legacy.py:1:1  cgi (breaking; high confidence)
