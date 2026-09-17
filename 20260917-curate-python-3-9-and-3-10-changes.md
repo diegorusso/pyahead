@@ -180,22 +180,42 @@ to the 3.9 Deprecated page, where its census entry lives.
 3.9 and returns 404 at 3.10 — but its census entry is on the 3.9 Deprecated
 page, so it is written with Task 3.
 
-### Task 2: the "What's New in 3.9 — Removed" page
+### Task 2: the "What's New in 3.9 — Removed" page — done
 
-- [ ] `base64.encodestring`/`decodestring` (#6)
-- [ ] `fractions.gcd` (#7)
-- [ ] `sys.getcheckinterval`/`setcheckinterval` (#8)
-- [ ] `asyncio.Task.current_task`/`all_tasks` (#9)
-- [ ] `plistlib` old API (#10)
-- [ ] fixtures, coverage, gate
+- [x] `base64.encodestring`/`decodestring` (#6) — CPY0178, CPY0179
+- [x] `fractions.gcd` (#7) — CPY0180
+- [x] `sys.getcheckinterval`/`setcheckinterval` (#8) — CPY0167, CPY0168
+- [x] `asyncio.Task.current_task`/`all_tasks` (#9) — CPY0183, CPY0184
+- [x] `plistlib` old API (#10) — CPY0172–CPY0176, plus CPY0177 for the
+      `use_builtin_types` keyword, which the 3.8 docs show was keyword-only on
+      exactly `load` and `loads`
+- [x] `dummy_threading`/`_dummy_thread` (#11) — CPY0169, CPY0170; moved here
+      from Task 3 because their census entry is on this page
+- [x] `wave.openfp` (#12) — CPY0171. **`aifc.openfp` and `sunau.openfp` have
+      no rule**: any use of them already reports the module removals at 3.13
+      (CPY0002, CPY0019), and a rule's fixture may hold only its own findings.
+      The entry is `partial` and states the cost — a horizon below 3.13 does
+      not hear the aliases went in 3.9.
+- [x] `sys.callstats` (#13) — CPY0166
+- [x] `json.loads(encoding=)` (#21) — CPY0182; `bz2.BZ2File(buffering=)`
+      (#22) — CPY0181, `partial`: keyword form only, positional not claimed
+- [x] census `python-3.9-removed`: 22 keys; 7 instance-method entries
+      recorded as not statically detectable, 2 C API, 2 not applicable
+- [x] gate: 2078 tests, 180 rules, 15 manifests, 0 unclassified
 
 ### Task 3: the two Deprecated pages, 3.9 and 3.10
 
-- [ ] `dummy_threading`/`_dummy_thread` (#11)
-- [ ] `aifc`/`sunau`/`wave.openfp` (#12), after checking the PEP 594 rules
-- [ ] `sys.callstats` (#13)
+- [ ] `symbol` (#3) — removal verified; its entry is on the 3.9 page
 - [ ] `binhex` and the `binascii` hqx functions (#14)
-- [ ] the `asyncio` loop parameter (#5), if Task 0 said yes
+- [ ] `ast.Index`, `ExtSlice`, `Suite`, `Param`, `AugLoad`, `AugStore` (#15),
+      removal version verified first
+- [ ] `random.shuffle(random=)` (#16)
+- [ ] `sqlite3.OptimizedUnicode`, `enable_shared_cache` (#17)
+- [ ] the `importlib` legacy functions (#18), `threading.activeCount` (#19),
+      `typing.re` (#20) — each checked against the existing rule it may already
+      belong to, and dispositioned `duplicate` where it does
+- [ ] census both pages: 18 and 34 keys; most 3.10 entries will be
+      `duplicate` of existing rules, which is the point of the census
 - [ ] fixtures, coverage, gate
 
 ### Task 4: leftovers with existing-rule checks
