@@ -6,6 +6,23 @@ stabilizing.
 
 ## Unreleased
 
+### Changed
+
+- The registry analysis window now opens at Python 3.8 instead of 3.11, so a
+  codebase on 3.8, 3.9 or 3.10 can be scanned on its way forward. Release
+  metadata gains 3.8 and 3.9 as end-of-life and 3.10 as security-only; the
+  registry label is `2026.09.17`.
+
+  This changes inferred policy for projects that never set a baseline: a
+  `requires-python = ">=3.8"` project previously inferred 3.11, the lowest the
+  registry admitted, and now infers 3.8. Findings whose events fall between 3.8
+  and 3.11 become reachable for such projects, and `reachable_versions` widens
+  to match. Set `baseline-python` explicitly to keep the old policy.
+
+  Coverage is not uniform across the wider window. The registry was curated
+  for changes landing in 3.11 and later and carries only a handful of events
+  between 3.8 and 3.10; `docs/usage.md` says so where the window is described.
+
 ## 0.2.2 - 2026-09-16
 
 A performance fix with no public contract changes.

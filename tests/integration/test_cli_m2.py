@@ -135,7 +135,7 @@ def test_registry_validate_and_list_use_the_bundled_snapshot(
     """Both registry subcommands are deterministic scan-free operations."""
     assert main(["registry", "validate"]) == int(ExitCode.SUCCESS)
     validated = capsys.readouterr()
-    assert validated.out.startswith("Registry 2026.07.31 (")
+    assert validated.out.startswith("Registry 2026.09.17 (")
     assert validated.out.endswith(": 133 rules valid.\n")
     assert validated.err == ""
 

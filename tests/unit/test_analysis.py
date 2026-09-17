@@ -468,7 +468,7 @@ def test_policy_before_registry_window_is_rejected(tmp_path: Path) -> None:
         scan(
             ScanRequest(
                 root=tmp_path,
-                baseline_python="3.9",
+                baseline_python="3.7",
                 horizon_python="3.10",
             )
         )

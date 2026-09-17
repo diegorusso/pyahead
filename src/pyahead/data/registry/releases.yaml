@@ -1,5 +1,17 @@
 schema_version: 1
 releases:
+  - python: "3.8"
+    status: eol
+    released_on: "2019-10-14"
+    source: "https://peps.python.org/pep-0569/"
+  - python: "3.9"
+    status: eol
+    released_on: "2020-10-05"
+    source: "https://peps.python.org/pep-0596/"
+  - python: "3.10"
+    status: security
+    released_on: "2021-10-04"
+    source: "https://peps.python.org/pep-0619/"
   - python: "3.11"
     status: security
     released_on: "2022-10-24"

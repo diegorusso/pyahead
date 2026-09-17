@@ -58,10 +58,13 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
     """The seed registry records released deprecation and removal facts."""
     registry = load_registry()
 
-    assert registry.release == "2026.07.31"
+    assert registry.release == "2026.09.17"
     assert len(registry.revision) == _SHA256_HEX_LENGTH
     assert len(registry.rules) == _CURATED_RULE_COUNT
     assert [release.python.minor for release in registry.releases] == [
+        8,
+        9,
+        10,
         11,
         12,
         13,
@@ -70,6 +73,9 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
         16,
     ]
     assert [release.status for release in registry.releases] == [
+        ReleaseStatus.EOL,
+        ReleaseStatus.EOL,
+        ReleaseStatus.SECURITY,
         ReleaseStatus.SECURITY,
         ReleaseStatus.SECURITY,
         ReleaseStatus.STABLE,
@@ -78,7 +84,7 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
         ReleaseStatus.PLANNED,
     ]
     assert len(registry.coverage) == _COVERAGE_SOURCE_COUNT
-    python_313 = registry.releases[2]
+    python_313 = registry.releases[5]
     assert python_313.source == "https://peps.python.org/pep-0719/"
     assert python_313.status is ReleaseStatus.STABLE
     rule = registry.rules[0]

@@ -73,7 +73,15 @@ pyahead check . --baseline-python 3.11 --horizon-python 3.14
 Policy precedence is command line, `[tool.pyahead]`, then baseline inference
 from `[project].requires-python`. The default horizon is inferred from bundled
 release metadata. PyAhead reports provenance and rejects versions outside the
-registry analysis window.
+registry analysis window, which is Python 3.8 through 3.16 for the bundled
+registry.
+
+Coverage is not uniform across that window. The registry was curated for
+changes landing in 3.11 and later, and carries only a handful of events
+between 3.8 and 3.10. A project on 3.8 will see everything that breaks it on
+the way to 3.12 or 3.13 — that is where the coverage is deepest — but a clean
+result for changes *within* 3.8 to 3.10 reflects the registry's thinness there,
+not the code's safety.
 
 A strict project configuration can declare the complete policy:
 
@@ -602,6 +610,10 @@ prevent further silent degradation.
 ## Limitations
 
 The public alpha deliberately does not:
+
+- claim uniform coverage across its analysis window: changes landing between
+  Python 3.8 and 3.10 are sparsely represented, so a scan with a baseline below
+  3.11 finds the 3.11+ changes it was curated for and little else before them;
 
 - prove runtime, test, dependency-resolution, packaging, or platform
   compatibility;

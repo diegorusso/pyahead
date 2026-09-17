@@ -321,6 +321,46 @@ def test_default_horizon_rejects_only_planned_release_metadata(
         )
 
 
+def test_the_registry_window_opens_at_python_3_8() -> None:
+    """3.8 is the oldest baseline the bundled registry admits; 3.7 is refused.
+
+    The window is the set of releases in release metadata, so widening it is a
+    registry change, not a code change. 3.8 is where the live installed base
+    still sits — Ubuntu 20.04 LTS ships it — while 3.7 has been end-of-life
+    since June 2023 and would add a release to curate for a much smaller
+    remaining footprint.
+    """
+    minors = sorted(release.python for release in load_registry().releases)
+    assert str(minors[0]) == "3.8"
+    assert str(minors[-1]) == "3.16"
+
+
+def test_a_pre_3_11_floor_now_infers_its_own_baseline(tmp_path: Path) -> None:
+    """A project on 3.8 is scanned as a project on 3.8, not silently as 3.11.
+
+    Before the window opened, `requires-python = ">=3.8"` inferred 3.11 — the
+    lowest version the registry admitted — and every change between 3.8 and
+    3.11 was hidden from exactly the projects it applied to.
+    """
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0"\nrequires-python = ">=3.8"\n',
+        encoding="utf-8",
+    )
+
+    resolved = resolve_configuration(
+        tmp_path,
+        load_registry(),
+        load_project_configuration(tmp_path, None),
+        ConfigurationOverrides(),
+    )
+
+    assert str(resolved.policy.baseline_python) == "3.8"
+    assert (
+        resolved.policy_provenance.baseline_python
+        == "pyproject.toml:project.requires-python"
+    )
+
+
 @pytest.mark.parametrize("declaration", [">=4", "not a specifier"])
 def test_invalid_or_unsupported_requires_python_fails(
     declaration: str,
@@ -361,7 +401,7 @@ def test_missing_authoritative_baseline_fails(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("baseline", "horizon"),
-    [("3.10", "3.13"), ("3.11", "3.17")],
+    [("3.7", "3.13"), ("3.11", "3.17")],
 )
 def test_explicit_policy_must_stay_in_registry_window(
     tmp_path: Path,
@@ -371,7 +411,7 @@ def test_explicit_policy_must_stay_in_registry_window(
     """Explicit precedence never implies unsupported registry coverage."""
     _write_project(tmp_path)
 
-    with pytest.raises(ConfigurationError, match=r"3\.11 through 3\.16"):
+    with pytest.raises(ConfigurationError, match=r"3\.8 through 3\.16"):
         resolve_configuration(
             tmp_path,
             load_registry(),
