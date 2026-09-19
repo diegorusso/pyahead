@@ -80,7 +80,12 @@ check("results and download stay hidden before a scan", !(await page.locator("#r
 check("the repository field has a visible label", await page.getByLabel("GitHub repository", { exact: true }).isVisible());
 
 console.log("\nchoosing a Python range");
+check("the default baseline is still 3.11", (await page.inputValue("#baseline")) === "3.11");
+check("the baseline menu now opens at 3.8", (await page.locator("#baseline option").first().textContent()) === "3.8");
 check("the default horizon remains 3.14", (await page.inputValue("#horizon")) === "3.14");
+await page.selectOption("#baseline", "3.8");
+check("a 3.8 baseline can look ahead to 3.9", await page.locator("#horizon option").filter({ hasText: "3.9" }).evaluate((option) => option.matches(":enabled")));
+await page.selectOption("#baseline", "3.11");
 await page.selectOption("#horizon", "3.12");
 check("3.11 can look ahead to 3.12", (await page.inputValue("#horizon")) === "3.12");
 await page.selectOption("#baseline", "3.12");
