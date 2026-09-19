@@ -228,7 +228,7 @@ Every candidate in the tables above is now either a rule, a recorded
 duplicate of an existing rule, or dispositioned as out of scope with the
 reason. #21–#23 were absorbed by Task 2 and Task 3.
 
-### Task 5: Close — in progress
+### Task 5: Close — done
 
 - [x] registry label: already `2026.09.17`, set when the window opened; the
       three batches share it
@@ -251,17 +251,17 @@ reason. #21–#23 were absorbed by Task 2 and Task 3.
       record's open rows, unchanged
 - [x] evidence record: `docs/evidence/pypi-top-1000-2026-09-17.md`, prepared
       and awaiting the owner's approval
-- [ ] release — a minor bump, since inferred policy changed; then re-pin the
-      site and add 3.8, 3.9 and 3.10 to its baseline menu
+- [x] released as **0.3.0** on 19 September 2026, the evidence record approved
+      by the owner the same day; CI build byte-identical to the local one
+- [x] the site pins 0.3.0 — the wheel PyPI published, verified against its
+      digest — and its baseline menu opens at 3.8 with 3.11 still the
+      default, so the page's defaults and the parity comparison are unchanged.
+      Verified in both engines on a branch before landing
 
 ## Post-Completion (operator, not automatable)
 
-1. **Decide the version.** Opening the window already changes inferred policy
-   for projects declaring `requires-python` below 3.11; these rules change
-   their findings further. That is a minor bump under semantic versioning, not
-   a patch.
-2. **Approve or reject the evidence record.** The sweep measured the new
-   rules; the record recommends release and an agent cannot approve it.
+1. ~~Decide the version.~~ 0.3.0, a minor bump.
+2. ~~Approve or reject the evidence record.~~ Approved 19 September 2026.
 3. **Decide on import-fallback reachability.** Fifteen of the sweep's
    eighteen refutations are an import inside `except ImportError:` after a
    primary import that always succeeds on 3.x. The September record called

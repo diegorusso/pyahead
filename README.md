@@ -20,6 +20,7 @@ This branch shares no history with `main`.
 | `completed/20260903-validate-pyahead-against-pypi-top-1000.md` | designing the PyPI top-1000 validation protocol |
 | `completed/20260910-run-pypi-top-1000-validation.md` | running it; the protocol it produced is `docs/pypi-validation.md` on `main` |
 | `completed/20260913-investigate-binding-not-visible.md` | the 835 `binding-not-visible` findings |
+| `completed/20260917-curate-python-3-9-and-3-10-changes.md` | opening the window at 3.8 and curating the 3.9 and 3.10 changes; released as 0.3.0 |
 
 ## Working on one
 
