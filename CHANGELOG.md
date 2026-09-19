@@ -6,6 +6,14 @@ stabilizing.
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-19
+
+The registry analysis window opens at Python 3.8, and the Python 3.9 and 3.10
+"What's New" sections are curated. A minor release because inferred policy
+changes for projects declaring a floor below 3.11; no public contract
+changes. Precision on the new rules was measured against the PyPI top 1000
+and is recorded in `docs/evidence/pypi-top-1000-2026-09-17.md`.
+
 ### Added
 
 - Twenty-eight rules for the Python 3.10 removals, censused from the

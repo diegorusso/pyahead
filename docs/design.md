@@ -260,11 +260,13 @@ CLI produce identical findings for the same repository at the same commit,
 three repositories of different sizes were scanned in a browser, and the
 largest exceeds the cap and reports itself incomplete.
 
-No package version marks this line. The site pins a published `pyahead` and
-installs it from PyPI like any other user, so delivering it required no change
-to the analyser — `0.2.2` is current, and tagging a `0.3.0` that ships no code
-would record a version nobody installs. The line is delivered by the site
-existing, not by a release.
+The site was delivered without a package version: it pins a published
+`pyahead` and installs it from PyPI like any other user, so building it
+required no change to the analyser, and a `0.3.0` that shipped no code would
+have recorded a version nobody installs. `0.3.0` was released two days later
+for an analyser change on this line — the registry window opening at Python
+3.8 with the 3.9 and 3.10 "What's New" sections curated — which changes
+inferred policy and so is a minor version. The site pins it.
 
 This is the last planned release line before `1.0`. The hosted service that
 previously held `0.3` is not being built; §18 records why.
