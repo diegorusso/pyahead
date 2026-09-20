@@ -56,5 +56,8 @@ sources:
   - id: cpython-3.14-urllib-parse
     title: "CPython 3.14 urllib.parse implementation — deprecation warnings"
     url: "https://github.com/python/cpython/blob/v3.14.0/Lib/urllib/parse.py"
+  - id: python-3.14-deprecations
+    title: "Python 3.14 deprecation index — Pending removal in future versions"
+    url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-future-versions"
 
 tags: [stdlib, unscheduled-removal, urllib]

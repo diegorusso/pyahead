@@ -34,13 +34,13 @@ matchers:
 remediation:
   summary: >-
     Remove the call; translations are returned as str and need no codeset.
-  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+  documentation_url: "https://docs.python.org/3.8/whatsnew/3.8.html#deprecated"
   automation: null
 
 sources:
   - id: python-3.8-deprecated
     title: "What's New in Python 3.8 — Deprecated"
-    url: "https://docs.python.org/3/whatsnew/3.8.html#deprecated"
+    url: "https://docs.python.org/3.8/whatsnew/3.8.html#deprecated"
   - id: python-3.11-removed
     title: "What's New in Python 3.11 — Removed"
     url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"

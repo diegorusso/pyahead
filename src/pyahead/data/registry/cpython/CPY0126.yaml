@@ -17,7 +17,7 @@ timeline:
   - event: deprecated
     python: "3.11"
     certainty: released
-    source: python-3.14-typing
+    source: python-3.11-deprecated
 
 impact:
   on_deprecation: deprecated
@@ -29,12 +29,12 @@ matchers:
 remediation:
   summary: >-
     Use str instead of the Python 2 compatibility alias.
-  documentation_url: "https://docs.python.org/3.14/library/typing.html#typing.Text"
+  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#standard-library"
   automation: null
 
 sources:
-  - id: python-3.14-typing
-    title: "Python 3.14 typing documentation — Text"
-    url: "https://docs.python.org/3.14/library/typing.html#typing.Text"
+  - id: python-3.11-deprecated
+    title: "What's New in Python 3.11 — Deprecated › Standard Library"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#standard-library"
 
 tags: [stdlib, unscheduled-removal, typing]

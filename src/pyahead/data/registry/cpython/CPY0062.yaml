@@ -17,11 +17,11 @@ timeline:
   - event: deprecated
     python: "3.14"
     certainty: released
-    source: python-deprecations
+    source: python-3.14-deprecated
   - event: removed
     python: "3.16"
     certainty: scheduled
-    source: python-deprecations
+    source: python-3.14-pending-3-16
 
 impact:
   on_deprecation: deprecated
@@ -34,13 +34,16 @@ matchers:
 remediation:
   summary: >-
     Use inspect.iscoroutinefunction as directed by the linked CPython documentation.
-  documentation_url: "https://docs.python.org/3/deprecations/index.html"
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#new-deprecations"
   automation: null
 
 sources:
-  - id: python-deprecations
-    title: "Python deprecation index"
-    url: "https://docs.python.org/3/deprecations/index.html"
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — Deprecated › New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#new-deprecations"
+  - id: python-3.14-pending-3-16
+    title: "What's New in Python 3.14 — Deprecated › Pending removal in Python 3.16"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pending-removal-in-python-3-16"
 
 tags: [stdlib, scheduled-removal, asyncio]
 

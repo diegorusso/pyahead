@@ -102,12 +102,12 @@ matchers:
 remediation:
   summary: >-
     Remove the legacy parameters and follow the linked release notes for each client's supported SSL-context configuration.
-  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#others"
   automation: null
 
 sources:
   - id: python-3.12-removed
-    title: "What's New in Python 3.12 — Removed"
-    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+    title: "What's New in Python 3.12 — Removed › Others"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#others"
 
 tags: [stdlib, signature-change, tls, partial-receiver-coverage]

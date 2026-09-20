@@ -58,7 +58,7 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
     """The seed registry records released deprecation and removal facts."""
     registry = load_registry()
 
-    assert registry.release == "2026.09.17"
+    assert registry.release == "2026.09.20"
     assert len(registry.revision) == _SHA256_HEX_LENGTH
     assert len(registry.rules) == _CURATED_RULE_COUNT
     assert [release.python.minor for release in registry.releases] == [
@@ -98,8 +98,9 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
     ]
     assert all(event.certainty is RegistryCertainty.RELEASED for event in rule.events)
     assert {source.id for source in rule.sources} == {
+        "python-3.11-deprecated",
+        "python-3.13-removed",
         "pep-0594",
-        "python-3.13-cgi",
     }
 
 
@@ -471,7 +472,7 @@ def test_registry_detects_file_replacement_between_check_and_open(
         ("kind: module-import", "kind: qualified-call"),
         ("https://peps.python.org", "http://peps.python.org"),
         ("on_removal: breaking", "on_removal: catastrophe"),
-        ("source: pep-0594", "source: absent-source"),
+        ("source: python-3.11-deprecated", "source: absent-source"),
         ("tags: [stdlib, module-removal, pep-594]", 'tags: [stdlib, ""]'),
         ("contexts: [runtime]", "contexts: runtime"),
     ],

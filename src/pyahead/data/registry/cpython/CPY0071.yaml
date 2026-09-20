@@ -33,12 +33,15 @@ matchers:
 remediation:
   summary: >-
     Use pathlib.Path.hardlink_to as directed by the linked release notes.
-  documentation_url: "https://github.com/python/cpython/issues/84131"
+  documentation_url: "https://docs.python.org/3.11/library/pathlib.html#pathlib.Path.link_to"
   automation: null
 
 sources:
   - id: cpython-84131
     title: "CPython issue 84131 — remove pathlib.Path.link_to"
     url: "https://github.com/python/cpython/issues/84131"
+  - id: python-3.11-pathlib
+    title: "Python 3.11 pathlib documentation — Path.link_to"
+    url: "https://docs.python.org/3.11/library/pathlib.html#pathlib.Path.link_to"
 
 tags: [stdlib, api-removal, pathlib, partial]

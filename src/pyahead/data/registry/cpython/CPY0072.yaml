@@ -46,12 +46,12 @@ matchers:
 remediation:
   summary: >-
     Use ConfigParser, ConfigParser.read_file, and supported ParsingError attributes as directed by the linked release notes.
-  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#configparser"
   automation: null
 
 sources:
   - id: python-3.12-removed
-    title: "What's New in Python 3.12 — Removed"
-    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+    title: "What's New in Python 3.12 — Removed › configparser"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#configparser"
 
 tags: [stdlib, api-removal, configparser, partial]

@@ -18,11 +18,11 @@ timeline:
   - event: deprecated
     python: "3.11"
     certainty: released
-    source: pep-0594
+    source: python-3.11-deprecated
   - event: removed
     python: "3.13"
     certainty: released
-    source: python-3.13-cgi
+    source: python-3.13-removed
 
 impact:
   on_deprecation: deprecated
@@ -39,14 +39,18 @@ remediation:
   summary: >-
     Replace the specific cgi functionality in use. There is no single drop-in
     replacement for the complete module.
+  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#modules"
   automation: null
 
 sources:
+  - id: python-3.11-deprecated
+    title: "What's New in Python 3.11 — Deprecated › Modules"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#modules"
+  - id: python-3.13-removed
+    title: "What's New in Python 3.13 — Removed Modules And APIs › PEP 594: Remove “dead batteries” from the standard library"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#pep-594-remove-dead-batteries-from-the-standard-library"
   - id: pep-0594
     title: "PEP 594 — Removing dead batteries from the standard library"
     url: "https://peps.python.org/pep-0594/"
-  - id: python-3.13-cgi
-    title: "cgi — Common Gateway Interface support"
-    url: "https://docs.python.org/3.13/library/cgi.html"
 
 tags: [stdlib, module-removal, pep-594]

@@ -35,12 +35,12 @@ matchers:
 remediation:
   summary: >-
     Pass an onexc handler instead of onerror.
-  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#shutil"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   automation: null
 
 sources:
   - id: python-3.12-deprecated
     title: "What's New in Python 3.12 — Deprecated"
-    url: "https://docs.python.org/3.12/whatsnew/3.12.html#shutil"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
 
 tags: [stdlib, unscheduled-removal, shutil]

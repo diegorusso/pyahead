@@ -32,12 +32,12 @@ matchers:
 remediation:
   summary: >-
     Use calendar.JANUARY and calendar.FEBRUARY.
-  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#calendar"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   automation: null
 
 sources:
   - id: python-3.12-deprecated
     title: "What's New in Python 3.12 — Deprecated"
-    url: "https://docs.python.org/3.12/whatsnew/3.12.html#calendar"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
 
 tags: [stdlib, unscheduled-removal, calendar]

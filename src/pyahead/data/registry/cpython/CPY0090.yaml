@@ -18,11 +18,11 @@ timeline:
   - event: deprecated
     python: "3.14"
     certainty: released
-    source: python-deprecations
+    source: python-3.14-deprecated
   - event: removed
     python: "3.16"
     certainty: scheduled
-    source: python-deprecations
+    source: python-3.14-deprecated
 
 impact:
   on_deprecation: deprecated
@@ -35,12 +35,12 @@ matchers:
 remediation:
   summary: >-
     Stop using this undocumented helper and use supported sysconfig APIs.
-  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#pending-removal-in-python-3-16"
   automation: null
 
 sources:
-  - id: python-deprecations
-    title: "Python deprecation index — Pending removal in Python 3.16"
-    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16"
+  - id: python-3.14-deprecated
+    title: "What's New in Python 3.14 — Deprecated › Pending removal in Python 3.16"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pending-removal-in-python-3-16"
 
 tags: [stdlib, scheduled-removal, sysconfig]

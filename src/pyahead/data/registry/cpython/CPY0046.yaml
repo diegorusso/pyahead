@@ -17,7 +17,7 @@ timeline:
   - event: deprecated
     python: "3.12"
     certainty: released
-    source: python-3.14-removed
+    source: python-3.12-deprecated
   - event: signature_changed
     python: "3.14"
     certainty: released
@@ -38,13 +38,16 @@ matchers:
 remediation:
   summary: >-
     Call email.utils.localtime without the removed isdst parameter.
-  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   automation: null
 
 sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   - id: python-3.14-removed
-    title: "What's New in Python 3.14 — Removed"
-    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+    title: "What's New in Python 3.14 — Removed › email"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#email"
 
 tags: [stdlib, signature-change, email]
 

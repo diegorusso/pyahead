@@ -17,7 +17,7 @@ timeline:
   - event: deprecated
     python: "3.11"
     certainty: released
-    source: python-3.13-removed
+    source: python-3.11-deprecated
   - event: removed
     python: "3.13"
     certainty: released
@@ -36,12 +36,15 @@ matchers:
 remediation:
   summary: >-
     Remove reliance on this undocumented unittest method and use supported command-line error handling.
-  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#standard-library"
   automation: null
 
 sources:
+  - id: python-3.11-deprecated
+    title: "What's New in Python 3.11 — Deprecated › Standard Library"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#standard-library"
   - id: python-3.13-removed
-    title: "What's New in Python 3.13 — Removed"
-    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+    title: "What's New in Python 3.13 — Removed Modules And APIs › unittest"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#unittest"
 
 tags: [stdlib, api-removal, unittest]

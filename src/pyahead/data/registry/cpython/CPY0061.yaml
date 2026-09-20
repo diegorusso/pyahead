@@ -17,11 +17,11 @@ timeline:
   - event: deprecated
     python: "3.12"
     certainty: released
-    source: python-deprecations
+    source: python-3.12-deprecated
   - event: behavior_changed
     python: "3.16"
     certainty: scheduled
-    source: python-deprecations
+    source: python-3.12-pending-3-16
 
 impact:
   on_deprecation: deprecated
@@ -34,13 +34,16 @@ matchers:
 remediation:
   summary: >-
     Replace bitwise inversion with the Boolean operation intended by the program.
-  documentation_url: "https://docs.python.org/3/deprecations/index.html"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   automation: null
 
 sources:
-  - id: python-deprecations
-    title: "Python deprecation index"
-    url: "https://docs.python.org/3/deprecations/index.html"
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
+  - id: python-3.12-pending-3-16
+    title: "What's New in Python 3.12 — Deprecated › Pending Removal in Python 3.16"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#pending-removal-in-python-3-16"
 
 tags: [syntax, scheduled-change, partial]
 

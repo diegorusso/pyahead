@@ -17,7 +17,7 @@ timeline:
   - event: deprecated
     python: "3.12"
     certainty: released
-    source: python-3.14-removed
+    source: python-3.12-deprecated
   - event: removed
     python: "3.14"
     certainty: released
@@ -36,13 +36,16 @@ matchers:
 remediation:
   summary: >-
     Remove reliance on the pysqlite package-version attributes; consult the sqlite3 documentation for supported version information.
-  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#pending-removal-in-python-3-14"
   automation: null
 
 sources:
+  - id: python-3.12-deprecated
+    title: "What's New in Python 3.12 — Deprecated › Pending Removal in Python 3.14"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#pending-removal-in-python-3-14"
   - id: python-3.14-removed
-    title: "What's New in Python 3.14 — Removed"
-    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+    title: "What's New in Python 3.14 — Removed › sqlite3"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#sqlite3"
 
 tags: [stdlib, api-removal, sqlite]
 

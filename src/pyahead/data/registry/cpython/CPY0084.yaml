@@ -37,12 +37,12 @@ matchers:
 remediation:
   summary: >-
     Remove the compatibility helpers and follow the supported import protocols in the linked release notes.
-  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#importlib"
   automation: null
 
 sources:
   - id: python-3.12-removed
-    title: "What's New in Python 3.12 — Removed"
-    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+    title: "What's New in Python 3.12 — Removed › importlib"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#importlib"
 
 tags: [stdlib, api-removal, importlib]

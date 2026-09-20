@@ -23,7 +23,7 @@ timeline:
   - event: signature_changed
     python: "3.15"
     certainty: scheduled
-    source: python-3.13-deprecated
+    source: python-3.15-porting
 
 impact:
   on_deprecation: deprecated
@@ -68,12 +68,15 @@ remediation:
   summary: >-
     Pass connect options by keyword and pass callback-registration parameters
     positionally as documented.
-  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#sqlite3"
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
   automation: null
 
 sources:
   - id: python-3.13-deprecated
     title: "What's New in Python 3.13 — New Deprecations"
-    url: "https://docs.python.org/3.13/whatsnew/3.13.html#sqlite3"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
+  - id: python-3.15-porting
+    title: "What's New in Python 3.15 — Porting to Python 3.15"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#porting-to-python-3-15"
 
 tags: [stdlib, signature-change, sqlite3, partial]

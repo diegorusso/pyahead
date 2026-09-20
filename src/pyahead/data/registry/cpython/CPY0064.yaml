@@ -44,7 +44,7 @@ matchers:
 remediation:
   summary: >-
     Use ast.Constant as directed by the linked AST migration notes.
-  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   automation: null
 
 sources:

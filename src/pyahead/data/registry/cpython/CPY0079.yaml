@@ -31,13 +31,13 @@ matchers:
 remediation:
   summary: >-
     Import the underlying IO and regular-expression types from their supported modules as described by the typing documentation.
-  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed-modules-and-apis"
   automation: null
 
 sources:
   - id: python-3.13-removed
-    title: "What's New in Python 3.13 — Removed"
-    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+    title: "What's New in Python 3.13 — Removed Modules And APIs"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed-modules-and-apis"
 
 tags: [stdlib, api-removal, typing]
 

@@ -46,12 +46,12 @@ matchers:
 remediation:
   summary: >-
     Pass only documented positional path segments to pathlib path constructors.
-  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#pathlib"
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
   automation: null
 
 sources:
   - id: python-3.14-removed
-    title: "What's New in Python 3.14 — pathlib removals"
-    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pathlib"
+    title: "What's New in Python 3.14 — Removed"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
 
 tags: [stdlib, signature-change, pathlib, equivalent-spellings]

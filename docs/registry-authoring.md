@@ -148,6 +148,42 @@ strictly ordered by increasing Python minor version and cannot repeat an event
 kind. `removed` and `support_dropped` are terminal events and therefore must be
 last.
 
+An event's source is the page that documents that change at that version, so a
+reader can see where a deprecation or removal came from. In order of
+preference:
+
+1. The section of the "What's New" page for the event's own Python version that
+   names the subject, linked from that version's documentation tree
+   (`https://docs.python.org/3.12/whatsnew/3.12.html#deprecated`). Link the
+   innermost section with a stable anchor; Sphinx's generated `idN` anchors
+   move between builds, so use the enclosing section instead.
+2. The subject's entry in the module reference of the version that made the
+   change (`https://docs.python.org/3.10/library/ssl.html#ssl.SSLContext`),
+   whose `Deprecated since version` or `Changed in version` note is the
+   documented statement. This covers deprecations the "What's New" page never
+   mentioned.
+3. A later "What's New" entry that states the version, typically the removal
+   bullet ("aliases deprecated since Python 3.1, have been removed"), when the
+   change predates both of the above.
+4. A PEP or a CPython issue, only when no docs.python.org page names the
+   subject. PEPs remain as supporting sources even when a "What's New" entry
+   carries the event.
+
+A scheduled event whose version has no "What's New" page yet cites the
+"Pending removal in Python 3.N" section of the deprecating version's page, or
+of the deprecation index, that names the subject.
+
+Never cite the rolling current tree (`/3/library/...`) or a newer version's
+module reference for an older change: the page stops describing the subject
+once it is removed, and the reader of a 3.8 finding is sent to 3.14 text.
+Source titles say where the text is: `What's New in Python 3.10 — Deprecated`,
+`Python 3.6 ssl documentation — PROTOCOL_SSLv3`.
+
+Verify every cited section against the fetched page, not a summary of it; the
+tests pin that a What's New source has an anchor and is not older than the
+event it carries (a pending-removal section excepted), and that a versioned
+reference is not newer than the rule's last event.
+
 Supported events are `deprecated`, `removed`, `signature_changed`,
 `behavior_changed`, `syntax_changed`, and `support_dropped`. Each authored event
 requires its matching impact field:
@@ -278,11 +314,17 @@ but PyAhead only displays this metadata and never invokes either tool:
 ```yaml
 remediation:
   summary: "Apply the supported replacement."
-  documentation_url: "https://docs.python.org/3/whatsnew/"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   automation:
     tool: ruff
     rule: UP999
 ```
+
+`documentation_url` is the link a finding presents as "what changed and why".
+It is always the URL of one of the rule's sources: the source of the
+`deprecated` event when the rule has one, otherwise the source of the first
+event. When that source is a CPython issue or a source file rather than
+documentation, the first docs.python.org source is linked instead.
 
 Use `tool: pyupgrade` for a verified pyupgrade transform. Do not add automation
 metadata until the named behavior has been checked against the tool.

@@ -29,7 +29,7 @@ matchers:
 remediation:
   summary: >-
     Use ast.Tuple(slices, ast.Load()) instead of ast.ExtSlice(...).
-  documentation_url: "https://docs.python.org/3/library/ast.html"
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#deprecated"
   automation: null
 
 sources:

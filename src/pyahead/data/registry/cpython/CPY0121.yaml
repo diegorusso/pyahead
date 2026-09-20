@@ -17,7 +17,7 @@ timeline:
   - event: deprecated
     python: "3.7"
     certainty: released
-    source: python-3.14-ssl
+    source: python-3.7-ssl
 
 impact:
   on_deprecation: deprecated
@@ -35,12 +35,15 @@ matchers:
 remediation:
   summary: >-
     Configure SSLContext.minimum_version and SSLContext.maximum_version instead.
-  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.OP_NO_TLSv1"
+  documentation_url: "https://docs.python.org/3.7/library/ssl.html#ssl.OP_NO_TLSv1"
   automation: null
 
 sources:
-  - id: python-3.14-ssl
-    title: "Python 3.14 ssl documentation — OP_NO_TLS options"
-    url: "https://docs.python.org/3.14/library/ssl.html#ssl.OP_NO_TLSv1"
+  - id: python-3.7-ssl
+    title: "Python 3.7 ssl documentation — OP_NO_TLSv1"
+    url: "https://docs.python.org/3.7/library/ssl.html#ssl.OP_NO_TLSv1"
+  - id: python-3.10-deprecated
+    title: "What's New in Python 3.10 — Deprecated"
+    url: "https://docs.python.org/3.10/whatsnew/3.10.html#deprecated"
 
 tags: [stdlib, unscheduled-removal, ssl]

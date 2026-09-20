@@ -36,15 +36,15 @@ matchers:
 remediation:
   summary: >-
     Use glob.glob with its root_dir argument as directed by the linked CPython documentation.
-  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#glob"
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
   automation: null
 
 sources:
   - id: python-3.13-deprecated
     title: "What's New in Python 3.13 — New Deprecations"
-    url: "https://docs.python.org/3.13/whatsnew/3.13.html#glob"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
   - id: python-3.15-removed
-    title: "What's New in Python 3.15 — glob removals"
+    title: "What's New in Python 3.15 — Removed › glob"
     url: "https://docs.python.org/3.15/whatsnew/3.15.html#glob"
 
 tags: [stdlib, scheduled-removal, glob]

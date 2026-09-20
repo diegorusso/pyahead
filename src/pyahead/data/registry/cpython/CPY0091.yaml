@@ -18,7 +18,7 @@ timeline:
   - event: deprecated
     python: "3.9"
     certainty: released
-    source: python-deprecations
+    source: python-3.9-typing
 
 impact:
   on_deprecation: deprecated
@@ -30,12 +30,12 @@ matchers:
 remediation:
   summary: >-
     Use bytes or collections.abc.Buffer according to the required semantics.
-  documentation_url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-17"
+  documentation_url: "https://docs.python.org/3.9/library/typing.html#typing.ByteString"
   automation: null
 
 sources:
-  - id: python-deprecations
-    title: "Python deprecation index — Pending removal in Python 3.17"
-    url: "https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-17"
+  - id: python-3.9-typing
+    title: "Python 3.9 typing documentation — ByteString"
+    url: "https://docs.python.org/3.9/library/typing.html#typing.ByteString"
 
 tags: [stdlib, scheduled-removal, typing, outside-window]

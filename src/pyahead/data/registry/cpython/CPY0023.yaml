@@ -32,16 +32,16 @@ matchers:
 remediation:
   summary: >-
     Remove reliance on the standard-library distutils package and follow PEP 632's migration guidance.
-  documentation_url: "https://peps.python.org/pep-0632/"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#distutils"
   automation: null
 
 sources:
+  - id: python-3.12-removed
+    title: "What's New in Python 3.12 — Removed › distutils"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#distutils"
   - id: pep-0632
     title: "PEP 632 — Deprecate distutils module"
     url: "https://peps.python.org/pep-0632/"
-  - id: python-3.12-removed
-    title: "What's New in Python 3.12 — Removed"
-    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
 
 tags: [stdlib, module-removal]
 

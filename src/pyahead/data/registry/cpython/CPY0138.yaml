@@ -39,7 +39,7 @@ remediation:
   summary: >-
     Use the ast module to parse and compile source; the concrete syntax trees
     the parser module produced have no replacement.
-  documentation_url: "https://docs.python.org/3.10/whatsnew/3.10.html#removed"
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#deprecated"
   automation: null
 
 sources:

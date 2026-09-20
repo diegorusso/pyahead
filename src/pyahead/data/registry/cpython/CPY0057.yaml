@@ -38,15 +38,15 @@ matchers:
 remediation:
   summary: >-
     Construct threading.RLock without arguments.
-  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#threading"
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#pending-removal-in-python-3-15"
   automation: null
 
 sources:
   - id: python-3.14-deprecated
-    title: "What's New in Python 3.14 — threading deprecations"
-    url: "https://docs.python.org/3.14/whatsnew/3.14.html#threading"
+    title: "What's New in Python 3.14 — Deprecated › Pending removal in Python 3.15"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pending-removal-in-python-3-15"
   - id: python-3.15-removed
-    title: "What's New in Python 3.15 — threading removals"
-    url: "https://docs.python.org/3.15/whatsnew/3.15.html#threading"
+    title: "What's New in Python 3.15 — Removed"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#removed"
 
 tags: [stdlib, signature-change, threading, partial]

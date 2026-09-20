@@ -29,12 +29,12 @@ matchers:
 
 remediation:
   summary: Read pdb.Pdb.curframe.f_locals when implementing a derived debugger.
-  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#pdb"
+  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#new-deprecations"
   automation: null
 
 sources:
   - id: python-3.14-deprecated
-    title: "What's New in Python 3.14 — New deprecations"
-    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pdb"
+    title: "What's New in Python 3.14 — Deprecated › New deprecations"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#new-deprecations"
 
 tags: [stdlib, unscheduled-removal, pdb, partial]

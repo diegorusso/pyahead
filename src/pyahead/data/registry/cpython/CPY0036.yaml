@@ -43,12 +43,12 @@ matchers:
 remediation:
   summary: >-
     Remove the obsolete method use and consult the supported turtle APIs in the linked documentation.
-  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#turtle"
   automation: null
 
 sources:
   - id: python-3.13-removed
-    title: "What's New in Python 3.13 — Removed"
-    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+    title: "What's New in Python 3.13 — Removed Modules And APIs › turtle"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#turtle"
 
 tags: [stdlib, api-removal, partial]

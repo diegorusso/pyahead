@@ -20,7 +20,7 @@ timeline:
   - event: deprecated
     python: "3.8"
     certainty: released
-    source: python-3.8-asyncio
+    source: python-3.8-deprecated
   - event: removed
     python: "3.10"
     certainty: released
@@ -95,13 +95,13 @@ remediation:
     Drop the loop argument; these APIs use the running event loop. Where a
     specific loop is genuinely needed, call the coroutine from within that
     loop rather than passing it in.
-  documentation_url: "https://docs.python.org/3.10/whatsnew/3.10.html#removed"
+  documentation_url: "https://docs.python.org/3.8/whatsnew/3.8.html#deprecated"
   automation: null
 
 sources:
-  - id: python-3.8-asyncio
-    title: "What's New in Python 3.8 — asyncio"
-    url: "https://docs.python.org/3/whatsnew/3.8.html#asyncio"
+  - id: python-3.8-deprecated
+    title: "What's New in Python 3.8 — Deprecated"
+    url: "https://docs.python.org/3.8/whatsnew/3.8.html#deprecated"
   - id: python-3.10-removed
     title: "What's New in Python 3.10 — Removed"
     url: "https://docs.python.org/3.10/whatsnew/3.10.html#removed"

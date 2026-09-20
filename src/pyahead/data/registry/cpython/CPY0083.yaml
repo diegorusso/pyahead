@@ -29,13 +29,13 @@ matchers:
 remediation:
   summary: >-
     Remove reliance on the attribute and use the supported SSL-context configuration described by the linked release notes.
-  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#ftplib"
   automation: null
 
 sources:
   - id: python-3.12-removed
-    title: "What's New in Python 3.12 — Removed"
-    url: "https://docs.python.org/3.12/whatsnew/3.12.html#removed"
+    title: "What's New in Python 3.12 — Removed › ftplib"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#ftplib"
 
 tags: [stdlib, api-removal, ftplib, partial-receiver-coverage]
 

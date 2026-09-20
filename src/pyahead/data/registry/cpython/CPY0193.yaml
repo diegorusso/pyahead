@@ -38,7 +38,7 @@ matchers:
 remediation:
   summary: >-
     Drop the argument. To shuffle with a specific generator, call that generator's own shuffle method, for example random.Random(seed).shuffle(x).
-  documentation_url: "https://docs.python.org/3.11/library/random.html#random.shuffle"
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#deprecated"
   automation: null
 
 sources:

@@ -36,12 +36,12 @@ matchers:
 
 remediation:
   summary: Pass maxsplit, count, and flags by keyword.
-  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#re"
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
   automation: null
 
 sources:
   - id: python-3.13-deprecated
     title: "What's New in Python 3.13 — New Deprecations"
-    url: "https://docs.python.org/3.13/whatsnew/3.13.html#re"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
 
 tags: [stdlib, signature-change, re]

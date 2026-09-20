@@ -41,7 +41,7 @@ remediation:
 
 sources:
   - id: python-3.9-collections
-    title: "collections — Container datatypes (Python 3.9)"
+    title: "Python 3.9 collections documentation"
     url: "https://docs.python.org/3.9/library/collections.html"
   - id: python-3.10-removed
     title: "What's New in Python 3.10 — Removed"

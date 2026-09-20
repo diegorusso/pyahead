@@ -17,7 +17,7 @@ timeline:
   - event: deprecated
     python: "3.13"
     certainty: released
-    source: python-3.14-sys
+    source: python-3.13-sys
 
 impact:
   on_deprecation: deprecated
@@ -29,12 +29,12 @@ matchers:
 remediation:
   summary: >-
     Use sys._clear_internal_caches instead.
-  documentation_url: "https://docs.python.org/3.14/library/sys.html#sys._clear_type_cache"
+  documentation_url: "https://docs.python.org/3.13/library/sys.html#sys._clear_type_cache"
   automation: null
 
 sources:
-  - id: python-3.14-sys
-    title: "Python 3.14 sys documentation — _clear_type_cache"
-    url: "https://docs.python.org/3.14/library/sys.html#sys._clear_type_cache"
+  - id: python-3.13-sys
+    title: "Python 3.13 sys documentation — _clear_type_cache"
+    url: "https://docs.python.org/3.13/library/sys.html#sys._clear_type_cache"
 
 tags: [stdlib, unscheduled-removal, sys]

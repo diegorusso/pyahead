@@ -60,15 +60,15 @@ matchers:
 remediation:
   summary: >-
     Pass an explicit empty field dictionary or use class syntax as documented by typing.TypedDict.
-  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#typing"
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
   automation: null
 
 sources:
   - id: python-3.13-deprecated
-    title: "What's New in Python 3.13 — typing deprecations"
-    url: "https://docs.python.org/3.13/whatsnew/3.13.html#typing"
+    title: "What's New in Python 3.13 — New Deprecations"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#new-deprecations"
   - id: python-3.15-removed
-    title: "What's New in Python 3.15 — typing removals"
-    url: "https://docs.python.org/3.15/whatsnew/3.15.html#typing"
+    title: "What's New in Python 3.15 — Removed"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#removed"
 
 tags: [stdlib, signature-change, typing]

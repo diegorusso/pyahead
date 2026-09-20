@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
@@ -9,8 +10,9 @@ from typing import cast
 import pytest
 
 from pyahead.analysis import ScanRequest, scan
-from pyahead.model import CoverageDisposition, ScanReport
+from pyahead.model import CoverageDisposition, RegistryCertainty, ScanReport
 from pyahead.registry import load_registry
+from pyahead.versions import PythonMinor
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures/rules"
 REGISTRY = load_registry()
@@ -217,6 +219,57 @@ def test_released_removed_censuses_retain_independently_audited_entries() -> Non
         "pathlib-path-extra-keywords",
         "sqlite3-named-placeholders-sequence",
     } <= keys_by_source["python-3.14-removed"]
+
+
+_WHATS_NEW_SOURCE_RE = re.compile(
+    r"https://docs\.python\.org/(\d\.\d+)/whatsnew/(\d\.\d+)\.html(#[A-Za-z0-9._-]+)?\Z"
+)
+_VERSIONED_REFERENCE_RE = re.compile(
+    r"https://docs\.python\.org/(3(?:\.\d+)?)/(library|reference|c-api|howto|extending)/"
+)
+
+
+def test_every_rule_documents_where_its_change_happened() -> None:
+    """Every rule links a cited source and cites the change at its own version.
+
+    What's New sources point at a section of the page for the change's own or a
+    later version; a module reference comes from the docs tree of a version the
+    change had reached, never from the rolling current tree.
+    """
+    for rule in REGISTRY.rules:
+        sources = {source.id: source for source in rule.sources}
+        assert rule.remediation.documentation_url in {
+            source.url for source in rule.sources
+        }, rule.id
+        last_event = max(event.python for event in rule.events)
+        for source in rule.sources:
+            if reference := _VERSIONED_REFERENCE_RE.match(source.url):
+                assert reference.group(1) != "3", (rule.id, source.url)
+                assert PythonMinor.parse(reference.group(1)) <= last_event, (
+                    rule.id,
+                    source.url,
+                )
+            if whats_new := _WHATS_NEW_SOURCE_RE.match(source.url):
+                assert whats_new.group(1) == whats_new.group(2), (rule.id, source.url)
+                assert whats_new.group(3) is not None, (rule.id, source.url)
+        for event in rule.events:
+            whats_new = _WHATS_NEW_SOURCE_RE.match(sources[event.source_id].url)
+            if whats_new is None:
+                continue
+            if PythonMinor.parse(whats_new.group(2)) < event.python:
+                # Only a schedule may be announced ahead of its version, and then
+                # from the section that names that version.
+                target = str(event.python).replace(".", "-")
+                pending = f"#pending-removal-in-python-{target}"
+                assert event.certainty is RegistryCertainty.SCHEDULED, (
+                    rule.id,
+                    event.kind.value,
+                    str(event.python),
+                )
+                assert whats_new.group(3) == pending, (
+                    rule.id,
+                    sources[event.source_id].url,
+                )
 
 
 def test_reviewed_source_fidelity_regressions() -> None:

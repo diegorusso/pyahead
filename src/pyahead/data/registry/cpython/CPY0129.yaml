@@ -38,7 +38,7 @@ remediation:
 
 sources:
   - id: python-3.12-removed
-    title: "What's New in Python 3.12 — enum removals"
+    title: "What's New in Python 3.12 — Removed › enum"
     url: "https://docs.python.org/3.12/whatsnew/3.12.html#enum"
 
 tags: [stdlib, api-removal, enum, partial]

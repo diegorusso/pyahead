@@ -47,15 +47,15 @@ matchers:
 remediation:
   summary: >-
     Stop importing the private sre modules and use the public re API.
-  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#sre"
+  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#modules"
   automation: null
 
 sources:
   - id: python-3.11-deprecated
-    title: "What's New in Python 3.11 — Deprecated"
-    url: "https://docs.python.org/3.11/whatsnew/3.11.html#deprecated"
+    title: "What's New in Python 3.11 — Deprecated › Modules"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#modules"
   - id: python-3.15-removed
-    title: "What's New in Python 3.15 — sre module removals"
+    title: "What's New in Python 3.15 — Removed › sre_*"
     url: "https://docs.python.org/3.15/whatsnew/3.15.html#sre"
 
 tags: [stdlib, module-removal, scheduled-removal, private-api]

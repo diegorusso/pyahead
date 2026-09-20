@@ -37,7 +37,7 @@ matchers:
 remediation:
   summary: >-
     Drop binhex encoding; the format is obsolete and has no standard-library replacement.
-  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+  documentation_url: "https://docs.python.org/3.9/whatsnew/3.9.html#deprecated"
   automation: null
 
 sources:

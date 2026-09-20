@@ -17,7 +17,7 @@ timeline:
   - event: deprecated
     python: "3.3"
     certainty: released
-    source: python-3.14-deprecations
+    source: python-3.3-logging
 
 impact:
   on_deprecation: deprecated
@@ -33,10 +33,13 @@ matchers:
 remediation:
   summary: >-
     Use logging.warning or the corresponding warning method.
-  documentation_url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-future-versions"
+  documentation_url: "https://docs.python.org/3.3/library/logging.html#logging.warning"
   automation: null
 
 sources:
+  - id: python-3.3-logging
+    title: "Python 3.3 logging documentation — logging.warning"
+    url: "https://docs.python.org/3.3/library/logging.html#logging.warning"
   - id: python-3.14-deprecations
     title: "Python 3.14 deprecation index — logging.warn"
     url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-future-versions"

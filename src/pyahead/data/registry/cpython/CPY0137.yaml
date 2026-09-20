@@ -20,7 +20,7 @@ timeline:
   - event: removed
     python: "3.15"
     certainty: scheduled
-    source: python-deprecations
+    source: python-3.15-removed
 
 impact:
   on_removal: breaking
@@ -59,12 +59,12 @@ remediation:
   summary: >-
     Implement and call exec_module, leaving module-loading boilerplate to the
     import machinery.
-  documentation_url: "https://docs.python.org/3.14/library/importlib.html#importlib.abc.Loader.load_module"
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#importlib"
   automation: null
 
 sources:
-  - id: python-deprecations
-    title: "Python 3.14 deprecation index — pending removal in Python 3.15"
-    url: "https://docs.python.org/3.14/deprecations/index.html#pending-removal-in-python-3-15"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — Removed › importlib"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#importlib"
 
 tags: [stdlib, scheduled-removal, importlib, partial]

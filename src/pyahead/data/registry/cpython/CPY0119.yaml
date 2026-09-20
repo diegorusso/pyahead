@@ -18,7 +18,7 @@ timeline:
   - event: deprecated
     python: "3.10"
     certainty: released
-    source: python-3.14-ssl
+    source: python-3.10-deprecated
 
 impact:
   on_deprecation: deprecated
@@ -34,12 +34,12 @@ matchers:
 remediation:
   summary: >-
     Use the corresponding ALPN APIs instead.
-  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.SSLContext.set_npn_protocols"
+  documentation_url: "https://docs.python.org/3.10/whatsnew/3.10.html#deprecated"
   automation: null
 
 sources:
-  - id: python-3.14-ssl
-    title: "Python 3.14 ssl documentation — deprecated NPN APIs"
-    url: "https://docs.python.org/3.14/library/ssl.html#ssl.SSLContext.set_npn_protocols"
+  - id: python-3.10-deprecated
+    title: "What's New in Python 3.10 — Deprecated"
+    url: "https://docs.python.org/3.10/whatsnew/3.10.html#deprecated"
 
 tags: [stdlib, unscheduled-removal, ssl, partial]

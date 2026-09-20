@@ -17,7 +17,7 @@ timeline:
   - event: deprecated
     python: "3.10"
     certainty: released
-    source: python-3.14-ssl
+    source: python-3.10-ssl
 
 impact:
   on_deprecation: deprecated
@@ -33,12 +33,12 @@ matchers:
 remediation:
   summary: >-
     Use TLSVersion.TLSv1_2 or TLSVersion.TLSv1_3 as appropriate.
-  documentation_url: "https://docs.python.org/3.14/library/ssl.html#ssl.TLSVersion"
+  documentation_url: "https://docs.python.org/3.10/library/ssl.html#ssl.TLSVersion.SSLv3"
   automation: null
 
 sources:
-  - id: python-3.14-ssl
-    title: "Python 3.14 ssl documentation — TLSVersion"
-    url: "https://docs.python.org/3.14/library/ssl.html#ssl.TLSVersion"
+  - id: python-3.10-ssl
+    title: "Python 3.10 ssl documentation — TLSVersion.SSLv3"
+    url: "https://docs.python.org/3.10/library/ssl.html#ssl.TLSVersion.SSLv3"
 
 tags: [stdlib, unscheduled-removal, ssl]

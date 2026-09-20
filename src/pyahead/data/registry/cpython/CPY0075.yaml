@@ -17,7 +17,7 @@ timeline:
   - event: behavior_changed
     python: "3.12"
     certainty: released
-    source: cpython-94352
+    source: python-3.12-porting
 
 impact:
   on_behavior_change: breaking
@@ -37,12 +37,12 @@ matchers:
 remediation:
   summary: >-
     Pass an explicit string to shlex.split.
-  documentation_url: "https://github.com/python/cpython/issues/94352"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#changes-in-the-python-api"
   automation: null
 
 sources:
-  - id: cpython-94352
-    title: "CPython issue 94352 — reject None in shlex.split"
-    url: "https://github.com/python/cpython/issues/94352"
+  - id: python-3.12-porting
+    title: "What's New in Python 3.12 — Porting to Python 3.12 › Changes in the Python API"
+    url: "https://docs.python.org/3.12/whatsnew/3.12.html#changes-in-the-python-api"
 
 tags: [stdlib, behavior-change, shlex]

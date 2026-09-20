@@ -38,7 +38,7 @@ matchers:
 remediation:
   summary: >-
     Use pty.openpty as directed by the linked CPython documentation.
-  documentation_url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+  documentation_url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   automation: null
 
 sources:
@@ -46,7 +46,7 @@ sources:
     title: "What's New in Python 3.12 — Deprecated"
     url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
   - id: python-3.14-removed
-    title: "What's New in Python 3.14 — Removed"
-    url: "https://docs.python.org/3.14/whatsnew/3.14.html#removed"
+    title: "What's New in Python 3.14 — Removed › pty"
+    url: "https://docs.python.org/3.14/whatsnew/3.14.html#pty"
 
 tags: [stdlib, deprecation, api-removal, pty]

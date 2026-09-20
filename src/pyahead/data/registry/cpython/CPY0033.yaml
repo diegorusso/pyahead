@@ -36,13 +36,13 @@ matchers:
 remediation:
   summary: >-
     Update the call using the supported TLS configuration described by urllib.request and the linked release notes.
-  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+  documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html#urllib"
   automation: null
 
 sources:
   - id: python-3.13-removed
-    title: "What's New in Python 3.13 — Removed"
-    url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed"
+    title: "What's New in Python 3.13 — Removed Modules And APIs › urllib"
+    url: "https://docs.python.org/3.13/whatsnew/3.13.html#urllib"
 
 tags: [stdlib, signature-change, urllib]
 

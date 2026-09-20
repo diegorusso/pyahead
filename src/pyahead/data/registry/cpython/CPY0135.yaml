@@ -18,7 +18,7 @@ timeline:
   - event: deprecated
     python: "3.10"
     certainty: released
-    source: pep-0626
+    source: python-3.10-pep-626
 
 impact:
   on_deprecation: deprecated
@@ -30,15 +30,15 @@ matchers:
 remediation:
   summary: >-
     Use CodeType.co_lines() for line-number information as described by PEP 626.
-  documentation_url: "https://peps.python.org/pep-0626/"
+  documentation_url: "https://docs.python.org/3.10/whatsnew/3.10.html#pep-626-precise-line-numbers-for-debugging-and-other-tools"
   automation: null
 
 sources:
+  - id: python-3.10-pep-626
+    title: "What's New in Python 3.10 — PEP 626: Precise line numbers for debugging and other tools"
+    url: "https://docs.python.org/3.10/whatsnew/3.10.html#pep-626-precise-line-numbers-for-debugging-and-other-tools"
   - id: pep-0626
     title: "PEP 626 — Precise line numbers for debugging and other tools"
     url: "https://peps.python.org/pep-0626/"
-  - id: python-3.12-deprecated
-    title: "What's New in Python 3.12 — Deprecated"
-    url: "https://docs.python.org/3.12/whatsnew/3.12.html#deprecated"
 
 tags: [stdlib, deprecation, types, partial, unscheduled-removal]
