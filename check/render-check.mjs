@@ -6,7 +6,7 @@
 // `innerHTML`, `outerHTML` or `insertAdjacentHTML`, so the test fails if a
 // future edit introduces a markup path at all — whatever it happens to contain.
 
-import { buildReportView, groupByActionVersion, incompletenessNotes, mount } from "../render.mjs";
+import { buildReportView, groupByActionVersion, incompletenessNotes, mount, timelineLabel } from "../render.mjs";
 
 const failures = [];
 function check(description, condition, detail = "") {
@@ -62,6 +62,15 @@ const report = {
       title: `removed in ${HOSTILE}`, enclosing_scope: HOSTILE,
       location: { path: `${HOSTILE}/mod.py`, region: { start: { line: 12, column: 4 } } },
       remediation: { summary: `use ${HOSTILE}`, documentation_url: "https://docs.python.org/3.13/whatsnew/3.13.html" },
+      timeline: [
+        { event: "deprecated", python: "3.11", certainty: "released", source: "python-3.11-deprecated" },
+        { event: "removed", python: "3.13", certainty: "released", source: "python-3.13-removed" },
+      ],
+      sources: [
+        { id: "python-3.11-deprecated", title: `What's New in Python 3.11 — Deprecated ${HOSTILE}`, url: "https://docs.python.org/3.11/whatsnew/3.11.html#modules" },
+        { id: "python-3.13-removed", title: "What's New in Python 3.13 — Removed", url: "https://docs.python.org/3.13/whatsnew/3.13.html#removed-modules-and-apis" },
+        { id: "hostile", title: "not a documentation link", url: "javascript:alert(1)" },
+      ],
       removal_unscheduled: false,
     },
     {
@@ -93,6 +102,12 @@ console.log("grouping");
   ]);
   check("puts the worst impact first within a version", groups[0].findings[0].impact === "breaking");
 }
+
+console.log("\ntimeline");
+check("labels each event with its version", timelineLabel(report.findings[0].timeline) === "Deprecated in 3.11 · Removed in 3.13", timelineLabel(report.findings[0].timeline));
+check("marks a scheduled event", timelineLabel([{ event: "removed", python: "3.16", certainty: "scheduled" }]) === "Removed in 3.16 (scheduled)");
+check("ignores an unknown event kind", timelineLabel([{ event: "renamed", python: "3.16" }, { event: "deprecated", python: 3.1 }]) === "");
+check("tolerates a missing timeline", timelineLabel(undefined) === "");
 
 console.log("\nincompleteness");
 {
@@ -130,10 +145,14 @@ if (root) {
     String(texts.filter((value) => value.includes(HOSTILE)).length));
 
   const links = document.created.filter((element) => element.tag === "a");
-  check("links only to https documentation", links.length === 1 && links[0].attributes.href.startsWith("https://"),
+  check("links only to https documentation", links.length === 3 && links.every((link) => link.attributes.href.startsWith("https://")),
     JSON.stringify(links.map((link) => link.attributes.href)));
   check("drops a javascript: documentation url", !links.some((link) => link.attributes.href.startsWith("javascript:")));
-  check("opens documentation safely", links[0]?.attributes.rel === "noopener noreferrer");
+  check("opens documentation safely", links.every((link) => link.attributes.rel === "noopener noreferrer"));
+  check("lists every cited source by title", texts.includes("What's New in Python 3.13 — Removed"));
+  check("a hostile source title is rendered as text", texts.some((value) => value.startsWith("What's New in Python 3.11 — Deprecated ") && value.includes(HOSTILE)));
+  check("shows where the change happened", texts.includes("Deprecated in 3.11 · Removed in 3.13"));
+  check("omits the timeline when a finding has none", document.created.filter((element) => element.className === "timeline").length === 1);
 
   check("shows the incompleteness banner", document.created.some((element) => element.className === "incomplete"));
   check("names the repository", texts.some((value) => value.includes("owner/repo at main")));

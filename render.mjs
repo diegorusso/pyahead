@@ -78,6 +78,27 @@ function locationLabel(location) {
   return line ? `${location.path}:${line}` : location?.path ?? "";
 }
 
+const EVENT_LABEL = {
+  deprecated: "Deprecated",
+  removed: "Removed",
+  signature_changed: "Signature changed",
+  behavior_changed: "Behaviour changed",
+  syntax_changed: "Syntax changed",
+  support_dropped: "Support dropped",
+};
+
+/** "Deprecated in 3.11 · Removed in 3.13", a scheduled event marked as such. */
+export function timelineLabel(timeline) {
+  return (timeline ?? [])
+    .filter((event) => typeof event?.python === "string" && event.event in EVENT_LABEL)
+    .map((event) => `${EVENT_LABEL[event.event]} in ${event.python}${event.certainty === "scheduled" ? " (scheduled)" : ""}`)
+    .join(" · ");
+}
+
+// Registry-supplied, not repository-supplied, but a link is still only made
+// for a scheme a link should have.
+const isDocumentationUrl = (url) => typeof url === "string" && url.startsWith("https://");
+
 function findingView(finding) {
   const children = [
     el("div", {
@@ -92,14 +113,25 @@ function findingView(finding) {
     text("p", locationLabel(finding.location), { class: "location" }),
   ];
 
+  const timeline = timelineLabel(finding.timeline);
+  if (timeline) {
+    children.push(text("p", timeline, { class: "timeline" }));
+  }
   if (finding.remediation?.summary) {
     children.push(text("p", finding.remediation.summary, { class: "remediation" }));
   }
-  // Registry-supplied, not repository-supplied, but a link is still only made
-  // for a scheme a link should have.
   const url = finding.remediation?.documentation_url;
-  if (typeof url === "string" && url.startsWith("https://")) {
+  if (isDocumentationUrl(url)) {
     children.push(el("p", { children: [text("a", "What changed and why", { href: url, class: "doc-link" })] }));
+  }
+  // Every source the rule cites, by title, so the reader sees where the
+  // deprecation and the removal were each announced.
+  const sources = (finding.sources ?? []).filter((source) => isDocumentationUrl(source?.url) && typeof source?.title === "string");
+  if (sources.length > 0) {
+    children.push(el("ul", {
+      class: "sources",
+      children: sources.map((source) => el("li", { children: [text("a", source.title, { href: source.url, class: "source-link" })] })),
+    }));
   }
   if (finding.enclosing_scope) {
     children.push(text("p", `in ${finding.enclosing_scope}`, { class: "scope" }));
