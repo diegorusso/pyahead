@@ -136,7 +136,7 @@ def test_registry_validate_and_list_use_the_bundled_snapshot(
     assert main(["registry", "validate"]) == int(ExitCode.SUCCESS)
     validated = capsys.readouterr()
     assert validated.out.startswith("Registry 2026.09.17 (")
-    assert validated.out.endswith(": 187 rules valid.\n")
+    assert validated.out.endswith(": 198 rules valid.\n")
     assert validated.err == ""
 
     assert main(["registry", "list"]) == int(ExitCode.SUCCESS)
@@ -147,8 +147,8 @@ def test_registry_validate_and_list_use_the_bundled_snapshot(
 
     assert main(["registry", "coverage"]) == int(ExitCode.SUCCESS)
     coverage = capsys.readouterr()
-    assert "Sources: 17\n" in coverage.out
-    assert "Rules covered: 187/187\n" in coverage.out
+    assert "Sources: 19\n" in coverage.out
+    assert "Rules covered: 198/198\n" in coverage.out
     assert coverage.out.endswith("Unclassified source entries: 0\n")
     assert coverage.err == ""
 

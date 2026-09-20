@@ -6,6 +6,20 @@ stabilizing.
 
 ## Unreleased
 
+### Added
+
+- Eleven rules from the "What's New in Python 3.11" sections (CPY0194–CPY0204):
+  the `@asyncio.coroutine` decorator; the bytes-returning `gettext` API —
+  `lgettext`, `ldgettext`, `lngettext`, `ldngettext`, `bind_textdomain_codeset`,
+  and the `codeset` keyword of `translation()` and `install()`; and
+  `inspect.getargspec`, `inspect.formatargspec`, `inspect.Signature.from_builtin`
+  and `from_function`. All removed in 3.11. `CPY0036` additionally matches the
+  module-level `turtle.settiltangle`. Both 3.11 sections are censused — 66 and
+  22 entries — which closes the last gap between 3.9 and 3.14; most of the
+  Deprecated section is the page re-listing 3.10 deprecations already covered,
+  and two of its entries, `locale.getdefaultlocale` and the `importlib.resources`
+  legacy functions, were later un-deprecated by CPython and are recorded as such.
+
 ## 0.3.0 - 2026-09-19
 
 The registry analysis window opens at Python 3.8, and the Python 3.9 and 3.10

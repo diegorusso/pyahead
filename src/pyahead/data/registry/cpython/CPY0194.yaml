@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0194
+title: "The asyncio.coroutine decorator is removed"
+summary: >-
+  The @asyncio.coroutine decorator made generator-based coroutines compatible with async/await. It is deprecated in Python 3.8 and removed in Python 3.11.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: asyncio.coroutine
+
+timeline:
+  - event: deprecated
+    python: "3.8"
+    certainty: released
+    source: python-3.8-deprecated
+  - event: removed
+    python: "3.11"
+    certainty: released
+    source: python-3.11-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: asyncio.coroutine
+
+remediation:
+  summary: >-
+    Write the coroutine with async def and replace yield from with await.
+  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.8-deprecated
+    title: "What's New in Python 3.8 — Deprecated"
+    url: "https://docs.python.org/3/whatsnew/3.8.html#deprecated"
+  - id: python-3.11-removed
+    title: "What's New in Python 3.11 — Removed"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+
+tags: [stdlib, asyncio, function-removal]

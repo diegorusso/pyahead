@@ -1,0 +1,48 @@
+schema_version: 1
+id: CPY0196
+title: "gettext.ldgettext is removed"
+summary: >-
+  gettext.ldgettext() returned encoded bytes rather than text and had been broken for a long time. It is deprecated in Python 3.8 and removed in Python 3.11.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: gettext.ldgettext
+
+timeline:
+  - event: deprecated
+    python: "3.8"
+    certainty: released
+    source: python-3.8-deprecated
+  - event: removed
+    python: "3.11"
+    certainty: released
+    source: python-3.11-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: gettext.ldgettext
+
+remediation:
+  summary: >-
+    Call the text-returning counterpart, gettext.dgettext(), which returns str.
+  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.8-deprecated
+    title: "What's New in Python 3.8 — Deprecated"
+    url: "https://docs.python.org/3/whatsnew/3.8.html#deprecated"
+  - id: python-3.11-removed
+    title: "What's New in Python 3.11 — Removed"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+
+tags: [stdlib, gettext, function-removal]

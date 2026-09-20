@@ -1,0 +1,440 @@
+schema_version: 1
+source:
+  id: python-3.11-deprecated
+  title: "What's New in Python 3.11 — Deprecated"
+  url: "https://docs.python.org/3.11/whatsnew/3.11.html#deprecated"
+  checked_on: "2026-09-20"
+
+# The ordered keys are independently pinned by tests. The section has four
+# subsections — Language/Builtins, Modules, Standard Library, and Pending
+# Removal in Python 3.12 — and the census walks them in order. Parent bullets
+# and every API-bearing nested bullet receive their own entry. The last
+# subsection re-lists the 3.10 deprecations already classified from the 3.12
+# removals; each is recorded as a duplicate of the rule that carries it, which
+# is what makes the claim that they are covered checkable.
+source_keys:
+  - classmethod-descriptor-chaining
+  - octal-escapes-above-0o377
+  - int-delegation-to-trunc
+  - pep-594-modules
+  - asynchat-asyncore-smtpd
+  - lib2to3
+  - sre-modules
+  - configparser-legacy-apis
+  - configparser-safeconfigparser
+  - configparser-parsingerror-filename
+  - configparser-readfp
+  - configparser-legacyinterpolation
+  - importlib-resources-legacy-functions
+  - importlib-resources-is-resource
+  - importlib-resources-open-binary
+  - importlib-resources-open-text
+  - importlib-resources-read-binary
+  - importlib-resources-read-text
+  - importlib-resources-path
+  - locale-getdefaultlocale
+  - locale-resetlocale
+  - re-numeric-group-reference-rules
+  - re-template
+  - turtle-settiltangle
+  - typing-text
+  - typing-typeddict-keyword-syntax
+  - webbrowser-macosx
+  - testcase-return-value
+  - unittest-undocumented-functions
+  - unittest-findtestcases
+  - unittest-makesuite
+  - unittest-gettestcasenames
+  - unittest-testloader-loadtestsfrommodule
+  - unittest-testloader-loadtestsfromtestcase
+  - unittest-testloader-gettestcasenames
+  - unittest-testprogram-usageexit
+  - pending-3.12-asynchat
+  - pending-3.12-asyncore
+  - pending-3.12-distutils
+  - pending-3.12-imp
+  - pending-3.12-typing-io
+  - pending-3.12-typing-re
+  - pending-3.12-cgi-log
+  - pending-3.12-importlib-find-loader
+  - pending-3.12-importlib-abc-loader-module-repr
+  - pending-3.12-importlib-abc-metapathfinder-find-module
+  - pending-3.12-importlib-abc-pathentryfinder-find-loader
+  - pending-3.12-importlib-abc-pathentryfinder-find-module
+  - pending-3.12-importlib-machinery-builtinimporter-find-module
+  - pending-3.12-importlib-machinery-builtinloader-module-repr
+  - pending-3.12-importlib-machinery-filefinder-find-loader
+  - pending-3.12-importlib-machinery-filefinder-find-module
+  - pending-3.12-importlib-machinery-frozenimporter-find-module
+  - pending-3.12-importlib-machinery-frozenloader-module-repr
+  - pending-3.12-importlib-machinery-pathfinder-find-module
+  - pending-3.12-importlib-machinery-windowsregistryfinder-find-module
+  - pending-3.12-importlib-util-module-for-loader
+  - pending-3.12-importlib-util-set-loader-wrapper
+  - pending-3.12-importlib-util-set-package-wrapper
+  - pending-3.12-pkgutil-impimporter
+  - pending-3.12-pkgutil-imploader
+  - pending-3.12-pathlib-path-link-to
+  - pending-3.12-sqlite3-enable-shared-cache
+  - pending-3.12-sqlite3-optimizedunicode
+  - pending-3.12-pythonthreaddebug
+  - pending-3.12-unittest-deprecated-aliases
+
+entries:
+  - source_key: classmethod-descriptor-chaining
+    disposition: not-statically-detectable
+    note: >-
+      Whether a classmethod wraps another descriptor depends on the wrapped
+      object's type at class creation, which the static alpha does not infer.
+  - source_key: octal-escapes-above-0o377
+    disposition: not-statically-detectable
+    note: >-
+      A literal-content pattern inside string and bytes literals; no matcher
+      in the static alpha inspects escape sequences.
+  - source_key: int-delegation-to-trunc
+    disposition: not-statically-detectable
+    note: >-
+      Whether int() reaches __trunc__ depends on the argument's type at
+      runtime.
+  - source_key: pep-594-modules
+    disposition: duplicate
+    rules: [CPY0001, CPY0002, CPY0005, CPY0006, CPY0007, CPY0008, CPY0009, CPY0010, CPY0011, CPY0012, CPY0013, CPY0014, CPY0015, CPY0017, CPY0018, CPY0019, CPY0020, CPY0021, CPY0022]
+    note: >-
+      The nineteen PEP 594 modules are classified from PEP 594 and their 3.13
+      removal.
+  - source_key: asynchat-asyncore-smtpd
+    disposition: duplicate
+    rules: [CPY0003, CPY0004, CPY0016]
+    note: >-
+      Classified from PEP 594 and the 3.12 removal.
+  - source_key: lib2to3
+    disposition: duplicate
+    rules: [CPY0027]
+    note: >-
+      Classified from the 3.13 removal.
+  - source_key: sre-modules
+    disposition: duplicate
+    rules: [CPY0117]
+    note: >-
+      All three undocumented sre_* modules are matched by the one rule.
+  - source_key: configparser-legacy-apis
+    disposition: duplicate
+    rules: [CPY0072]
+    note: >-
+      The parent bullet; the three APIs it names are classified below.
+  - source_key: configparser-safeconfigparser
+    disposition: duplicate
+    rules: [CPY0072]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: configparser-parsingerror-filename
+    disposition: duplicate
+    rules: [CPY0072]
+    note: >-
+      Classified from the 3.12 removal, where the entry is partial: the
+      property is read on instances.
+  - source_key: configparser-readfp
+    disposition: duplicate
+    rules: [CPY0072]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: configparser-legacyinterpolation
+    disposition: duplicate
+    rules: [CPY0030]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: importlib-resources-legacy-functions
+    disposition: not-applicable
+    note: >-
+      The deprecation was reversed: the 3.13 documentation for these functions
+      carries no deprecation note and they remain supported. The parent
+      bullet; the six functions it names are recorded below for the census.
+  - source_key: importlib-resources-is-resource
+    disposition: not-applicable
+    note: >-
+      Deprecation reversed in Python 3.13; the function remains supported.
+  - source_key: importlib-resources-open-binary
+    disposition: not-applicable
+    note: >-
+      Deprecation reversed in Python 3.13; the function remains supported.
+  - source_key: importlib-resources-open-text
+    disposition: not-applicable
+    note: >-
+      Deprecation reversed in Python 3.13; the function remains supported.
+  - source_key: importlib-resources-read-binary
+    disposition: not-applicable
+    note: >-
+      Deprecation reversed in Python 3.13; the function remains supported.
+  - source_key: importlib-resources-read-text
+    disposition: not-applicable
+    note: >-
+      Deprecation reversed in Python 3.13; the function remains supported.
+  - source_key: importlib-resources-path
+    disposition: not-applicable
+    note: >-
+      Deprecation reversed in Python 3.13; the function remains supported.
+  - source_key: locale-getdefaultlocale
+    disposition: not-applicable
+    note: >-
+      Explicitly un-deprecated by CPython after this page was written. The
+      registry's M5 rule for it is retired, and a test guards that it produces
+      no finding.
+  - source_key: locale-resetlocale
+    disposition: duplicate
+    rules: [CPY0029]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: re-numeric-group-reference-rules
+    disposition: not-statically-detectable
+    note: >-
+      A change to how regular-expression pattern text is parsed; pattern
+      strings are not analysed.
+  - source_key: re-template
+    disposition: duplicate
+    rules: [CPY0032]
+    note: >-
+      re.template and the re.TEMPLATE and re.T flags are matched by the one
+      rule.
+  - source_key: turtle-settiltangle
+    disposition: duplicate
+    rules: [CPY0036]
+    note: >-
+      The module-level function was added to the rule alongside the class-
+      qualified forms.
+  - source_key: typing-text
+    disposition: duplicate
+    rules: [CPY0126]
+    note: >-
+      Classified from the deprecations index; removal is unscheduled.
+  - source_key: typing-typeddict-keyword-syntax
+    disposition: duplicate
+    rules: [CPY0060]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: webbrowser-macosx
+    disposition: duplicate
+    rules: [CPY0034]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: testcase-return-value
+    disposition: not-statically-detectable
+    note: >-
+      Whether a test method returns a value is a property of its body's
+      control flow, not of any reference in it.
+  - source_key: unittest-undocumented-functions
+    disposition: duplicate
+    rules: [CPY0031, CPY0073]
+    note: >-
+      The parent bullet; the six names it lists are classified below.
+  - source_key: unittest-findtestcases
+    disposition: duplicate
+    rules: [CPY0031]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: unittest-makesuite
+    disposition: duplicate
+    rules: [CPY0031]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: unittest-gettestcasenames
+    disposition: duplicate
+    rules: [CPY0031]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: unittest-testloader-loadtestsfrommodule
+    disposition: duplicate
+    rules: [CPY0073]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: unittest-testloader-loadtestsfromtestcase
+    disposition: duplicate
+    rules: [CPY0073]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: unittest-testloader-gettestcasenames
+    disposition: duplicate
+    rules: [CPY0073]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: unittest-testprogram-usageexit
+    disposition: duplicate
+    rules: [CPY0035]
+    note: >-
+      Classified from the removal that followed.
+  - source_key: pending-3.12-asynchat
+    disposition: duplicate
+    rules: [CPY0003]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-asyncore
+    disposition: duplicate
+    rules: [CPY0004]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-distutils
+    disposition: duplicate
+    rules: [CPY0023]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-imp
+    disposition: duplicate
+    rules: [CPY0024]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-typing-io
+    disposition: duplicate
+    rules: [CPY0079]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-typing-re
+    disposition: duplicate
+    rules: [CPY0079]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-cgi-log
+    disposition: duplicate
+    rules: [CPY0001]
+    note: >-
+      The cgi module is removed in Python 3.13, which covers every name in it.
+  - source_key: pending-3.12-importlib-find-loader
+    disposition: duplicate
+    rules: [CPY0074]
+    note: >-
+      Classified from the 3.12 removal, where the entry is partial.
+  - source_key: pending-3.12-importlib-abc-loader-module-repr
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-abc-metapathfinder-find-module
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-abc-pathentryfinder-find-loader
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-abc-pathentryfinder-find-module
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-machinery-builtinimporter-find-module
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-machinery-builtinloader-module-repr
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-machinery-filefinder-find-loader
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-machinery-filefinder-find-module
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-machinery-frozenimporter-find-module
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-machinery-frozenloader-module-repr
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-machinery-pathfinder-find-module
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-machinery-windowsregistryfinder-find-module
+    disposition: duplicate
+    rules: [CPY0074, CPY0084]
+    note: >-
+      Classified from the 3.12 removal; exact class-qualified references are
+      detected there.
+  - source_key: pending-3.12-importlib-util-module-for-loader
+    disposition: duplicate
+    rules: [CPY0084]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-importlib-util-set-loader-wrapper
+    disposition: duplicate
+    rules: [CPY0084]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-importlib-util-set-package-wrapper
+    disposition: duplicate
+    rules: [CPY0084]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-pkgutil-impimporter
+    disposition: duplicate
+    rules: [CPY0025]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-pkgutil-imploader
+    disposition: duplicate
+    rules: [CPY0025]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-pathlib-path-link-to
+    disposition: duplicate
+    rules: [CPY0071]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-sqlite3-enable-shared-cache
+    disposition: duplicate
+    rules: [CPY0070]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-sqlite3-optimizedunicode
+    disposition: duplicate
+    rules: [CPY0070]
+    note: >-
+      The page re-lists it as pending removal in 3.12; classified from that
+      removal.
+  - source_key: pending-3.12-pythonthreaddebug
+    disposition: not-applicable
+    note: >-
+      An environment variable honoured only by debug builds; not a construct
+      in source code.
+  - source_key: pending-3.12-unittest-deprecated-aliases
+    disposition: duplicate
+    rules: [CPY0073]
+    note: >-
+      The table of failUnless, assertEquals and the other aliases is matched
+      by the one rule.

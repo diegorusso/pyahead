@@ -77,12 +77,12 @@ registry analysis window, which is Python 3.8 through 3.16 for the bundled
 registry.
 
 Coverage follows the CPython pages that have been censused: the "What's New"
-Deprecated and Removed sections for 3.9, 3.10, 3.12, 3.13 and 3.14, PEP 594,
-and the deprecations index. Every entry on a censused page has a recorded
-disposition, so a change from one of those pages is either a rule, covered by
-another rule, or recorded as outside static analysis with the reason. The
-3.11 "What's New" sections are not yet censused: the 3.11 removals that were
-announced on the 3.9 page have rules, others may not.
+Deprecated and Removed sections for every release from 3.9 through 3.14,
+PEP 594, and the deprecations index. Every entry on a censused page has a
+recorded disposition, so a change from one of those pages is either a rule,
+covered by another rule, or recorded as outside static analysis with the
+reason. The coverage manifests under `pyahead.data.registry.coverage` are the
+authoritative list.
 
 A strict project configuration can declare the complete policy:
 
@@ -613,8 +613,8 @@ prevent further silent degradation.
 The public alpha deliberately does not:
 
 - claim coverage of a CPython release whose "What's New" sections have not
-  been censused; as of registry `2026.09.17` that is 3.11, and the coverage
-  manifests under `pyahead.data.registry.coverage` are the authoritative list;
+  been censused; the coverage manifests under `pyahead.data.registry.coverage`
+  are the authoritative list;
 
 - prove runtime, test, dependency-resolution, packaging, or platform
   compatibility;

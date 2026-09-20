@@ -75,6 +75,14 @@ _PINNED_SOURCE_INVENTORIES = {
         36,
         "e53f44d601962a8f07634b837858e10abd16f38f0b4bd2e001496ab8e17c8f98",
     ),
+    "python-3.11-deprecated": (
+        66,
+        "4e682ba0c155d4f282e1abeede5db85caa112e91e95a329af829c15357af7c11",
+    ),
+    "python-3.11-removed": (
+        22,
+        "53b6f165178e6e1b1098698b5c251d37e41394baf2f9bf800fba9ca04f736933",
+    ),
     "python-3.10-removed": (
         9,
         "ec121c1ea8af4ab47f204aab078cec728ddebf01c43648cac197d58f811c6db3",
@@ -396,7 +404,10 @@ def test_reviewed_public_stdlib_alias_matcher_sets_are_pinned() -> None:
         "CPY0036": {
             f"turtle.{class_name}.settiltangle"
             for class_name in ("RawTurtle", "RawPen", "Turtle", "Pen")
-        },
+        }
+        # The module-level function the 3.11 What's New names, added with the
+        # 3.11 census; turtle mirrors every Turtle method as a module function.
+        | {"turtle.settiltangle"},
         "CPY0043": {
             f"asyncio.{class_name}"
             for class_name in (

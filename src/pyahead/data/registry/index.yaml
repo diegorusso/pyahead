@@ -190,6 +190,17 @@ rules:
   - cpython/CPY0191.yaml
   - cpython/CPY0192.yaml
   - cpython/CPY0193.yaml
+  - cpython/CPY0194.yaml
+  - cpython/CPY0195.yaml
+  - cpython/CPY0196.yaml
+  - cpython/CPY0197.yaml
+  - cpython/CPY0198.yaml
+  - cpython/CPY0199.yaml
+  - cpython/CPY0200.yaml
+  - cpython/CPY0201.yaml
+  - cpython/CPY0202.yaml
+  - cpython/CPY0203.yaml
+  - cpython/CPY0204.yaml
 coverage:
   - coverage/cpython-84131.yaml
   - coverage/cpython-94101.yaml
@@ -208,3 +219,5 @@ coverage:
   - coverage/python-3.9-removed.yaml
   - coverage/python-3.9-deprecated.yaml
   - coverage/python-3.10-deprecated.yaml
+  - coverage/python-3.11-deprecated.yaml
+  - coverage/python-3.11-removed.yaml

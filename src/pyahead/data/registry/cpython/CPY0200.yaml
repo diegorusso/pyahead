@@ -1,0 +1,52 @@
+schema_version: 1
+id: CPY0200
+title: "The codeset parameter is removed from gettext.translation and gettext.install"
+summary: >-
+  The codeset parameter of gettext.translation() and gettext.install() selected an output encoding for the bytes-returning API. It is deprecated in Python 3.8 and removed in Python 3.11. Only the keyword form is detected; the parameter was also positional, sixth on translation() and third on install(), and a positional argument there cannot be told apart statically.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: gettext
+
+timeline:
+  - event: deprecated
+    python: "3.8"
+    certainty: released
+    source: python-3.8-deprecated
+  - event: removed
+    python: "3.11"
+    certainty: released
+    source: python-3.11-removed
+
+impact:
+  on_deprecation: deprecated
+  on_removal: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: gettext.translation
+    required_keywords: [codeset]
+  - kind: call-shape
+    qualified_name: gettext.install
+    required_keywords: [codeset]
+
+remediation:
+  summary: >-
+    Drop the argument; translations are returned as str.
+  documentation_url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+  automation: null
+
+sources:
+  - id: python-3.8-deprecated
+    title: "What's New in Python 3.8 — Deprecated"
+    url: "https://docs.python.org/3/whatsnew/3.8.html#deprecated"
+  - id: python-3.11-removed
+    title: "What's New in Python 3.11 — Removed"
+    url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+
+tags: [stdlib, gettext, parameter-removal]

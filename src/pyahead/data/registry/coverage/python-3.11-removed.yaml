@@ -1,0 +1,129 @@
+schema_version: 1
+source:
+  id: python-3.11-removed
+  title: "What's New in Python 3.11 — Removed"
+  url: "https://docs.python.org/3.11/whatsnew/3.11.html#removed"
+  checked_on: "2026-09-20"
+
+# The ordered keys are independently pinned by tests. Parent bullets and every
+# API-bearing nested bullet in the selected section receive their own entry.
+# The binhex bullet nests four binascii functions, one of which the page
+# spells "rldecode_hqx"; the inspect bullet nests three. Census taken from
+# the page's HTML, in the page's order.
+source_keys:
+  - asyncio-coroutine-decorator
+  - asyncio-corowrapper
+  - asyncio-create-datagram-endpoint-reuse-address
+  - binhex-module
+  - binascii-a2b-hqx
+  - binascii-b2a-hqx
+  - binascii-rlecode-hqx
+  - binascii-rledecode-hqx
+  - distutils-bdist-msi
+  - getitem-on-stream-wrappers
+  - gettext-bytes-api
+  - inspect-removals
+  - inspect-getargspec
+  - inspect-formatargspec
+  - inspect-signature-from-builtin-from-function
+  - pathlib-purepath-class-getitem
+  - smtpd-mailmanproxy
+  - tkinter-tkapptype-split
+  - unittest-namespace-package-discovery
+  - float-set-format
+  - experimental-isolated-subinterpreters-flag
+  - pynche
+
+entries:
+  - source_key: asyncio-coroutine-decorator
+    disposition: implemented
+    rules: [CPY0194]
+  - source_key: asyncio-corowrapper
+    disposition: not-applicable
+    note: >-
+      An undocumented wrapper used only by asyncio's own debug mode; nothing
+      outside asyncio referred to it.
+  - source_key: asyncio-create-datagram-endpoint-reuse-address
+    disposition: not-statically-detectable
+    note: >-
+      A keyword argument to a method on an event-loop instance; arbitrary
+      receiver types are outside the static alpha.
+  - source_key: binhex-module
+    disposition: duplicate
+    rules: [CPY0186]
+    note: Classified from the 3.9 deprecation that announced it.
+  - source_key: binascii-a2b-hqx
+    disposition: duplicate
+    rules: [CPY0188]
+    note: Classified from the 3.9 deprecation that announced it.
+  - source_key: binascii-b2a-hqx
+    disposition: duplicate
+    rules: [CPY0187]
+    note: Classified from the 3.9 deprecation that announced it.
+  - source_key: binascii-rlecode-hqx
+    disposition: duplicate
+    rules: [CPY0189]
+    note: Classified from the 3.9 deprecation that announced it.
+  - source_key: binascii-rledecode-hqx
+    disposition: duplicate
+    rules: [CPY0190]
+    note: >-
+      Classified from the 3.9 deprecation that announced it. The page spells
+      this one "rldecode_hqx"; the function is rledecode_hqx.
+  - source_key: distutils-bdist-msi
+    disposition: duplicate
+    rules: [CPY0023]
+    note: The whole distutils namespace is classified from its 3.12 removal.
+  - source_key: getitem-on-stream-wrappers
+    disposition: not-statically-detectable
+    note: >-
+      Subscripting an instance of DOMEventStream, FileWrapper or FileInput;
+      arbitrary receiver types are outside the static alpha.
+  - source_key: gettext-bytes-api
+    disposition: partial
+    rules: [CPY0195, CPY0196, CPY0197, CPY0198, CPY0199, CPY0200]
+    note: >-
+      The four l*gettext functions, bind_textdomain_codeset, and the keyword
+      form of the codeset parameter are detected. NullTranslations.output_charset
+      and set_output_charset are methods on instances, and a positional codeset
+      argument cannot be told apart statically.
+  - source_key: inspect-removals
+    disposition: implemented
+    rules: [CPY0201, CPY0202, CPY0203, CPY0204]
+  - source_key: inspect-getargspec
+    disposition: implemented
+    rules: [CPY0201]
+  - source_key: inspect-formatargspec
+    disposition: implemented
+    rules: [CPY0202]
+  - source_key: inspect-signature-from-builtin-from-function
+    disposition: implemented
+    rules: [CPY0203, CPY0204]
+  - source_key: pathlib-purepath-class-getitem
+    disposition: not-applicable
+    note: >-
+      The page states it was added by mistake and never used; there is no
+      working code to affect.
+  - source_key: smtpd-mailmanproxy
+    disposition: duplicate
+    rules: [CPY0016]
+    note: The smtpd module is removed in Python 3.12, which covers every name in it.
+  - source_key: tkinter-tkapptype-split
+    disposition: not-statically-detectable
+    note: >-
+      A method on a Tk application instance; arbitrary receiver types are
+      outside the static alpha.
+  - source_key: unittest-namespace-package-discovery
+    disposition: not-applicable
+    note: >-
+      A discovery behaviour that the page states had been broken since
+      Python 3.7; there is no construct in source to match.
+  - source_key: float-set-format
+    disposition: not-applicable
+    note: An undocumented private method whose own docstring warned against use.
+  - source_key: experimental-isolated-subinterpreters-flag
+    disposition: not-applicable
+    note: A configure-time build flag, not a construct in source code.
+  - source_key: pynche
+    disposition: not-applicable
+    note: A tool moved out of the CPython tree; not a library API.

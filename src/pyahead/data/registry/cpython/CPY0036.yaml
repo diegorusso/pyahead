@@ -36,6 +36,8 @@ matchers:
   - kind: qualified-reference
     qualified_name: turtle.Turtle.settiltangle
   - kind: qualified-reference
+    qualified_name: turtle.settiltangle
+  - kind: qualified-reference
     qualified_name: turtle.Pen.settiltangle
 
 remediation:

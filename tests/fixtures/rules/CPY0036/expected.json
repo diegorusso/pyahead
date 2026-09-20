@@ -42,7 +42,34 @@
       ],
       "expected_findings": [],
       "expected_inference_codes": []
+    },
+    {
+      "expected_findings": [
+        {
+          "action_version": "3.13",
+          "confidence": "high",
+          "impact": "breaking",
+          "reachable_versions": [
+            "3.11",
+            "3.12",
+            "3.13",
+            "3.14",
+            "3.15",
+            "3.16"
+          ],
+          "resolution": "exact-import",
+          "rule_id": "CPY0036",
+          "usage_contexts": [
+            "runtime"
+          ]
+        }
+      ],
+      "expected_inference_codes": [],
+      "name": "module-level function is positive",
+      "paths": [
+        "positive/module_function.py"
+      ],
+      "root": "."
     }
   ]
 }
-
