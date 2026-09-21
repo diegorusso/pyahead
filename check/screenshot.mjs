@@ -3,7 +3,8 @@
 // Serves this checkout, scans one public repository in Chromium, and saves two
 // captures: the whole page, and the report clipped to a README-sized hero.
 // Run through the "Screenshot" workflow (workflow_dispatch) or locally with
-// `node check/screenshot.mjs`, with REPO, BASELINE, HORIZON and OUT to taste.
+// `node check/screenshot.mjs`, with REPO, BASELINE, HORIZON, CARDS and OUT to
+// taste.
 
 import { createServer } from "node:http";
 import { mkdir, readFile } from "node:fs/promises";
@@ -19,7 +20,8 @@ const BASELINE = process.env.BASELINE ?? "3.9";
 const HORIZON = process.env.HORIZON ?? "3.14";
 const OUT = process.env.OUT ?? join(SITE_ROOT, "screenshots");
 const WIDTH = Number(process.env.WIDTH ?? 1280);
-const HERO_HEIGHT = Number(process.env.HERO_HEIGHT ?? 900);
+// The hero ends at the bottom edge of the CARDS-th finding, so no card is cut.
+const CARDS = Number(process.env.CARDS ?? 1);
 
 function serveSite() {
   const server = createServer(async (req, res) => {
@@ -57,13 +59,18 @@ try {
   console.log(`scanned ${REPO}: ${await page.textContent(".report-head .meta")}`);
 
   await page.screenshot({ path: join(OUT, "page.png"), fullPage: true });
-  // A bounding box is viewport-relative and the page has scrolled to the
+  // Bounding boxes are viewport-relative and the page has scrolled to the
   // results; a full-page clip wants document coordinates.
-  const top = await page.evaluate(() => document.getElementById("report-region").getBoundingClientRect().top + window.scrollY);
+  const { top, bottom } = await page.evaluate((cards) => {
+    const region = document.getElementById("report-region").getBoundingClientRect();
+    const findings = document.querySelectorAll(".finding");
+    const last = findings[Math.min(cards, findings.length) - 1]?.getBoundingClientRect() ?? region;
+    return { top: region.top + window.scrollY, bottom: last.bottom + window.scrollY };
+  }, CARDS);
   await page.screenshot({
     path: join(OUT, "report.png"),
     fullPage: true,
-    clip: { x: 0, y: Math.floor(top), width: WIDTH, height: HERO_HEIGHT },
+    clip: { x: 0, y: Math.floor(top), width: WIDTH, height: Math.ceil(bottom - top) + 28 },
   });
   console.log(`saved ${join(OUT, "page.png")} and ${join(OUT, "report.png")}`);
 } finally {
