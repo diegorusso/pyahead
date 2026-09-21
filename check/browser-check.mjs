@@ -132,6 +132,13 @@ check("no report was rendered", (await page.locator(".report").count()) === 0);
 console.log("\nscanning the bundled example");
 check("the bundled example is the first sample", (await page.locator("#samples button").first().getAttribute("data-example")) === "true");
 check("three repository samples are offered alongside it", (await page.locator("#samples button[data-repo]").count()) === 3);
+// The example scans in well under a second, so the bar cannot be caught in
+// the act; record what it showed instead.
+await page.evaluate(() => {
+  window.__progressSeen = [];
+  const detail = document.getElementById("progress-detail");
+  new MutationObserver(() => window.__progressSeen.push(detail.textContent)).observe(detail, { childList: true, characterData: true, subtree: true });
+});
 const started = Date.now();
 await page.click("[data-example]");
 check("scan inputs are locked while scanning", await page.locator("#repository").isDisabled() && await page.locator("#baseline").isDisabled() && await page.locator("#horizon").isDisabled());
@@ -165,6 +172,13 @@ if (await page.locator("#error").isVisible()) {
 }
 const elapsed = (Date.now() - started) / 1000;
 console.log(`  first usable scan in ${elapsed.toFixed(1)}s, ~${(transferred / 1024 / 1024).toFixed(1)}MB transferred`);
+
+const progressSeen = (await page.evaluate(() => window.__progressSeen)).filter((text) => text !== "");
+const fileLines = progressSeen.map((text) => /^(\d+) of (\d+) · (.+)$/.exec(text)).filter(Boolean);
+check("showed each file as it was scanned", fileLines.length > 0 && fileLines.every(([, , total]) => total === fileLines[0][2]),
+  JSON.stringify(progressSeen.slice(0, 6)));
+check("counted up to the last file", fileLines.length > 0 && fileLines.at(-1)[1] === fileLines.at(-1)[2], JSON.stringify(fileLines.at(-1)));
+check("the bar is gone once the report is up", !(await page.locator("#progress").isVisible()));
 
 const counts = Object.fromEntries(await page.locator(".count").evaluateAll((nodes) =>
   nodes.map((node) => [node.querySelector(".count-label").textContent, Number(node.querySelector(".count-number").textContent)]),
