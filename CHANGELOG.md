@@ -4,6 +4,26 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
+## Unreleased
+
+### Added
+
+- Import-fallback reachability. When a `try` body is absolute imports,
+  optionally followed by assignments that only read what they bound
+  (`ATOMIC_GROUP = sre.ATOMIC_GROUP`), and every import is in the new
+  known-import table
+  (`pyahead.analysis.known_imports`: standard-library modules and attributes
+  present on every platform and in every CPython build, with the minor each
+  arrived in), an `except ImportError` / `except ModuleNotFoundError` handler
+  is unreachable on the targets that have them all. `try: import threading` /
+  `except ImportError: import dummy_threading` reports nothing; `try: import
+  zoneinfo` keeps its handler on 3.8 alone. Every refuted row of the September
+  and 17 September PyPI sweeps that was an `except ImportError` fallback —
+  `_imp`/`imp`, `sysconfig`/`distutils`, `re._constants`/`sre_constants`,
+  `threading`/`dummy_threading` — now reports nothing, and each is a regression
+  test. Narrowed findings carry `reachability_guard=import-fallback`; anything
+  outside the exact shape changes nothing (design §11).
+
 ## 0.4.0 - 2026-09-21
 
 A caller running a long scan can now follow it file by file. A minor release

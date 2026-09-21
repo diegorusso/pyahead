@@ -152,7 +152,20 @@ common `sys.version_info` comparisons (including the `sys.version_info[0]`
 major-only Python 2/3 split), three-valued Boolean guards, nested
 `if`/`elif` branches, `typing.TYPE_CHECKING`, `.pyi` typing contexts, and the
 exact removal-safe `hasattr(imported_module, "attribute") and ...` short-circuit
-shape. Unknown conditions conservatively enter both branches. The annotation
+shape, and the import fallback: when a `try` body is absolute imports —
+optionally followed by assignments that only read attributes of what they
+bound, or literals — and every import is known to succeed on a target (a curated
+table of standard-library modules and attributes with the version each
+arrived in, `pyahead.analysis.known_imports`), an `except ImportError` or
+`except ModuleNotFoundError` handler cannot run on that target and is
+unreachable there. `try: import threading` / `except ImportError: import
+dummy_threading` reports nothing; `try: import zoneinfo` / `except
+ImportError: ...` keeps the handler reachable on 3.8 only. A finding the
+fallback narrowed carries `reachability_guard=import-fallback`. A third-party
+or unlisted import, a handler that also catches another exception, a bare
+`except`, or a call, subscript, operator or compound statement in the `try`
+body leaves the handler as reachable as before. Unknown conditions conservatively enter both branches.
+The annotation
 of a local variable inside a function body, which Python never evaluates, is
 a typing-only reference, so a runtime-only rule does not report it;
 parameter, return, class-body and module-level annotations remain runtime

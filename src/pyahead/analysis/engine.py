@@ -67,6 +67,7 @@ from pyahead.analysis.reachability import (
     BranchReachability,
     LexicalReachability,
     branch_reachability,
+    import_fallback_versions,
 )
 from pyahead.analysis.suppressions import (
     InlineSuppressionIndex,
@@ -268,6 +269,10 @@ class _MatcherVisitor(cst.CSTVisitor):
         self._elif_reachability: dict[int, LexicalReachability] = {}
         self._pushed_suites: set[int] = set()
         self._pushed_ifs: set[int] = set()
+        # Handler suites narrowed by a recognised import fallback, and how many
+        # of them enclose the current node, so a match can say what narrowed it.
+        self._fallback_suites: set[int] = set()
+        self._fallback_depth = 0
         self.matches: list[StaticMatch] = []
         self.inferences: list[AnalysisInference] = []
         self.path_mutations: list[_ImportPathMutation] = []
@@ -376,11 +381,62 @@ class _MatcherVisitor(cst.CSTVisitor):
         if branch is not None:
             self._reachability_stack.append(branch)
             self._pushed_suites.add(id(node))
+            if id(node) in self._fallback_suites:
+                self._fallback_depth += 1
 
     def _leave_suite(self, node: cst.BaseSuite) -> None:
         if id(node) in self._pushed_suites:
             self._pushed_suites.remove(id(node))
             self._reachability_stack.pop()
+            if id(node) in self._fallback_suites:
+                self._fallback_depth -= 1
+
+    def _catches_only_import_errors(
+        self,
+        exception_type: cst.BaseExpression | None,
+    ) -> bool:
+        """Whether a handler catches only ``ImportError`` or its subclass."""
+        if exception_type is None:
+            return False
+        if isinstance(exception_type, cst.Tuple):
+            members = [element.value for element in exception_type.elements]
+        else:
+            members = [exception_type]
+        if not members:
+            return False
+        return all(
+            any(
+                self._resolution(
+                    member,
+                    name,
+                    source=QualifiedNameSource.BUILTIN,
+                ).confidence
+                is MatchConfidence.HIGH
+                for name in ("builtins.ImportError", "builtins.ModuleNotFoundError")
+            )
+            for member in members
+        )
+
+    def visit_Try(self, node: cst.Try) -> None:  # noqa: N802
+        """Narrow ``except ImportError`` handlers behind imports known to succeed.
+
+        Design §11.1: when the ``try`` body is nothing but imports and every
+        one of them is known to succeed on a target, a handler that catches
+        only ``ImportError`` cannot run on that target. Any other body, handler
+        type, or unknown import leaves the handler as reachable as before.
+        """
+        active = self._reachability
+        known = import_fallback_versions(node, active.versions)
+        if not known:
+            return
+        unreachable_free = LexicalReachability(
+            versions=active.versions - known,
+            usage_contexts=active.usage_contexts,
+        )
+        for handler in node.handlers:
+            if self._catches_only_import_errors(handler.type):
+                self._suite_reachability[id(handler.body)] = unreachable_free
+                self._fallback_suites.add(id(handler.body))
 
     def visit_IndentedBlock(self, node: cst.IndentedBlock) -> None:  # noqa: N802
         """Enter a multi-line branch suite."""
@@ -418,6 +474,10 @@ class _MatcherVisitor(cst.CSTVisitor):
         usage_contexts: frozenset[UsageContext] | None = None,
     ) -> None:
         reachability = self._reachability
+        if self._fallback_depth and not any(
+            key == "reachability_guard" for key, _ in evidence
+        ):
+            evidence = (*evidence, ("reachability_guard", "import-fallback"))
         # Empty lexical states still count toward syntactic fingerprint ordinals.
         location = _location(
             self._path,

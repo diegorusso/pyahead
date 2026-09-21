@@ -6,6 +6,7 @@ from enum import StrEnum
 
 import libcst as cst
 
+from pyahead.analysis.known_imports import KNOWN_IMPORTS
 from pyahead.model import UsageContext
 from pyahead.versions import PythonMinor
 
@@ -368,3 +369,142 @@ def branch_reachability(
         ),
         unsupported_patch=unsupported_patch,
     )
+
+
+def _dotted_name(node: cst.BaseExpression) -> str | None:
+    if isinstance(node, cst.Name):
+        return node.value
+    if isinstance(node, cst.Attribute):
+        owner = _dotted_name(node.value)
+        return None if owner is None else f"{owner}.{node.attr.value}"
+    return None  # pragma: no cover - import names are Name or Attribute nodes.
+
+
+def _bound_alias(alias: cst.ImportAlias, *, from_import: bool) -> str | None:
+    """Name the local binding an import alias creates; ``None`` if dotted."""
+    if alias.asname is not None:
+        target = alias.asname.name
+        return target.value if isinstance(target, cst.Name) else None
+    if isinstance(alias.name, cst.Name):
+        return alias.name.value
+    # ``import a.b`` binds ``a``; ``from x import a.b`` is not valid Python.
+    root: cst.BaseExpression = alias.name
+    while isinstance(root, cst.Attribute):
+        root = root.value
+    return root.value if isinstance(root, cst.Name) and not from_import else None
+
+
+def _imported_names(
+    statement: cst.BaseSmallStatement,
+) -> tuple[list[str], list[str]] | None:
+    """Dotted names an import binds and the local aliases it creates.
+
+    ``import a.b`` names ``a.b`` and binds ``a``; ``from a import b as c``
+    names ``a.b`` and binds ``c``. Relative and star imports have no dotted
+    name to look up and are not recognised.
+    """
+    if isinstance(statement, cst.Import):
+        names = [_dotted_name(alias.name) for alias in statement.names]
+        aliases = [_bound_alias(alias, from_import=False) for alias in statement.names]
+    elif isinstance(statement, cst.ImportFrom):
+        if statement.relative or statement.module is None:
+            return None
+        if isinstance(statement.names, cst.ImportStar):
+            return None
+        module = _dotted_name(statement.module)
+        if module is None:  # pragma: no cover - a present module is Name or Attribute.
+            return None
+        names = [f"{module}.{alias.name.value}" for alias in statement.names]
+        aliases = [_bound_alias(alias, from_import=True) for alias in statement.names]
+    else:
+        return None
+    if any(name is None for name in names) or any(alias is None for alias in aliases):
+        return None  # pragma: no cover - import names and targets are Name nodes.
+    return (
+        [name for name in names if name is not None],
+        [alias for alias in aliases if alias is not None],
+    )
+
+
+def _reads_only(expression: cst.BaseExpression, bound: frozenset[str]) -> bool:
+    """Whether an expression is a literal or an attribute chain on a bound alias.
+
+    Such a value cannot raise ``ImportError``: an attribute read on a
+    standard-library module raises ``AttributeError`` at worst, and no module
+    in the known-import table defines a module ``__getattr__`` that imports.
+    """
+    if isinstance(expression, cst.Name):
+        return expression.value in bound or expression.value in {
+            "None",
+            "True",
+            "False",
+        }
+    if isinstance(expression, cst.Attribute):
+        root: cst.BaseExpression = expression
+        while isinstance(root, cst.Attribute):
+            root = root.value
+        return isinstance(root, cst.Name) and root.value in bound
+    return isinstance(expression, cst.SimpleString | cst.Integer | cst.Float)
+
+
+def _assigns_a_read(statement: cst.BaseSmallStatement, bound: frozenset[str]) -> bool:
+    """``NAME = alias.attr`` or ``NAME = literal`` after the imports."""
+    if not isinstance(statement, cst.Assign):
+        return False
+    if not all(isinstance(target.target, cst.Name) for target in statement.targets):
+        return False
+    return _reads_only(statement.value, bound)
+
+
+def try_body_imports(body: cst.BaseSuite) -> tuple[str, ...] | None:
+    """Every name a ``try`` body imports, when the body cannot raise otherwise.
+
+    The body is absolute imports, optionally followed by assignments that only
+    read attributes of what those imports bound (``ATOMIC_GROUP =
+    sre.ATOMIC_GROUP``) or literals. Anything else — a call, a subscript, an
+    operator, a compound statement — is not recognised.
+    """
+    if isinstance(body, cst.SimpleStatementSuite):
+        statements: list[cst.BaseSmallStatement] = list(body.body)
+    else:
+        statements = []
+        for line in body.body:
+            if not isinstance(line, cst.SimpleStatementLine):
+                return None
+            statements.extend(line.body)
+    names: list[str] = []
+    bound: set[str] = set()
+    others: list[cst.BaseSmallStatement] = []
+    for statement in statements:
+        imported = _imported_names(statement)
+        if imported is None:
+            others.append(statement)
+            continue
+        names.extend(imported[0])
+        bound.update(imported[1])
+    if not names:
+        return None
+    if not all(_assigns_a_read(statement, frozenset(bound)) for statement in others):
+        return None
+    return tuple(names)
+
+
+def import_fallback_versions(
+    node: cst.Try,
+    active: frozenset[PythonMinor],
+) -> frozenset[PythonMinor]:
+    """Targets in ``active`` on which every import in the ``try`` body succeeds.
+
+    A name the table does not know makes the result empty: nothing is inferred
+    about a handler from an import the engine does not understand.
+    """
+    names = try_body_imports(node.body)
+    if names is None:
+        return frozenset()
+    known = set(active)
+    for name in names:
+        since = KNOWN_IMPORTS.get(name)
+        if since is None:
+            return frozenset()
+        known = {version for version in known if version >= since}
+    return frozenset(known)

@@ -1017,6 +1017,32 @@ unreachable from the rule's removal version onward. Deprecation debt before
 removal remains visible. Shadowed `hasattr`, a different literal, `or`, and
 non-literal reflection remain unknown.
 
+Recognize the import fallback:
+
+```python
+try:
+    import threading
+except ImportError:
+    import dummy_threading as threading
+```
+
+When the `try` body consists of absolute `import` and `from ... import`
+statements — optionally followed by assignments whose value is a literal or an
+attribute chain rooted at a name those imports bound, as in `ATOMIC_GROUP =
+sre.ATOMIC_GROUP`, which cannot raise `ImportError` — and every name they
+import is listed in the known-import table
+(`pyahead.analysis.known_imports`: standard-library modules and attributes
+present on every platform and in every CPython build, each with the minor it
+arrived in), a handler whose type resolves to built-in `ImportError` or
+`ModuleNotFoundError` — alone or in a tuple of only those — is unreachable on
+every target at or above the latest of those minors. `try: import zoneinfo`
+therefore keeps its handler reachable on 3.8 and no later. The `try` body,
+`else` and `finally` keep the enclosing state. The table is curated, not
+derived from the host interpreter, so the result is the same on every host;
+a test checks each entry against a real interpreter and that no entry is a
+module or attribute the registry says is removed. A finding the fallback
+narrowed carries `reachability_guard=import-fallback` evidence.
+
 ### 11.2 Evaluation algorithm
 
 Evaluate a recognized condition independently for every target minor version. The result for each target is `true`, `false`, or `unknown`.
@@ -1061,7 +1087,15 @@ The alpha treats these as unknown:
 
 The exact `hasattr(module, "attribute") and ...` shape above is part of the
 lexical grammar; it is not a claim to infer general attribute or control-flow
-reachability.
+reachability. The import fallback is likewise one shape: an unlisted or
+third-party import, a `from` import of an unlisted attribute, a relative or
+star import, a call, subscript, operator, annotated assignment or compound
+statement in the `try` body, a bare `except`, a
+handler that also catches another exception, or a shadowed `ImportError`
+leaves the handler reachable. A name bound in the fallback and used outside
+it still resolves to both imports and is reported at medium confidence, as
+any ambiguous imported name is; the fallback narrows the handler, not the
+resolution of names it binds.
 
 Add support only with positive and negative fixtures. Never infer target unreachability from a condition the engine does not understand.
 

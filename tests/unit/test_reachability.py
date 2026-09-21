@@ -12,9 +12,11 @@ from pyahead.analysis.reachability import (
     TruthValue,
     branch_reachability,
     evaluate_guard,
+    import_fallback_versions,
     truth_and,
     truth_not,
     truth_or,
+    try_body_imports,
 )
 from pyahead.model import UsageContext
 from pyahead.versions import PythonMinor
@@ -315,3 +317,143 @@ def test_major_index_guard_compares_the_major_component_only(
     expression = cst.parse_expression(source)
 
     assert evaluate_guard(expression, _TARGET, _matches_name).truth is expected
+
+
+def _try(source: str) -> cst.Try:
+    statement = cst.parse_module(source).body[0]
+    assert isinstance(statement, cst.Try)
+    return statement
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("import threading", ("threading",)),
+        ("import xml.etree.ElementTree as ET", ("xml.etree.ElementTree",)),
+        ("import os, sys", ("os", "sys")),
+        (
+            "from collections.abc import Mapping, Sequence",
+            ("collections.abc.Mapping", "collections.abc.Sequence"),
+        ),
+        ("import re._constants as sre_constants", ("re._constants",)),
+        ("from . import helpers", None),
+        ("from .. import helpers", None),
+        ("from collections.abc import *", None),
+        ("import threading; value = 1", ("threading",)),
+        (
+            (
+                "import re._constants as sre\n    ATOMIC = sre.ATOMIC_GROUP\n"
+                "    NOTHING = None"
+            ),
+            ("re._constants",),
+        ),
+        (
+            "import xml.etree.ElementTree\n    E = xml.etree.ElementTree.Element",
+            ("xml.etree.ElementTree",),
+        ),
+        (
+            "from re import _constants\n    A = _constants.ATOMIC_GROUP",
+            ("re._constants",),
+        ),
+        ("import threading\n    threading.current_thread()", None),
+        ("import threading\n    value = compute()", None),
+        ("import threading\n    value = os.sep", None),
+        ("import threading\n    value = threading.stack_size()", None),
+        ("import threading\n    value = threading.__dict__['x']", None),
+        ("import threading\n    value = threading.TIMEOUT_MAX + 1", None),
+        ("import threading\n    threading.x = 1", None),
+        ("import threading\n    value: int = 1", None),
+        ("value = 1", None),
+        ("if True:\n        import threading", None),
+    ],
+    ids=(
+        "module",
+        "dotted-module",
+        "two-modules",
+        "from-attributes",
+        "private-submodule",
+        "relative",
+        "relative-parent",
+        "star",
+        "literal-assignment",
+        "attribute-read-assignments",
+        "dotted-import-attribute-read",
+        "from-import-attribute-read",
+        "call-after-import",
+        "call-assignment",
+        "read-of-an-outside-name",
+        "method-call-assignment",
+        "subscript-assignment",
+        "operator-assignment",
+        "attribute-target",
+        "annotated-assignment",
+        "no-import",
+        "compound-statement",
+    ),
+)
+def test_try_body_imports_names_only_pure_import_bodies(
+    body: str,
+    expected: tuple[str, ...] | None,
+) -> None:
+    """The fallback grammar covers a body made only of absolute imports."""
+    node = _try(f"try:\n    {body}\nexcept ImportError:\n    pass\n")
+
+    assert try_body_imports(node.body) == expected
+
+
+def test_try_body_imports_reads_a_one_line_suite() -> None:
+    """``try: import x`` on one line is the same body."""
+    node = _try("try: import threading\nexcept ImportError: pass\n")
+
+    assert try_body_imports(node.body) == ("threading",)
+
+
+def _versions(*minors: str) -> frozenset[PythonMinor]:
+    return frozenset(PythonMinor.parse(minor) for minor in minors)
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("import threading", _versions("3.8", "3.9", "3.10", "3.11", "3.12")),
+        ("import _imp as imp", _versions("3.8", "3.9", "3.10", "3.11", "3.12")),
+        (
+            "from collections.abc import Mapping",
+            _versions("3.8", "3.9", "3.10", "3.11", "3.12"),
+        ),
+        ("import zoneinfo", _versions("3.9", "3.10", "3.11", "3.12")),
+        ("import re._constants as sre_constants", _versions("3.11", "3.12")),
+        ("import threading, zoneinfo", _versions("3.9", "3.10", "3.11", "3.12")),
+        ("import numpy", frozenset()),
+        ("import threading, numpy", frozenset()),
+        ("from collections.abc import Frobnicate", frozenset()),
+        ("import ssl", frozenset()),
+        ("import imp", frozenset()),
+        ("from . import helpers", frozenset()),
+        ("import threading; value = compute()", frozenset()),
+    ],
+    ids=(
+        "always-present",
+        "builtin-private",
+        "known-attribute",
+        "added-in-3.9",
+        "added-in-3.11",
+        "latest-of-two",
+        "third-party",
+        "one-unknown-spoils-all",
+        "unknown-attribute",
+        "optional-build",
+        "removed-module",
+        "relative",
+        "call-in-body",
+    ),
+)
+def test_import_fallback_versions_follow_the_known_import_table(
+    body: str,
+    expected: frozenset[PythonMinor],
+) -> None:
+    """Only imports the table knows narrow a handler, and only from their version."""
+    node = _try(f"try:\n    {body}\nexcept ImportError:\n    pass\n")
+    active = _versions("3.8", "3.9", "3.10", "3.11", "3.12")
+
+    assert import_fallback_versions(node, active) == expected

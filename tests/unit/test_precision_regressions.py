@@ -377,3 +377,186 @@ def test_evaluated_annotations_still_report(tmp_path: Path, source: str) -> None
     assert finding.impact.value == "breaking"
     assert dict(finding.match_evidence)["reference_context"] == "annotation"
     assert "annotation_evaluation" not in dict(finding.match_evidence)
+
+
+# --- Import fallbacks (docs/evidence/pypi-top-1000.md open rows) ------------------
+
+
+def _scan_from_3_8(root: Path, *, minimum_confidence: str = "high") -> ScanReport:
+    return scan(
+        ScanRequest(
+            root=root,
+            baseline_python="3.8",
+            horizon_python="3.16",
+            minimum_confidence=minimum_confidence,
+        )
+    )
+
+
+def _fallback(body: str, handler: str, *, catch: str = "ImportError") -> str:
+    """Build a ``try``/``except`` around imports, one statement per line."""
+
+    def indent(block: str) -> str:
+        return "".join(f"    {line}\n" for line in block.split("\n"))
+
+    return f"try:\n{indent(body)}except {catch}:\n{indent(handler)}"
+
+
+@pytest.mark.parametrize(
+    ("source", "rule_id"),
+    [
+        (_fallback("import _imp as imp", "import imp"), "CPY0024"),
+        (_fallback("import sysconfig", "from distutils import sysconfig"), "CPY0023"),
+        (
+            _fallback("import re._constants as sre_constants", "import sre_constants"),
+            "CPY0117",
+        ),
+        (
+            _fallback(
+                "import re._constants as sre\nimport re._parser as sre_parse\n"
+                "ATOMIC_GROUP = sre.ATOMIC_GROUP",
+                "import sre_constants as sre\nimport sre_parse\n"
+                "ATOMIC_GROUP = object()",
+            ),
+            "CPY0117",
+        ),
+        (
+            _fallback(
+                "from collections.abc import Mapping",
+                "from collections import Mapping\nclass Registry(Mapping):\n    pass",
+            ),
+            "CPY0157",
+        ),
+        (
+            _fallback(
+                "import threading",
+                "import imp",
+                catch="(ImportError, ModuleNotFoundError) as error",
+            ),
+            "CPY0024",
+        ),
+    ],
+    ids=(
+        "gevent-imp",
+        "future-sysconfig",
+        "hypothesis-sre",
+        "hypothesis-sre-with-reads",
+        "collections-abc",
+        "tuple-alias",
+    ),
+)
+def test_fallback_behind_a_known_import_is_unreachable(
+    tmp_path: Path,
+    source: str,
+    rule_id: str,
+) -> None:
+    """The reviewed open rows: a handler that cannot run reports nothing."""
+    _write_project(tmp_path, {"source.py": source})
+
+    for confidence in ("high", "medium"):
+        report = _scan_from_3_8(tmp_path, minimum_confidence=confidence)
+        assert _rule_findings(report, rule_id) == []
+
+
+def test_fallback_behind_a_later_addition_is_reachable_only_before_it(
+    tmp_path: Path,
+) -> None:
+    """``zoneinfo`` arrived in 3.9, so the handler runs on 3.8 alone."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": "import base64\n"
+            + _fallback("import zoneinfo", 'base64.encodestring(b"x")')
+        },
+    )
+
+    finding = _rule_findings(_scan_from_3_8(tmp_path), "CPY0178")[0]
+
+    assert finding.impact.value == "deprecated"
+    assert tuple(str(version) for version in finding.reachable_versions) == ("3.8",)
+    assert dict(finding.match_evidence)["reachability_guard"] == "import-fallback"
+
+
+def test_fallback_narrowing_stops_at_the_handler(tmp_path: Path) -> None:
+    """The ``try`` body, ``else`` and ``finally`` keep the enclosing reachability."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": _fallback("import threading", "import imp")
+            + "else:\n    import imp as spare\nfinally:\n    import imp as also\n"
+        },
+    )
+
+    findings = _rule_findings(_scan_from_3_8(tmp_path), "CPY0024")
+
+    assert [finding.location.region.start.line for finding in findings] == [6, 8]
+    assert all(finding.impact.value == "breaking" for finding in findings)
+    assert all("reachability_guard" not in dict(f.match_evidence) for f in findings)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        _fallback("import numpy", "import imp"),
+        _fallback("import threading, numpy", "import imp"),
+        _fallback("import ssl", "import imp"),
+        _fallback("from collections.abc import Frobnicate", "import imp"),
+        _fallback("from . import threading", "import imp"),
+        _fallback("from threading import *", "import imp"),
+        _fallback("import threading\nthreading.current_thread()", "import imp"),
+        _fallback("import threading\nSIZE = threading.stack_size()", "import imp"),
+        _fallback("import threading", "import imp", catch=""),
+        _fallback("import threading", "import imp", catch="Exception"),
+        _fallback(
+            "import threading", "import imp", catch="(ImportError, RuntimeError)"
+        ),
+        _fallback("import threading", "import imp", catch="()"),
+        "ImportError = RuntimeError\n" + _fallback("import threading", "import imp"),
+    ],
+    ids=(
+        "third-party",
+        "one-unknown-import",
+        "optional-build-module",
+        "unknown-attribute",
+        "relative-import",
+        "star-import",
+        "statement-after-import",
+        "call-assignment-after-import",
+        "bare-except",
+        "broader-exception",
+        "tuple-with-another-exception",
+        "empty-tuple",
+        "shadowed-import-error",
+    ),
+)
+def test_unrecognised_fallbacks_keep_the_handler_reachable(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    """Anything outside the exact grammar changes nothing."""
+    _write_project(tmp_path, {"source.py": source.replace("except :", "except:")})
+
+    finding = _rule_findings(_scan_from_3_8(tmp_path), "CPY0024")[0]
+
+    assert finding.impact.value == "breaking"
+    assert str(finding.action_version) == "3.12"
+    assert len(finding.reachable_versions) == len(range(8, 17))
+    assert "reachability_guard" not in dict(finding.match_evidence)
+
+
+def test_fallback_composes_with_a_version_guard(tmp_path: Path) -> None:
+    """A fallback inside a guarded branch narrows what the guard left."""
+    inner = _fallback("import zoneinfo", 'base64.encodestring(b"x")')
+    _write_project(
+        tmp_path,
+        {
+            "source.py": "import base64\nimport sys\n"
+            "if sys.version_info < (3, 10):\n"
+            + "".join(f"    {line}\n" for line in inner.rstrip("\n").split("\n"))
+        },
+    )
+
+    finding = _rule_findings(_scan_from_3_8(tmp_path), "CPY0178")[0]
+
+    assert tuple(str(version) for version in finding.reachable_versions) == ("3.8",)
+    assert dict(finding.match_evidence)["reachability_guard"] == "import-fallback"
