@@ -1,9 +1,31 @@
-# PyAhead
+<p align="center">
+  <a href="https://www.diegor.it/pyahead/"><img src="https://raw.githubusercontent.com/diegorusso/pyahead/main/.github/readme/mark.svg" width="72" alt=""></a>
+</p>
 
-PyAhead is an evidence-backed Python compatibility forecaster. It scans a
-repository without importing or executing its code, then presents one timeline
-for each known CPython deprecation, removal, call change, or behavior change that
-matches the source.
+<h1 align="center">PyAhead</h1>
+
+<p align="center">
+  <b>A little foresight for your Python code.</b><br>
+  Find the CPython deprecations and removals a codebase will hit — and when — before the upgrade does.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/pyahead/"><img src="https://img.shields.io/pypi/v/pyahead?label=PyPI&color=246449" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/pyahead/"><img src="https://img.shields.io/pypi/pyversions/pyahead?color=246449" alt="Supported host Python versions"></a>
+  <a href="https://github.com/diegorusso/pyahead/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/diegorusso/pyahead/ci.yml?branch=main&label=CI" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/diegorusso/pyahead?color=246449" alt="Apache-2.0 license"></a>
+</p>
+
+<p align="center">
+  <a href="https://www.diegor.it/pyahead/"><img src="https://raw.githubusercontent.com/diegorusso/pyahead/main/.github/readme/site.png" width="920" alt="The PyAhead website after scanning paramiko 2.7.2 for Python 3.9 through 3.14: 7 breaking and 1 deprecated finding, the first a base64.decodestring call marked deprecated in 3.1 and removed in 3.9, with the replacement and a link to the Python 3.9 release notes."></a>
+  <br>
+  <sub><a href="https://www.diegor.it/pyahead/">www.diegor.it/pyahead</a> — paramiko 2.7.2 scanned in the browser for Python 3.9 through 3.14. Nothing leaves your machine.</sub>
+</p>
+
+PyAhead scans a repository without importing or executing its code and presents
+one timeline per finding: when CPython deprecated the API, when it is or will be
+removed, what to use instead, and the "What's New" entry that says so. Every
+rule in its registry cites the change at the version it happened.
 
 ## Try it without installing anything
 
@@ -35,6 +57,123 @@ the documented lexical grammar remain unknown.
 Skipped, unreadable, oversized, unparseable, or over-limit source entries make
 analysis incomplete rather than silently clean. See
 [all documented limitations](docs/usage.md#limitations).
+
+## What you get
+
+- **A timeline, not a lint.** Each finding says which Python versions it
+  reaches, when the API was deprecated, when it goes away, and what replaces
+  it — grouped by the version the change lands in, so the 3.13 work is
+  separate from the 3.10 work.
+- **Sources you can check.** The registry's 198 rules are curated from
+  CPython's own release notes — every "What's New" page from 3.9 to 3.14
+  censused entry by entry — and each rule links the section that announced
+  the change at the version it happened.
+- **Static, offline, deterministic.** LibCST parsing only: no imports, no
+  execution, no network, byte-identical reports for identical input.
+  Version guards (`sys.version_info`, `TYPE_CHECKING`) narrow what a finding
+  reaches.
+- **Made for CI.** SARIF and JSON output, a `--fail-on` gate, baselines that
+  adopt existing findings without hiding them, and rule-specific inline
+  suppressions that stay auditable.
+- **Measured precision.** Findings are validated against the PyPI top 1000
+  with a real interpreter adjudicating them; the approved record is in
+  [`docs/evidence`](docs/evidence).
+
+## Install
+
+```console
+pipx install pyahead==0.4.0
+# or run without a persistent tool environment
+uvx pyahead==0.4.0 --version
+```
+
+To build and install a candidate from this repository instead:
+
+```console
+uv build
+pipx install dist/pyahead-0.4.0-py3-none-any.whl
+```
+
+Installing PyAhead may contact the configured package index to obtain PyAhead
+and its dependencies. Running `pyahead check` itself is offline.
+
+## Quick start
+
+Scan a repository with an explicit inclusive policy:
+
+```console
+pyahead check . --baseline-python 3.9 --horizon-python 3.14
+```
+
+For paramiko 2.7.2 that reports eight findings, grouped by the Python version
+each change lands in:
+
+```text
+PyAhead 0.4.0
+Policy: Python 3.9 through 3.14
+Registry: 2026.09.20 (15fc94fd4d2b)
+
+Python 3.9 — 2 upgrade blockers
+  CPY0178  paramiko/py3compat.py:40:19  base64.encodestring (breaking; high confidence)
+    base64.encodestring is removed
+    Match evidence: qualified_names=[base64.encodestring]; reference_context=read; resolution=exact-import
+    Reachable targets: 3.9, 3.10, 3.11, 3.12, 3.13, 3.14
+    Usage contexts: runtime
+    States: breaking on 3.9 through 3.14
+    Timeline: deprecated in 3.1 (released); removed in 3.9 (released)
+    Guidance: Call base64.encodebytes().
+    Remediation documentation: https://docs.python.org/3.9/whatsnew/3.9.html#removed
+    Source: What's New in Python 3.9 — Removed — https://docs.python.org/3.9/whatsnew/3.9.html#removed
+
+  ...
+
+Python 3.10 — 2 compatibility findings
+  CPY0153  paramiko/py3compat.py:162:30  collections.Callable (breaking; high confidence)
+    collections.Callable is removed
+    Match evidence: qualified_names=[collections.Callable]; reference_context=read; resolution=exact-import
+    Reachable targets: 3.9, 3.10, 3.11, 3.12, 3.13, 3.14
+    Usage contexts: runtime, typing
+    States: deprecated on 3.9; breaking on 3.10 through 3.14
+    Timeline: deprecated in 3.3 (released); removed in 3.10 (released)
+    Guidance: Import Callable from collections.abc.
+    Remediation documentation: https://docs.python.org/3.9/library/collections.html
+    Source: Python 3.9 collections documentation — https://docs.python.org/3.9/library/collections.html
+    Source: What's New in Python 3.10 — Removed — https://docs.python.org/3.10/whatsnew/3.10.html#removed
+
+  ...
+
+Result: 8 findings (7 breaking, 1 deprecated); 84 files analyzed; 0 files incomplete.
+```
+
+Or declare strict configuration in `pyproject.toml`:
+
+```toml
+[tool.pyahead]
+baseline-python = "3.11"
+horizon-python = "3.14"
+include = ["src/**/*.py", "tests/**/*.py"]
+exclude = ["src/generated/**"]
+source-roots = ["src"]
+minimum-confidence = "high"
+fail-on = "breaking"
+respect-gitignore = true
+show-unscheduled = true
+```
+
+Then run:
+
+```console
+pyahead check
+```
+
+When the baseline is omitted, PyAhead can infer the lowest supported registry
+minor from `[project].requires-python` and records that provenance in the
+report. It never infers the baseline from the host interpreter.
+
+Exit code 1 means an unsuppressed finding met the selected `fail-on` gate; 2
+means invalid command, configuration, or registry input; 3 means analysis was
+incomplete; and 4 means an unexpected internal failure. Exit 0 means only that
+the configured static scan completed without a gated finding.
 
 ## Status
 
@@ -70,64 +209,6 @@ sampled precision for high-confidence findings, false-positive regressions,
 retained limitations, and accountable product-owner approval. Continuous-use
 adoption is measured after the alpha is publicly available; it is not a
 prerequisite for the M7–M8 dynamic-evidence work.
-
-## Install
-
-After the alpha is published, install it in an isolated tool environment:
-
-```console
-pipx install pyahead==0.4.0
-# or run without a persistent tool environment
-uvx pyahead==0.4.0 --version
-```
-
-Before publication, build and install the candidate from this repository:
-
-```console
-uv build
-pipx install dist/pyahead-0.4.0-py3-none-any.whl
-```
-
-Installing PyAhead may contact the configured package index to obtain PyAhead
-and its dependencies. Running `pyahead check` itself is offline.
-
-## Quick start
-
-Scan a repository with an explicit inclusive policy:
-
-```console
-pyahead check . --baseline-python 3.11 --horizon-python 3.14
-```
-
-Or declare strict configuration in `pyproject.toml`:
-
-```toml
-[tool.pyahead]
-baseline-python = "3.11"
-horizon-python = "3.14"
-include = ["src/**/*.py", "tests/**/*.py"]
-exclude = ["src/generated/**"]
-source-roots = ["src"]
-minimum-confidence = "high"
-fail-on = "breaking"
-respect-gitignore = true
-show-unscheduled = true
-```
-
-Then run:
-
-```console
-pyahead check
-```
-
-When the baseline is omitted, PyAhead can infer the lowest supported registry
-minor from `[project].requires-python` and records that provenance in the
-report. It never infers the baseline from the host interpreter.
-
-Exit code 1 means an unsuppressed finding met the selected `fail-on` gate; 2
-means invalid command, configuration, or registry input; 3 means analysis was
-incomplete; and 4 means an unexpected internal failure. Exit 0 means only that
-the configured static scan completed without a gated finding.
 
 ## CI and review workflows
 
