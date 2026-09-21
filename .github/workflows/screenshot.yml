@@ -1,0 +1,64 @@
+name: Screenshot
+
+# A picture of the page after a scan, for the README. The capture is uploaded
+# as an artifact and never committed from here. It runs when the script or
+# this file changes on gh-pages — which is also what registers it, since only
+# a workflow that has run from this branch can be dispatched by hand — and
+# otherwise by hand, with the repository and the version range as inputs.
+
+on:
+  push:
+    branches: ["gh-pages"]
+    paths:
+      - check/screenshot.mjs
+      - .github/workflows/screenshot.yml
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Public GitHub repository URL to scan
+        default: https://github.com/urllib3/urllib3/tree/2.0.0
+      baseline:
+        description: Oldest Python the project supports
+        default: "3.9"
+      horizon:
+        description: Look-ahead Python version
+        default: "3.14"
+
+permissions:
+  contents: read
+
+jobs:
+  screenshot:
+    name: Scan and capture
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the site
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install check dependencies
+        working-directory: check
+        run: npm install
+
+      - name: Install Chromium
+        working-directory: check
+        run: npx playwright install --with-deps chromium
+
+      - name: Scan and capture
+        run: node check/screenshot.mjs
+        env:
+          REPO: ${{ inputs.repo || 'https://github.com/urllib3/urllib3/tree/2.0.0' }}
+          BASELINE: ${{ inputs.baseline || '3.9' }}
+          HORIZON: ${{ inputs.horizon || '3.14' }}
+
+      - name: Upload the captures
+        uses: actions/upload-artifact@v6
+        with:
+          name: screenshots
+          path: screenshots/
+          if-no-files-found: error
