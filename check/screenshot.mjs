@@ -57,11 +57,13 @@ try {
   console.log(`scanned ${REPO}: ${await page.textContent(".report-head .meta")}`);
 
   await page.screenshot({ path: join(OUT, "page.png"), fullPage: true });
-  const report = await page.locator("#report-region").boundingBox();
+  // A bounding box is viewport-relative and the page has scrolled to the
+  // results; a full-page clip wants document coordinates.
+  const top = await page.evaluate(() => document.getElementById("report-region").getBoundingClientRect().top + window.scrollY);
   await page.screenshot({
     path: join(OUT, "report.png"),
     fullPage: true,
-    clip: { x: 0, y: report.y, width: WIDTH, height: HERO_HEIGHT },
+    clip: { x: 0, y: Math.floor(top), width: WIDTH, height: HERO_HEIGHT },
   });
   console.log(`saved ${join(OUT, "page.png")} and ${join(OUT, "report.png")}`);
 } finally {
