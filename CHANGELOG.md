@@ -4,7 +4,11 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
-## Unreleased
+## 0.4.0 - 2026-09-21
+
+A caller running a long scan can now follow it file by file. A minor release
+because the public scan API grows an optional field; nothing existing changes
+behaviour, and the report schema is untouched.
 
 ### Added
 
