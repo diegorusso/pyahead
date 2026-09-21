@@ -49,8 +49,14 @@ export function createWorkerScanner({ vendorBase, onProgress = () => {} }) {
       const started = performance.now();
       const timings = [];
       // Each event marks a stage beginning, so record when it began rather
-      // than attributing a duration to the wrong stage.
-      const timed = (stage) => timings.push(`${stage}@+${Math.round(performance.now() - started)}ms`);
+      // than attributing a duration to the wrong stage. Per-file events repeat
+      // the scanning stage and are not stage changes.
+      let lastStage = null;
+      const timed = (stage) => {
+        if (stage === lastStage) return;
+        lastStage = stage;
+        timings.push(`${stage}@+${Math.round(performance.now() - started)}ms`);
+      };
       return new Promise((resolve, reject) => {
         pending.set(id, {
           onStage: timed,

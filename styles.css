@@ -128,6 +128,9 @@ body.busy #status::before { content: ""; width: 15px; height: 15px; flex-shrink:
 #error { background: #fff5f2; color: var(--breaking); border-color: #ecc9c1; }
 .notice { margin-top: 20px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.progress { margin: -12px 0 22px; }
+.progress progress { display: block; width: 100%; height: 6px; accent-color: var(--accent); }
+.progress-detail { margin: 6px 0 0; font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 .report-region { margin-top: 56px; padding-top: 33px; border-top: 1px solid var(--line); }
 .results-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; margin-bottom: 27px; }
 .results-heading .eyebrow { margin-bottom: 5px; }

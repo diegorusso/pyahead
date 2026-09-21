@@ -49,14 +49,39 @@ function say(message) {
   status.hidden = message === "";
 }
 
+const progress = document.getElementById("progress");
+const progressBar = document.getElementById("progress-bar");
+const progressDetail = document.getElementById("progress-detail");
+
+// One file at a time, under the status line. The live region above is left
+// alone: it announces the stage once, not four hundred file names.
+function showProgress(index, total, detail) {
+  progressBar.max = total;
+  progressBar.value = index;
+  progressDetail.textContent = detail;
+  progress.hidden = false;
+}
+
+function showFile({ path, index, total }) {
+  showProgress(index, total, `${index} of ${total} · ${path}`);
+}
+
+function hideProgress() {
+  progress.hidden = true;
+  progressBar.value = 0;
+  progressDetail.textContent = "";
+}
+
 function fail(message) {
   errorBox.textContent = message;
   errorBox.hidden = false;
   say("");
+  hideProgress();
 }
 
 function reset() {
   errorBox.hidden = true;
+  hideProgress();
   results.replaceChildren();
   reportRegion.hidden = true;
   download.hidden = true;
@@ -82,7 +107,12 @@ function getScanner() {
   // The runtime lives in a worker, so a scan never blocks the page.
   scanner = createWorkerScanner({
     vendorBase: new URL("vendor/", document.baseURI).href,
-    onProgress: ({ stage, message }) => {
+    onProgress: ({ stage, message, file }) => {
+      if (file) {
+        showFile(file);
+        return;
+      }
+      if (stage === "done") hideProgress();
       say(stage === "runtime" ? `${message} — a few megabytes, once per visit` : message);
     },
   });
@@ -142,7 +172,7 @@ form.addEventListener("submit", async (event) => {
     const listing = await listPythonFiles(target, {});
     say(`Downloading ${listing.files.length} files`);
     const { sources, failed } = await fetchSources(target, listing.files, {
-      onProgress: ({ done, total }) => say(`Downloading ${done} of ${total} files`),
+      onProgress: ({ done, total }) => showProgress(done, total, `${done} of ${total} downloaded`),
     });
     if (Object.keys(sources).length === 0) {
       throw new RepositoryError("Every file failed to download. GitHub may be having trouble.", { kind: "network" });

@@ -90,12 +90,16 @@ async function main() {
   const vendorBase = `http://127.0.0.1:${port}/vendor/`;
 
   const stages = [];
+  const files = [];
   const scanner = createScanner({
     // No indexURL: the installed package resolves its own assets from disk, and
     // Node cannot import the CDN module the browser uses.
     loadPyodide,
     vendorBase,
-    onProgress: ({ stage }) => stages.push(stage),
+    onProgress: ({ stage, file }) => {
+      stages.push(stage);
+      if (file) files.push(file);
+    },
   });
 
   const source = await readFile(join(SITE_ROOT, "fixtures", "example.py"), "utf8");
@@ -132,6 +136,10 @@ async function main() {
   for (const stage of ["runtime", "packages", "pyahead", "scanning", "done"]) {
     check(`reported the ${stage} stage`, stages.includes(stage));
   }
+  check("reported the one file as it was parsed", files.length === 1, JSON.stringify(files));
+  check("with its path and counters", files[0]?.path === "example.py" && files[0]?.index === 1 && files[0]?.total === 1 && files[0]?.incomplete === false,
+    JSON.stringify(files[0]));
+  check("the file event arrived before the scan finished", stages.indexOf("done") > stages.lastIndexOf("scanning"));
 
   console.log("\nschema");
   const schema = await (await fetch(SCHEMA_URL)).json();

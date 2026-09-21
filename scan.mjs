@@ -26,9 +26,9 @@ const WHEELS = [
 
 const SCAN_ROOT = "/scan";
 
-// Runs inside Pyodide. PyAhead exposes no public Python API — `__all__` is
-// `["__version__"]` — so the harness drives the CLI, which is the contract the
-// project actually keeps stable.
+// Runs inside Pyodide. The harness drives the CLI, which is the contract the
+// project keeps stable; `main` takes the one hook the page needs, a per-file
+// callback, and passes it through unchanged.
 const SCAN_SOURCE = `
 import contextlib, io, json, os, pathlib, shutil
 
@@ -57,6 +57,11 @@ os.chdir(_root)
 
 from pyahead.cli import main
 
+# One call per parsed file, into the JavaScript side. Only the path and the
+# counters cross: the report is still read whole, once, from the file below.
+def _progress(progress):
+    _on_file(str(progress.path), progress.index, progress.total, bool(progress.incomplete))
+
 # The CLI writes its own summary to stdout; the report goes to a file.
 with contextlib.redirect_stdout(io.StringIO()) as _captured:
     _code = main([
@@ -66,7 +71,7 @@ with contextlib.redirect_stdout(io.StringIO()) as _captured:
         "--format", "json",
         "--output", "report.json",
         "--fail-on", "never",
-    ])
+    ], on_file=_progress)
 
 json.dumps({
     "exit_code": _code,
@@ -91,7 +96,7 @@ export function isUnsafePath(path) {
  *   installed package. Node cannot import a remote module, so never hand it a
  *   CDN URL there.
  * @param {string}   config.vendorBase   URL prefix the pinned wheels are served from
- * @param {Function} [config.onProgress] called with {stage, message}
+ * @param {Function} [config.onProgress] called with {stage, message} and, per parsed file, {stage: "scanning", message, file: {path, index, total, incomplete}}
  */
 export function createScanner({ loadPyodide, indexURL, vendorBase, onProgress = () => {} }) {
   if (typeof loadPyodide !== "function") throw new TypeError("loadPyodide is required");
@@ -141,13 +146,24 @@ export function createScanner({ loadPyodide, indexURL, vendorBase, onProgress = 
       }
 
       const pyodide = await boot();
-      onProgress({ stage: "scanning", message: `Scanning ${Object.keys(files).length} files` });
+      const total = Object.keys(files).length;
+      onProgress({ stage: "scanning", message: `Scanning ${total} files` });
 
       pyodide.globals.set("_files_json", JSON.stringify(files));
       pyodide.globals.set("_options_json", JSON.stringify({
         baseline: options.baseline ?? "3.11",
         horizon: options.horizon ?? "3.14",
       }));
+      // Called from Python after each file. The message keeps the stage so a
+      // listener that only watches stages sees nothing new; the file is for
+      // one that wants to show progress.
+      pyodide.globals.set("_on_file", (path, index, count, incomplete) => {
+        onProgress({
+          stage: "scanning",
+          message: `Scanning ${index} of ${count} files`,
+          file: { path, index, total: count, incomplete },
+        });
+      });
       try {
         const result = JSON.parse(await pyodide.runPythonAsync(SCAN_SOURCE));
         onProgress({ stage: "done", message: "Scan complete" });
@@ -155,6 +171,7 @@ export function createScanner({ loadPyodide, indexURL, vendorBase, onProgress = 
       } finally {
         pyodide.globals.delete("_files_json");
         pyodide.globals.delete("_options_json");
+        pyodide.globals.delete("_on_file");
       }
     },
   };
