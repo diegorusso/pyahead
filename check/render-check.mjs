@@ -51,7 +51,7 @@ function allText(element) {
 const HOSTILE = '</script><img src=x onerror="alert(1)">';
 
 const report = {
-  tool: { name: "pyahead", version: "0.3.1" },
+  tool: { name: "pyahead", version: "0.4.0" },
   registry: { release: "2026.07.31" },
   scan: { files_analyzed: 3, files_discovered: 3, files_incomplete: 1 },
   summary: { breaking: 1, deprecated: 1, informational: 0, risk: 0, new: 2, suppressed: 0 },
@@ -156,7 +156,7 @@ if (root) {
 
   check("shows the incompleteness banner", document.created.some((element) => element.className === "incomplete"));
   check("names the repository", texts.some((value) => value.includes("owner/repo at main")));
-  check("reports the analyser version", texts.some((value) => value.includes("PyAhead 0.3.1")));
+  check("reports the analyser version", texts.some((value) => value.includes("PyAhead 0.4.0")));
 }
 
 {
