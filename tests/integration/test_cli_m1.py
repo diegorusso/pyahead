@@ -5,12 +5,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 import pytest
 
 from pyahead.cli import main
 from pyahead.model import ExitCode
+
+if TYPE_CHECKING:
+    from pyahead.analysis import FileProgress
 
 
 def _check_args(output_format: str = "text") -> list[str]:
@@ -39,6 +42,30 @@ def test_check_exit_zero_for_complete_clean_scan(
     captured = capsys.readouterr()
     assert "No known compatibility findings" in captured.out
     assert captured.err == ""
+
+
+def test_check_reports_each_file_to_an_embedding_caller(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``main(on_file=...)`` sees every parsed file; the report is unchanged."""
+    (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    seen: list[FileProgress] = []
+
+    code = main([*_check_args("json"), "--fail-on", "never"], on_file=seen.append)
+
+    assert code == int(ExitCode.INCOMPLETE)
+    assert [
+        (str(item.path), item.index, item.total, item.incomplete) for item in seen
+    ] == [
+        ("broken.py", 1, 2, True),
+        ("legacy.py", 2, 2, False),
+    ]
+    report = json.loads(capsys.readouterr().out)
+    assert [finding["rule_id"] for finding in report["findings"]] == ["CPY0001"]
 
 
 def test_check_exit_one_for_breaking_finding(

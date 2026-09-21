@@ -548,6 +548,11 @@ def scan(request: ScanRequest) -> ScanReport: ...
 def load_registry(source: RegistrySource | None = None) -> Registry: ...
 ```
 
+`ScanRequest.on_file` is the one hook into the pipeline: an optional callback
+invoked after step 6 for each parsed file with a `FileProgress` (path, index,
+total, incomplete). It exists so a caller that runs a long scan — the browser
+page — can show progress; it receives no findings and cannot alter the scan.
+
 Everything else is private until `1.0`. Use leading underscores or document non-stability. Do not expose raw LibCST nodes in the public result model.
 
 ### 7.3 Determinism

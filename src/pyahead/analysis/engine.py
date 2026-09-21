@@ -4,7 +4,7 @@ import hashlib
 import io
 import tokenize
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -122,6 +122,21 @@ HASATTR_ARGUMENT_COUNT = 2
 
 
 @dataclass(frozen=True)
+class FileProgress:
+    """One file the scan has just parsed, reported through ``ScanRequest.on_file``.
+
+    ``index`` counts from one over the ``total`` files discovery handed to the
+    parser, in the order they are analysed. ``incomplete`` is true when the file
+    could not be fully analysed and is counted in ``files_incomplete``.
+    """
+
+    path: PurePosixPath
+    index: int
+    total: int
+    incomplete: bool
+
+
+@dataclass(frozen=True)
 class ScanRequest:
     """Explicit inputs to the public scan API."""
 
@@ -144,6 +159,10 @@ class ScanRequest:
     fail_new_only: bool = False
     show_suppressed: bool = False
     allow_incomplete: bool = False
+    # Called once per parsed file, in order, with a FileProgress; it receives no
+    # findings, so a progress display cannot become a second analysis path. An
+    # exception it raises propagates out of scan().
+    on_file: Callable[[FileProgress], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -1653,6 +1672,11 @@ def _discover_configured(
     return discover_python_files(root, paths, options)
 
 
+def _report_file_progress(request: ScanRequest, progress: FileProgress) -> None:
+    if request.on_file is not None:
+        request.on_file(progress)
+
+
 def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordinator.
     """Scan Python source without importing, executing, or networking."""
     if request.fail_new_only and request.baseline_file is None:
@@ -1811,7 +1835,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
     ]
     incomplete_files = len(discovery.issues)
     analyzed = 0
-    for path in discovery.files:
+    for index, path in enumerate(discovery.files, start=1):
         (
             file_matches,
             file_inferences,
@@ -1824,7 +1848,17 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         )
         inline_suppressions[path.relative_path] = file_suppressions
         diagnostics.extend(file_diagnostics)
-        if any(diagnostic.incomplete for diagnostic in file_diagnostics):
+        file_incomplete = any(diagnostic.incomplete for diagnostic in file_diagnostics)
+        _report_file_progress(
+            request,
+            FileProgress(
+                path=path.relative_path,
+                index=index,
+                total=len(discovery.files),
+                incomplete=file_incomplete,
+            ),
+        )
+        if file_incomplete:
             incomplete_files += 1
             continue
         analyzed += 1

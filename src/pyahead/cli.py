@@ -3,12 +3,14 @@
 import os
 import sys
 from argparse import ArgumentParser, BooleanOptionalAction, Namespace
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 from pyahead import __version__
 from pyahead._human_text import SafeArgumentParser, escape_terminal_text
-from pyahead.analysis import ScanRequest, scan
+from pyahead.analysis import FileProgress, ScanRequest, scan
 from pyahead.analysis.discovery import DiscoveryError
 from pyahead.baseline import render_baseline
 from pyahead.config import resolve_project_root
@@ -466,10 +468,13 @@ def _validate_evidence_arguments(arguments: Namespace) -> None:
         raise ConfigurationError(message)
 
 
-def _run_check(arguments: Namespace) -> int:
+def _run_check(
+    arguments: Namespace,
+    on_file: Callable[[FileProgress], None] | None = None,
+) -> int:
     try:
         _validate_evidence_arguments(arguments)
-        request = _scan_request(arguments)
+        request = replace(_scan_request(arguments), on_file=on_file)
         report = scan(request)
         if arguments.evidence:
             report = merge_evidence(
@@ -647,12 +652,21 @@ def _run_explain(arguments: Namespace) -> int:
     return int(ExitCode.SUCCESS)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Run the command-line interface and return its stable exit code."""
+def main(
+    argv: list[str] | None = None,
+    *,
+    on_file: Callable[[FileProgress], None] | None = None,
+) -> int:
+    """Run the command-line interface and return its stable exit code.
+
+    ``on_file`` is for a caller that embeds the CLI, such as the browser page:
+    ``check`` passes it through as ``ScanRequest.on_file`` so the caller can
+    show progress. No command-line option sets it.
+    """
     parser = _build_parser()
     arguments = parser.parse_args(argv)
     if arguments.command == "check":
-        result = _run_check(arguments)
+        result = _run_check(arguments, on_file)
     elif arguments.command == "dependencies":
         result = _run_dependencies(arguments)
     elif arguments.command == "baseline":

@@ -47,6 +47,14 @@ report: ScanReport = scan(request)
 registry: Registry = load_registry()
 ```
 
+`ScanRequest.on_file` takes an optional callback that `scan()` calls once per
+parsed file, in analysis order, with a `FileProgress` — the repository-relative
+`path`, its one-based `index` among the `total` files being parsed, and whether
+the file was `incomplete`. It carries no findings, so a progress display cannot
+become a second analysis path; an exception it raises propagates out of
+`scan()`. No command-line option sets it; a program that embeds the CLI passes
+it as `pyahead.cli.main(argv, on_file=...)` and `check` hands it to the scan.
+
 PyAhead `0.x` releases may make documented incompatible API changes between
 minor releases. Patch releases preserve this import surface and the documented
 report schema unless a security or correctness defect requires a clearly

@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 
-from pyahead.analysis import ScanRequest, scan
+from pyahead.analysis import FileProgress, ScanRequest, scan
 from pyahead.analysis.discovery import (
     MAX_SOURCE_BYTES,
     DiscoveredFile,
@@ -560,6 +560,55 @@ def test_unparseable_source_marks_scan_incomplete(tmp_path: Path) -> None:
     assert report.counts.files_incomplete == 1
     assert report.diagnostics[0].code == "PYA1003"
     assert report.exit_code is ExitCode.INCOMPLETE
+
+
+def test_on_file_reports_each_parsed_file_in_order(tmp_path: Path) -> None:
+    """The callback sees every file once, in order, and never a finding."""
+    (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "clean.py").write_text("import pathlib\n", encoding="utf-8")
+    seen: list[FileProgress] = []
+
+    report = scan(
+        ScanRequest(
+            root=tmp_path,
+            baseline_python="3.11",
+            horizon_python="3.13",
+            on_file=seen.append,
+        )
+    )
+
+    assert [
+        (str(item.path), item.index, item.total, item.incomplete) for item in seen
+    ] == [
+        ("broken.py", 1, 3, True),
+        ("legacy.py", 2, 3, False),
+        ("pkg/clean.py", 3, 3, False),
+    ]
+    counts = report.counts
+    assert seen[0].total == counts.files_analyzed + counts.files_incomplete
+    assert len(report.findings) == 1
+
+
+def test_on_file_is_off_by_default_and_its_errors_propagate(tmp_path: Path) -> None:
+    """A caller's callback failure is the caller's, not an incomplete scan."""
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+    assert ScanRequest(root=tmp_path).on_file is None
+
+    def explode(progress: FileProgress) -> None:
+        message = f"callback failed on {progress.path}"
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError, match=r"callback failed on legacy\.py"):
+        scan(
+            ScanRequest(
+                root=tmp_path,
+                baseline_python="3.11",
+                horizon_python="3.13",
+                on_file=explode,
+            )
+        )
 
 
 @pytest.mark.parametrize(

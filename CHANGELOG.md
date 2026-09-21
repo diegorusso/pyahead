@@ -4,6 +4,18 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
+## Unreleased
+
+### Added
+
+- `ScanRequest.on_file`, an optional callback `scan()` invokes once per parsed
+  file with a `FileProgress` (repository-relative path, one-based index, total
+  files being parsed, and whether the file was incomplete), so a caller running
+  a long scan can show progress. It receives no findings and cannot alter the
+  scan, and a scan without it pays one skipped branch per file. No command-line
+  option sets it; a caller that embeds the CLI — the browser page — passes it
+  as `pyahead.cli.main(argv, on_file=...)`, which `check` hands to the scan.
+
 ## 0.3.1 - 2026-09-21
 
 Every rule now cites the change at the version it happened, so a finding's
