@@ -12,7 +12,7 @@
 // either side moves. Pyodide 314.0.6 runs Python 3.14.2 and ships libcst
 // 1.8.6, which satisfies PyAhead's `libcst>=1.8,<2` without an override.
 export const PYODIDE_VERSION = "314.0.6";
-export const PYAHEAD_VERSION = "0.3.0";
+export const PYAHEAD_VERSION = "0.3.1";
 export const PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
 // Installed in order: the two pure-Python dependencies first, so PyAhead's own
