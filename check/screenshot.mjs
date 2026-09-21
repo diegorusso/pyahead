@@ -70,7 +70,7 @@ try {
   await page.screenshot({
     path: join(OUT, "report.png"),
     fullPage: true,
-    clip: { x: 0, y: Math.floor(top), width: WIDTH, height: Math.ceil(bottom - top) + 28 },
+    clip: { x: 0, y: Math.floor(top), width: WIDTH, height: Math.ceil(bottom - top) + 12 },
   });
   console.log(`saved ${join(OUT, "page.png")} and ${join(OUT, "report.png")}`);
 } finally {
