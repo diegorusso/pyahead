@@ -4,7 +4,30 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
-## Unreleased
+## 0.3.1 - 2026-09-21
+
+Every rule now cites the change at the version it happened, so a finding's
+documentation link lands where the deprecation was announced and its source
+list says where the deprecation and the removal each came from. A patch
+release: registry data and documentation only; no detection or contract
+changes.
+
+### Changed
+
+- The sources of all 198 rules were re-derived from the fetched CPython pages.
+  Each timeline event cites the section of its own version's "What's New"
+  that names the subject, or the subject's entry in the module reference of
+  the version that made the change, or — for a deprecation older than both —
+  the later "What's New" bullet that states the version; scheduled events
+  cite the deprecating version's "Pending removal in Python 3.N" section.
+  Before this, 68 rules linked the removal's page for a deprecation, 39 linked
+  a 3.14 module reference for a change made in 3.6–3.10 (the `ssl` constants
+  among them), and 41 linked `3.13.html#removed`, an anchor the 3.13 page no
+  longer has. `documentation_url` is now the deprecation event's source and is
+  always one of the rule's cited sources; `CPY0001` gains the link it lacked.
+  All 90 distinct URLs resolve and every anchor exists. The convention is in
+  `docs/registry-authoring.md` and enforced by the test suite. Registry label
+  `2026.09.20`.
 
 ### Added
 
