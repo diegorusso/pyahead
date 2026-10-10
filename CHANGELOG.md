@@ -4,11 +4,17 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
-## Unreleased
+## 0.5.0 - 2026-10-10
 
 Python 3.15.0 was released on 9 October 2026. The registry records it as a
 stable release and its "What's New" Deprecated and Removed sections are
 censused; 3.16 is now the release in development. Registry label `2026.10.10`.
+A minor release: new rules, an analyser change (import-fallback
+reachability) and a new default horizon; no public contract changes.
+Precision was measured against the PyPI top 1000 and is recorded in
+`docs/evidence/pypi-top-1000-2026-10-10.md`: 99.66% agreement, up from
+98.49%, with every `except ImportError` refutation of the earlier records
+gone.
 
 ### Changed
 
@@ -36,7 +42,9 @@ censused; 3.16 is now the release in development. Registry label `2026.10.10`.
   deprecation entries; `re.match`'s soft deprecation is recorded as not
   applicable because CPython advises code supporting older versions to keep
   using it.
-
+- `cProfile.Profile` is in the known-import table, so `try: from cProfile
+  import Profile` / `except ImportError: from profile import Profile` reports
+  nothing.
 - Import-fallback reachability. When a `try` body is absolute imports,
   optionally followed by assignments that only read what they bound
   (`ATOMIC_GROUP = sre.ATOMIC_GROUP`), and every import is in the new
