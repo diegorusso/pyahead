@@ -1,5 +1,5 @@
 schema_version: 1
-release: "2026.09.20"
+release: "2026.10.10"
 releases: releases.yaml
 retired_ids: [CPY0048, CPY0081, CPY0169, CPY0170]
 rules:
@@ -201,6 +201,13 @@ rules:
   - cpython/CPY0202.yaml
   - cpython/CPY0203.yaml
   - cpython/CPY0204.yaml
+  - cpython/CPY0205.yaml
+  - cpython/CPY0206.yaml
+  - cpython/CPY0207.yaml
+  - cpython/CPY0208.yaml
+  - cpython/CPY0209.yaml
+  - cpython/CPY0210.yaml
+  - cpython/CPY0211.yaml
 coverage:
   - coverage/cpython-84131.yaml
   - coverage/cpython-94101.yaml
@@ -221,3 +228,5 @@ coverage:
   - coverage/python-3.10-deprecated.yaml
   - coverage/python-3.11-deprecated.yaml
   - coverage/python-3.11-removed.yaml
+  - coverage/python-3.15-removed.yaml
+  - coverage/python-3.15-deprecated.yaml

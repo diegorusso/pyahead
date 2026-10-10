@@ -113,6 +113,14 @@ _PINNED_SOURCE_INVENTORIES = {
         26,
         "48afacb5cddeb062c909c774a64c0e8fddbc69cbb5402a7bb37eef81ef892fb1",
     ),
+    "python-3.15-removed": (
+        20,
+        "d6497a44752a5f3f110cb0bbea481eba6617ccc47fb21c57c249af15b6c5100b",
+    ),
+    "python-3.15-deprecated": (
+        43,
+        "06423c751cfac708b5fd1356b13dfeda384912f4f5988f00a23c3ddb18e4db5d",
+    ),
     "python-deprecations": (
         100,
         "3a237a2a8ef2fc9a4e1d169ecd95a1d5b4df1bdde34aa9bca94ff399fb20d97e",
@@ -143,8 +151,14 @@ def _string_list(value: object) -> list[str]:
 
 
 def _finding_records(report: ScanReport) -> list[dict[str, object]]:
+    # A fixture isolates one rule. Where another rule fires on the same
+    # construct, the fixture suppresses it inline with a reason, and the
+    # suppressed finding is not part of the record.
     records: list[dict[str, object]] = []
     for finding in report.findings:
+        if finding.suppression is not None:
+            assert finding.suppression.reason
+            continue
         resolution = dict(finding.match_evidence).get("resolution")
         assert isinstance(resolution, str)
         records.append(

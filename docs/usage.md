@@ -85,7 +85,7 @@ registry analysis window, which is Python 3.8 through 3.16 for the bundled
 registry.
 
 Coverage follows the CPython pages that have been censused: the "What's New"
-Deprecated and Removed sections for every release from 3.9 through 3.14,
+Deprecated and Removed sections for every release from 3.9 through 3.15,
 PEP 594, and the deprecations index. Every entry on a censused page has a
 recorded disposition, so a change from one of those pages is either a rule,
 covered by another rule, or recorded as outside static analysis with the

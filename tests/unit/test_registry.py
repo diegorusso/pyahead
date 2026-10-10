@@ -30,8 +30,8 @@ from pyahead.registry.schema import (
 )
 
 _SHA256_HEX_LENGTH = 64
-_CURATED_RULE_COUNT = 198
-_COVERAGE_SOURCE_COUNT = 19
+_CURATED_RULE_COUNT = 205
+_COVERAGE_SOURCE_COUNT = 21
 _BUNDLED_REGISTRY = Path(__file__).parents[2] / "src/pyahead/data/registry"
 
 
@@ -58,7 +58,7 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
     """The seed registry records released deprecation and removal facts."""
     registry = load_registry()
 
-    assert registry.release == "2026.09.20"
+    assert registry.release == "2026.10.10"
     assert len(registry.revision) == _SHA256_HEX_LENGTH
     assert len(registry.rules) == _CURATED_RULE_COUNT
     assert [release.python.minor for release in registry.releases] == [
@@ -80,8 +80,8 @@ def test_bundled_registry_has_sourced_pep_594_rule() -> None:
         ReleaseStatus.SECURITY,
         ReleaseStatus.STABLE,
         ReleaseStatus.STABLE,
+        ReleaseStatus.STABLE,
         ReleaseStatus.PRERELEASE,
-        ReleaseStatus.PLANNED,
     ]
     assert len(registry.coverage) == _COVERAGE_SOURCE_COUNT
     python_313 = registry.releases[5]

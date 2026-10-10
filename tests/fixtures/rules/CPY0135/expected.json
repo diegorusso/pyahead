@@ -7,7 +7,7 @@
       "name": "explicit CodeType legacy line table",
       "root": ".",
       "paths": ["positive/source.py"],
-      "expected_findings": [{"rule_id": "CPY0135", "confidence": "high", "action_version": "3.11", "impact": "deprecated", "resolution": "exact-import", "reachable_versions": ["3.11", "3.12", "3.13", "3.14", "3.15", "3.16"], "usage_contexts": ["runtime"]}],
+      "expected_findings": [{"rule_id": "CPY0135", "confidence": "high", "action_version": "3.15", "impact": "breaking", "resolution": "exact-import", "reachable_versions": ["3.11", "3.12", "3.13", "3.14", "3.15", "3.16"], "usage_contexts": ["runtime"]}],
       "expected_inference_codes": []
     },
     {

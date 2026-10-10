@@ -59,7 +59,7 @@
         "3.12",
         "3.13"
       ],
-      "registry_revision": "15fc94fd4d2bea4d41a0d706d5f4eaf5da43c7d9b1328967b237f9816f0aaee7",
+      "registry_revision": "fa9db725e6121a363c59a4612145cc05feea79a00303adc0592f6f3cfc4a8287",
       "remediation": {
         "documentation_url": "https://docs.python.org/3.11/whatsnew/3.11.html#modules",
         "summary": "Replace the specific cgi functionality in use. There is no single drop-in replacement for the complete module."
@@ -137,8 +137,8 @@
     ]
   },
   "registry": {
-    "release": "2026.09.20",
-    "revision": "15fc94fd4d2bea4d41a0d706d5f4eaf5da43c7d9b1328967b237f9816f0aaee7"
+    "release": "2026.10.10",
+    "revision": "fa9db725e6121a363c59a4612145cc05feea79a00303adc0592f6f3cfc4a8287"
   },
   "scan": {
     "files_analyzed": 1,

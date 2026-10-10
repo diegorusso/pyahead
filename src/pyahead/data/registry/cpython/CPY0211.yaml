@@ -1,0 +1,51 @@
+schema_version: 1
+id: CPY0211
+title: "The package keyword of importlib.resources.files is removed"
+summary: >-
+  Python 3.12 renamed the first parameter of importlib.resources.files from
+  package to anchor and kept package= as a deprecated keyword; Python 3.15
+  removes it.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: importlib.resources.files
+
+timeline:
+  - event: deprecated
+    python: "3.12"
+    certainty: released
+    source: python-3.12-importlib-resources
+  - event: signature_changed
+    python: "3.15"
+    certainty: released
+    source: python-3.15-removed
+
+impact:
+  on_deprecation: deprecated
+  on_signature_change: breaking
+
+matchers:
+  - kind: call-shape
+    qualified_name: importlib.resources.files
+    required_keywords: [package]
+
+remediation:
+  summary: >-
+    Pass the anchor positionally, or as anchor= on Python 3.12 and later.
+  documentation_url: "https://docs.python.org/3.12/library/importlib.resources.html#importlib.resources.files"
+  automation: null
+
+sources:
+  - id: python-3.12-importlib-resources
+    title: "Python 3.12 importlib.resources documentation — files"
+    url: "https://docs.python.org/3.12/library/importlib.resources.html#importlib.resources.files"
+  - id: python-3.15-removed
+    title: "What's New in Python 3.15 — Removed › importlib.resources"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#importlib-resources"
+
+tags: [stdlib, api-removal, importlib, signature]

@@ -1,0 +1,85 @@
+schema_version: 1
+id: CPY0208
+title: "The string keyword of hashlib constructors is deprecated"
+summary: >-
+  Passing the initial data to a hashlib constructor as string= is deprecated
+  in Python 3.15. Its scheduled Python 3.19 removal is outside this
+  registry's supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: hashlib.new
+
+timeline:
+  - event: deprecated
+    python: "3.15"
+    certainty: released
+    source: python-3.15-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: call-shape
+    qualified_name: hashlib.new
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.md5
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha1
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha224
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha256
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha384
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha512
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.blake2b
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.blake2s
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha3_224
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha3_256
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha3_384
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.sha3_512
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.shake_128
+    required_keywords: [string]
+  - kind: call-shape
+    qualified_name: hashlib.shake_256
+    required_keywords: [string]
+
+remediation:
+  summary: >-
+    Pass the initial data positionally, which every Python version accepts.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+  automation: null
+
+sources:
+  - id: python-3.15-deprecated
+    title: "What's New in Python 3.15 — Deprecated › New deprecations"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+
+tags: [stdlib, scheduled-removal, hashlib, signature, outside-window]

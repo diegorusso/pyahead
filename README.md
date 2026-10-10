@@ -64,8 +64,8 @@ analysis incomplete rather than silently clean. See
   reaches, when the API was deprecated, when it goes away, and what replaces
   it — grouped by the version the change lands in, so the 3.13 work is
   separate from the 3.10 work.
-- **Sources you can check.** The registry's 198 rules are curated from
-  CPython's own release notes — every "What's New" page from 3.9 to 3.14
+- **Sources you can check.** The registry's 205 rules are curated from
+  CPython's own release notes — every "What's New" page from 3.9 to 3.15
   censused entry by entry — and each rule links the section that announced
   the change at the version it happened.
 - **Static, offline, deterministic.** LibCST parsing only: no imports, no

@@ -6,7 +6,36 @@ stabilizing.
 
 ## Unreleased
 
+Python 3.15.0 was released on 9 October 2026. The registry records it as a
+stable release and its "What's New" Deprecated and Removed sections are
+censused; 3.16 is now the release in development. Registry label `2026.10.10`.
+
+### Changed
+
+- The inferred default horizon is now Python 3.16, the release in active
+  development, as design §8 prescribes; it was 3.15 while 3.15 was the
+  prerelease. Projects that set `horizon-python` are unaffected.
+- The fifteen rules whose 3.15 removal or signature change was scheduled now
+  record it as released.
+- `CPY0135` (`types.CodeType.co_lnotab`) gains its removal: deprecated in 3.10
+  by PEP 626, removed in 3.15. Findings that were deprecation debt now become
+  breaking from 3.15.
+
 ### Added
+
+- Seven rules from the Python 3.15 "What's New" (CPY0205–CPY0211): the
+  `profile` module (removal in 3.17, outside the window); `webbrowser.MacOSXOSAScript`
+  (3.17); `http.cookies` `js_output` (3.19); the `string=` keyword of the
+  `hashlib` constructors (3.19); instantiating abstract AST node classes such as
+  `ast.AST()` (an error from 3.20); the `__version__`, `version` and `VERSION`
+  attributes of twenty-three standard-library modules and `logging.__date__`
+  (3.20); and the `package=` keyword of `importlib.resources.files()`,
+  deprecated by the 3.12 rename to `anchor` and removed in 3.15. Each was
+  checked against a 3.15 interpreter, which warns or refuses exactly where the
+  rule reports. Both 3.15 sections are censused — 20 removals and 43
+  deprecation entries; `re.match`'s soft deprecation is recorded as not
+  applicable because CPython advises code supporting older versions to keep
+  using it.
 
 - Import-fallback reachability. When a `try` body is absolute imports,
   optionally followed by assignments that only read what they bound

@@ -1,0 +1,66 @@
+schema_version: 1
+id: CPY0209
+title: "Instantiating abstract AST node classes is deprecated"
+summary: >-
+  Creating instances of abstract AST node classes such as ast.AST or
+  ast.expr is deprecated in Python 3.15. Its scheduled Python 3.20 error is
+  outside this registry's supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: ast.AST
+
+timeline:
+  - event: deprecated
+    python: "3.15"
+    certainty: released
+    source: python-3.15-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-call
+    qualified_name: ast.AST
+  - kind: qualified-call
+    qualified_name: ast.mod
+  - kind: qualified-call
+    qualified_name: ast.stmt
+  - kind: qualified-call
+    qualified_name: ast.expr
+  - kind: qualified-call
+    qualified_name: ast.expr_context
+  - kind: qualified-call
+    qualified_name: ast.boolop
+  - kind: qualified-call
+    qualified_name: ast.operator
+  - kind: qualified-call
+    qualified_name: ast.unaryop
+  - kind: qualified-call
+    qualified_name: ast.cmpop
+  - kind: qualified-call
+    qualified_name: ast.excepthandler
+  - kind: qualified-call
+    qualified_name: ast.pattern
+  - kind: qualified-call
+    qualified_name: ast.type_ignore
+  - kind: qualified-call
+    qualified_name: ast.type_param
+
+remediation:
+  summary: >-
+    Instantiate a concrete node class instead of its abstract base.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+  automation: null
+
+sources:
+  - id: python-3.15-deprecated
+    title: "What's New in Python 3.15 — Deprecated › New deprecations"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+
+tags: [stdlib, scheduled-removal, ast, outside-window]

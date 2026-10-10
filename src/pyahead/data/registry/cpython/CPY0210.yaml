@@ -1,0 +1,89 @@
+schema_version: 1
+id: CPY0210
+title: "Standard-library module version attributes are deprecated"
+summary: >-
+  The __version__, version and VERSION attributes of twenty-three
+  standard-library modules, and logging.__date__, are deprecated in Python
+  3.15. Their scheduled Python 3.20 removal is outside this registry's
+  supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: attribute
+  name: json.__version__
+
+timeline:
+  - event: deprecated
+    python: "3.15"
+    certainty: released
+    source: python-3.15-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: argparse.__version__
+  - kind: qualified-reference
+    qualified_name: csv.__version__
+  - kind: qualified-reference
+    qualified_name: ctypes.__version__
+  - kind: qualified-reference
+    qualified_name: ctypes.macholib.__version__
+  - kind: qualified-reference
+    qualified_name: decimal.__version__
+  - kind: qualified-reference
+    qualified_name: http.server.__version__
+  - kind: qualified-reference
+    qualified_name: imaplib.__version__
+  - kind: qualified-reference
+    qualified_name: ipaddress.__version__
+  - kind: qualified-reference
+    qualified_name: json.__version__
+  - kind: qualified-reference
+    qualified_name: logging.__version__
+  - kind: qualified-reference
+    qualified_name: logging.__date__
+  - kind: qualified-reference
+    qualified_name: optparse.__version__
+  - kind: qualified-reference
+    qualified_name: platform.__version__
+  - kind: qualified-reference
+    qualified_name: re.__version__
+  - kind: qualified-reference
+    qualified_name: socketserver.__version__
+  - kind: qualified-reference
+    qualified_name: tabnanny.__version__
+  - kind: qualified-reference
+    qualified_name: tarfile.version
+  - kind: qualified-reference
+    qualified_name: tkinter.font.__version__
+  - kind: qualified-reference
+    qualified_name: tkinter.ttk.__version__
+  - kind: qualified-reference
+    qualified_name: wsgiref.simple_server.__version__
+  - kind: qualified-reference
+    qualified_name: xml.etree.ElementTree.VERSION
+  - kind: qualified-reference
+    qualified_name: xml.sax.expatreader.version
+  - kind: qualified-reference
+    qualified_name: xml.sax.handler.version
+  - kind: qualified-reference
+    qualified_name: zlib.__version__
+
+remediation:
+  summary: >-
+    Use sys.version_info; for decimal, use decimal.SPEC_VERSION.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+  automation: null
+
+sources:
+  - id: python-3.15-deprecated
+    title: "What's New in Python 3.15 — Deprecated › New deprecations"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+
+tags: [stdlib, scheduled-removal, attribute, outside-window]

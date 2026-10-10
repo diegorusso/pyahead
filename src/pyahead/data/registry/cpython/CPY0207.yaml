@@ -1,0 +1,46 @@
+schema_version: 1
+id: CPY0207
+title: "Cookie js_output methods are deprecated"
+summary: >-
+  http.cookies.Morsel.js_output and BaseCookie.js_output are deprecated in
+  Python 3.15. Their scheduled Python 3.19 removal is outside this registry's
+  supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: function
+  name: http.cookies.Morsel.js_output
+
+timeline:
+  - event: deprecated
+    python: "3.15"
+    certainty: released
+    source: python-3.15-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: http.cookies.Morsel.js_output
+  - kind: qualified-reference
+    qualified_name: http.cookies.BaseCookie.js_output
+  - kind: qualified-reference
+    qualified_name: http.cookies.SimpleCookie.js_output
+
+remediation:
+  summary: >-
+    Use Morsel.output or BaseCookie.output and set the cookie from the server response.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+  automation: null
+
+sources:
+  - id: python-3.15-deprecated
+    title: "What's New in Python 3.15 — Deprecated › New deprecations"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+
+tags: [stdlib, scheduled-removal, http, partial, outside-window]

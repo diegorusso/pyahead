@@ -22,7 +22,7 @@ timeline:
     source: python-3.10-deprecated
   - event: removed
     python: "3.15"
-    certainty: scheduled
+    certainty: released
     source: python-3.15-removed
 
 impact:

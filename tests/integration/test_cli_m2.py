@@ -135,8 +135,8 @@ def test_registry_validate_and_list_use_the_bundled_snapshot(
     """Both registry subcommands are deterministic scan-free operations."""
     assert main(["registry", "validate"]) == int(ExitCode.SUCCESS)
     validated = capsys.readouterr()
-    assert validated.out.startswith("Registry 2026.09.20 (")
-    assert validated.out.endswith(": 198 rules valid.\n")
+    assert validated.out.startswith("Registry 2026.10.10 (")
+    assert validated.out.endswith(": 205 rules valid.\n")
     assert validated.err == ""
 
     assert main(["registry", "list"]) == int(ExitCode.SUCCESS)
@@ -147,8 +147,8 @@ def test_registry_validate_and_list_use_the_bundled_snapshot(
 
     assert main(["registry", "coverage"]) == int(ExitCode.SUCCESS)
     coverage = capsys.readouterr()
-    assert "Sources: 19\n" in coverage.out
-    assert "Rules covered: 198/198\n" in coverage.out
+    assert "Sources: 21\n" in coverage.out
+    assert "Rules covered: 205/205\n" in coverage.out
     assert coverage.out.endswith("Unclassified source entries: 0\n")
     assert coverage.err == ""
 

@@ -287,7 +287,7 @@ def test_requires_python_and_default_horizon_are_inferred_with_provenance(
     )
 
     assert str(resolved.policy.baseline_python) == "3.11"
-    assert str(resolved.policy.horizon_python) == "3.15"
+    assert str(resolved.policy.horizon_python) == "3.16"
     assert (
         resolved.policy_provenance.baseline_python
         == "pyproject.toml:project.requires-python"

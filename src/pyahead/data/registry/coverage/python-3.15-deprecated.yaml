@@ -1,0 +1,192 @@
+schema_version: 1
+source:
+  id: python-3.15-deprecated
+  title: "What's New in Python 3.15 — Deprecated › New deprecations"
+  url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+  checked_on: "2026-10-10"
+
+# The ordered keys are independently pinned by tests and enumerate every
+# top-level and nested API bullet in the selected section of the 3.15.0 page.
+source_keys:
+  - ast-abstract-node-instantiation
+  - base64-alternative-alphabet-plus-slash
+  - cli-bytes-warning-options
+  - collections-abc-bytestring-runtime-warning
+  - collections-abc-bytestring-from-import
+  - collections-abc-bytestring-attribute
+  - hashlib-string-keyword
+  - http-cookies-js-output
+  - imaplib-imap4-file-assignment
+  - profile-module
+  - re-match-soft-deprecation
+  - struct-new-and-reinit
+  - struct-f-d-type-codes
+  - typing-bytestring-runtime-warning
+  - typing-bytestring-from-import
+  - typing-bytestring-attribute
+  - typing-protocol-inherited-runtime-checkable
+  - webbrowser-macosxosascript
+  - module-version-attributes
+  - module-version-argparse
+  - module-version-csv
+  - module-version-ctypes
+  - module-version-ctypes-macholib
+  - module-version-decimal
+  - module-version-http-server
+  - module-version-imaplib
+  - module-version-ipaddress
+  - module-version-json
+  - module-version-logging
+  - module-version-optparse
+  - module-version-pickle
+  - module-version-platform
+  - module-version-re
+  - module-version-socketserver
+  - module-version-tabnanny
+  - module-version-tarfile
+  - module-version-tkinter-font
+  - module-version-tkinter-ttk
+  - module-version-wsgiref-simple-server
+  - module-version-xml-etree-elementtree
+  - module-version-xml-sax-expatreader
+  - module-version-xml-sax-handler
+  - module-version-zlib
+
+entries:
+  - source_key: ast-abstract-node-instantiation
+    disposition: implemented
+    rules: [CPY0209]
+  - source_key: base64-alternative-alphabet-plus-slash
+    disposition: not-statically-detectable
+    note: Whether decoded input contains + or / alongside an alternative alphabet is a runtime value.
+  - source_key: cli-bytes-warning-options
+    disposition: not-applicable
+    note: The -b and -bb options are interpreter command-line flags, not Python source.
+  - source_key: collections-abc-bytestring-runtime-warning
+    disposition: duplicate
+    rules: [CPY0044]
+    note: This parent bullet is decomposed into the two statement bullets below.
+  - source_key: collections-abc-bytestring-from-import
+    disposition: duplicate
+    rules: [CPY0044]
+    note: The Python 3.12 deprecation of the same class is represented by CPY0044.
+  - source_key: collections-abc-bytestring-attribute
+    disposition: duplicate
+    rules: [CPY0044]
+    note: The Python 3.12 deprecation of the same class is represented by CPY0044.
+  - source_key: hashlib-string-keyword
+    disposition: implemented
+    rules: [CPY0208]
+  - source_key: http-cookies-js-output
+    disposition: partial
+    rules: [CPY0207]
+    note: Exact Morsel, BaseCookie and SimpleCookie references are detected; arbitrary cookie receivers require type inference.
+  - source_key: imaplib-imap4-file-assignment
+    disposition: not-statically-detectable
+    note: Recognizing an assignment to the file attribute of an IMAP4 instance requires type inference.
+  - source_key: profile-module
+    disposition: implemented
+    rules: [CPY0205]
+  - source_key: re-match-soft-deprecation
+    disposition: not-applicable
+    note: A soft deprecation with no removal plan, and CPython advises code supporting older versions to keep using match(); reporting it would give the wrong advice.
+  - source_key: struct-new-and-reinit
+    disposition: not-statically-detectable
+    note: Calling Struct.__new__ directly or re-running __init__ on an initialized object needs receiver and call-history inference.
+  - source_key: struct-f-d-type-codes
+    disposition: not-statically-detectable
+    note: The closed matcher schema cannot express the content of a format string; the soft deprecation also has no removal plan.
+  - source_key: typing-bytestring-runtime-warning
+    disposition: duplicate
+    rules: [CPY0091]
+    note: This parent bullet is decomposed into the two statement bullets below.
+  - source_key: typing-bytestring-from-import
+    disposition: duplicate
+    rules: [CPY0091]
+    note: The Python 3.9 deprecation of the same class is represented by CPY0091.
+  - source_key: typing-bytestring-attribute
+    disposition: duplicate
+    rules: [CPY0091]
+    note: The Python 3.9 deprecation of the same class is represented by CPY0091.
+  - source_key: typing-protocol-inherited-runtime-checkable
+    disposition: not-statically-detectable
+    note: Whether a protocol inherits runtime_checkable without being decorated itself, and whether isinstance receives it, needs class analysis.
+  - source_key: webbrowser-macosxosascript
+    disposition: implemented
+    rules: [CPY0206]
+  - source_key: module-version-attributes
+    disposition: duplicate
+    rules: [CPY0210]
+    note: This parent bullet is decomposed into the twenty-four named module bullets below.
+  - source_key: module-version-argparse
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-csv
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-ctypes
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-ctypes-macholib
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-decimal
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-http-server
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-imaplib
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-ipaddress
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-json
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-logging
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-optparse
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-pickle
+    disposition: not-applicable
+    note: pickle defines no __version__, version or VERSION attribute in CPython 3.14 or 3.15, so there is nothing to reference.
+  - source_key: module-version-platform
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-re
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-socketserver
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-tabnanny
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-tarfile
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-tkinter-font
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-tkinter-ttk
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-wsgiref-simple-server
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-xml-etree-elementtree
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-xml-sax-expatreader
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-xml-sax-handler
+    disposition: implemented
+    rules: [CPY0210]
+  - source_key: module-version-zlib
+    disposition: implemented
+    rules: [CPY0210]

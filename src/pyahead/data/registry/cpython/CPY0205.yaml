@@ -1,0 +1,44 @@
+schema_version: 1
+id: CPY0205
+title: "The profile module is deprecated"
+summary: >-
+  The pure-Python profile module is deprecated in Python 3.15. Its scheduled
+  Python 3.17 removal is outside this registry's supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: module
+  name: profile
+
+timeline:
+  - event: deprecated
+    python: "3.15"
+    certainty: released
+    source: python-3.15-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: module-import
+    module: profile
+  - kind: literal-dynamic-import
+    module: profile
+    confidence: medium
+
+remediation:
+  summary: >-
+    Use profiling.tracing, which provides a compatible API (PEP 799). cProfile is not affected.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+  automation: null
+
+sources:
+  - id: python-3.15-deprecated
+    title: "What's New in Python 3.15 — Deprecated › New deprecations"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+
+tags: [stdlib, scheduled-removal, module, outside-window]

@@ -1,0 +1,42 @@
+schema_version: 1
+id: CPY0206
+title: "webbrowser.MacOSXOSAScript is deprecated"
+summary: >-
+  webbrowser.MacOSXOSAScript is deprecated in Python 3.15 in favour of
+  webbrowser.MacOS. Its scheduled Python 3.17 removal is outside this
+  registry's supported window.
+
+scope:
+  ecosystem: python
+  runtime: cpython
+  contexts: [runtime]
+
+subject:
+  kind: class
+  name: webbrowser.MacOSXOSAScript
+
+timeline:
+  - event: deprecated
+    python: "3.15"
+    certainty: released
+    source: python-3.15-deprecated
+
+impact:
+  on_deprecation: deprecated
+
+matchers:
+  - kind: qualified-reference
+    qualified_name: webbrowser.MacOSXOSAScript
+
+remediation:
+  summary: >-
+    Use webbrowser.MacOS.
+  documentation_url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+  automation: null
+
+sources:
+  - id: python-3.15-deprecated
+    title: "What's New in Python 3.15 — Deprecated › New deprecations"
+    url: "https://docs.python.org/3.15/whatsnew/3.15.html#new-deprecations"
+
+tags: [stdlib, scheduled-removal, webbrowser, macos, outside-window]
