@@ -568,7 +568,10 @@ def _uv_executable() -> str:
     if uv is None:
         message = "uv is required to provision interpreters and packages"
         raise PypiValidateError(message)
-    return uv
+    # Resolved: the sandbox binds the resolved file, so a PATH entry that is a
+    # symlink (Homebrew's bin/uv -> ../Cellar/uv/<version>/bin/uv) would be
+    # exec'd at a path the sandbox does not contain.
+    return str(Path(uv).resolve())
 
 
 def _uv_python_install_dir(uv: str, *, timeout: float) -> Path | None:
