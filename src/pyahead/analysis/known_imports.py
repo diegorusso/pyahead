@@ -365,6 +365,8 @@ _ATTRIBUTES: dict[str, str] = {
     "math.lcm": "3.9",
     "itertools.pairwise": "3.10",
     "itertools.batched": "3.12",
+    # The C profiler a pure-Python profile fallback exists for (CPY0205).
+    "cProfile.Profile": "3.0",
     "functools.lru_cache": "3.2",
     "functools.singledispatch": "3.4",
     "functools.singledispatchmethod": "3.8",

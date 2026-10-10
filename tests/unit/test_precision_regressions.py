@@ -406,6 +406,10 @@ def _fallback(body: str, handler: str, *, catch: str = "ImportError") -> str:
     ("source", "rule_id"),
     [
         (_fallback("import _imp as imp", "import imp"), "CPY0024"),
+        (
+            _fallback("from cProfile import Profile", "from profile import Profile"),
+            "CPY0205",
+        ),
         (_fallback("import sysconfig", "from distutils import sysconfig"), "CPY0023"),
         (
             _fallback("import re._constants as sre_constants", "import sre_constants"),
@@ -438,6 +442,7 @@ def _fallback(body: str, handler: str, *, catch: str = "ImportError") -> str:
     ],
     ids=(
         "gevent-imp",
+        "werkzeug-cprofile",
         "future-sysconfig",
         "hypothesis-sre",
         "hypothesis-sre-with-reads",
