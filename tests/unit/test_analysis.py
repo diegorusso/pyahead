@@ -562,6 +562,30 @@ def test_unparseable_source_marks_scan_incomplete(tmp_path: Path) -> None:
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "if x:\n    a = 1\n  b = 2\n",
+        "def f():\n        return 1\n    x = 2\n",
+    ],
+    ids=["dedent-mismatch", "function-dedent-mismatch"],
+)
+def test_inconsistent_dedent_is_one_incomplete_file(
+    tmp_path: Path, source: str
+) -> None:
+    """A tokenizer IndentationError is a parse diagnostic, not an internal error."""
+    (tmp_path / "broken.py").write_text(source, encoding="utf-8")
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+
+    report = _scan(tmp_path)
+
+    assert len(report.findings) == 1
+    assert report.counts.files_incomplete == 1
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["PYA1003"]
+    assert report.diagnostics[0].location.path.as_posix() == "broken.py"
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
 def test_on_file_reports_each_parsed_file_in_order(tmp_path: Path) -> None:
     """The callback sees every file once, in order, and never a finding."""
     (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")

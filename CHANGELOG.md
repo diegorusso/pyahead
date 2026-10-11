@@ -8,6 +8,10 @@ stabilizing.
 
 ### Fixed
 
+- One Python file whose dedent matched no outer indentation level (for
+  example `if x:` / `    a = 1` / `  b = 2`) aborted the whole scan with
+  `PYA9000` (exit 4). It is now that file's `PYA1003` parse diagnostic and an
+  incomplete scan (exit 3), and every other file is still analysed.
 - A `--registry` file containing a control character such as `\x07` was an
   internal error (`PYA9000`, exit 4) when PyYAML ran without libyaml; it is
   now invalid input naming the file (exit 2), like every other malformed

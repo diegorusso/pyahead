@@ -1168,6 +1168,9 @@ def _operator_nesting_diagnostic(
                 nesting = 0
     except tokenize.TokenError:
         return None
+    except IndentationError:
+        # LibCST produces the user-facing syntax diagnostic for malformed tokens.
+        return None
     return None
 
 
