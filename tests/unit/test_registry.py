@@ -496,7 +496,7 @@ def test_registry_rejects_invalid_rule_values(
     original: str,
     replacement: str,
 ) -> None:
-    """M1 validates every rule value it consumes before analysis."""
+    """The loader validates every rule value it consumes before analysis."""
     rule_text = (_BUNDLED_REGISTRY / "cpython/CPY0001.yaml").read_text(encoding="utf-8")
     assert original in rule_text
     registry_dir = _write_registry(

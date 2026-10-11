@@ -1,4 +1,4 @@
-"""Strict deterministic M4 baseline files."""
+"""Strict deterministic baseline files."""
 
 import json
 from dataclasses import dataclass

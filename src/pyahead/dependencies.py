@@ -1,4 +1,4 @@
-"""Opt-in M8 dependency metadata and isolated resolver evidence."""
+"""Opt-in dependency metadata and isolated resolver evidence."""
 
 from __future__ import annotations
 
@@ -725,7 +725,7 @@ class TargetDependencyResult:
 
 @dataclass(frozen=True)
 class DependencyReport:
-    """Deterministic M8 report independent from the static finding gate."""
+    """Deterministic dependency report independent from the static finding gate."""
 
     schema_version: int
     project_kind: DependencyProjectKind
@@ -1443,7 +1443,7 @@ def load_dependency_configuration(
     resolve_override: bool | None = None,
     timeout_override: float | None = None,
 ) -> DependencyConfiguration:
-    """Load strict M8 configuration without using host environment defaults."""
+    """Load strict dependency configuration without host environment defaults."""
     table = _read_dependency_table(root, config_path)
     inputs = _dependency_inputs(table)
     controls = _dependency_controls(
@@ -6746,7 +6746,7 @@ def _validate_dependency_report_semantics(report: DependencyReport) -> None:
 
 
 def dependency_report_document(report: DependencyReport) -> dict[str, JsonValue]:
-    """Return the closed deterministic JSON representation of an M8 report."""
+    """Return the closed deterministic JSON representation of a dependency report."""
     _validate_dependency_report_semantics(report)
     return {
         "controls": {

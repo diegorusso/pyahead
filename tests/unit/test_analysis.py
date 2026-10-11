@@ -1,4 +1,4 @@
-"""Unit and fixture tests for the M1 exact-import analysis."""
+"""Unit and fixture tests for exact-import analysis."""
 
 import json
 from pathlib import Path, PurePosixPath
@@ -461,7 +461,7 @@ def test_policy_before_removal_reports_deprecation_without_failing() -> None:
 
 
 def test_policy_before_registry_window_is_rejected(tmp_path: Path) -> None:
-    """M4 policies cannot silently claim analysis outside curated coverage."""
+    """Policies cannot silently claim analysis outside curated coverage."""
     (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="registry analysis window"):

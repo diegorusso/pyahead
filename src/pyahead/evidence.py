@@ -1,4 +1,4 @@
-"""Strict M7 warning-evidence ingestion and static/dynamic linking."""
+"""Strict warning-evidence ingestion and static/dynamic linking."""
 
 from __future__ import annotations
 

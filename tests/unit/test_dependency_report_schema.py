@@ -1,4 +1,4 @@
-"""Strict public schema tests for M8 dependency reports."""
+"""Strict public schema tests for dependency reports."""
 
 import json
 from copy import deepcopy

@@ -1,4 +1,4 @@
-"""Inline and per-file M4 suppression handling."""
+"""Inline and per-file suppression handling."""
 
 import io
 import re

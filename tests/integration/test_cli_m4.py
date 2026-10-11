@@ -1,4 +1,4 @@
-"""End-to-end acceptance tests for M4 configuration and CI reports."""
+"""End-to-end acceptance tests for configuration and CI reports."""
 
 import json
 from pathlib import Path

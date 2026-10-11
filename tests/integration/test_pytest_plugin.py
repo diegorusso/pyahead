@@ -1,4 +1,4 @@
-"""Real pytest-plugin execution tests for M7 and M8.5b warning evidence."""
+"""Real pytest-plugin execution tests for warning evidence."""
 
 # ruff: noqa: SLF001 -- bounded-state assertions intentionally exercise internals.
 

@@ -1,4 +1,4 @@
-"""Contract tests for M6 public-alpha hardening assets."""
+"""Contract tests for public-alpha hardening assets."""
 
 # ruff: noqa: SLF001
 

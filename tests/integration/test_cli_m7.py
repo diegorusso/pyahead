@@ -1,4 +1,4 @@
-"""End-to-end CLI ingestion tests for M7 warning evidence."""
+"""End-to-end CLI ingestion tests for warning evidence."""
 
 import json
 from pathlib import Path

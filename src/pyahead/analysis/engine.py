@@ -230,7 +230,7 @@ def _location(
 
 
 class _MatcherVisitor(cst.CSTVisitor):
-    """Run all indexed M2 matchers in one metadata-aware traversal."""
+    """Run all indexed matchers in one metadata-aware traversal."""
 
     METADATA_DEPENDENCIES = (
         ExpressionContextProvider,

@@ -1,4 +1,4 @@
-"""Strict artifact, merge, and report tests for M7 observed evidence."""
+"""Strict artifact, merge, and report tests for observed evidence."""
 
 import json
 from collections.abc import Callable

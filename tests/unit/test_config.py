@@ -1,4 +1,4 @@
-"""Tests for strict M4 project configuration and policy inference."""
+"""Tests for strict project configuration and policy inference."""
 
 from dataclasses import replace
 from pathlib import Path

@@ -1,4 +1,4 @@
-"""M8 dependency target, metadata, and resolver boundary tests."""
+"""Dependency target, metadata, and resolver boundary tests."""
 
 from __future__ import annotations
 

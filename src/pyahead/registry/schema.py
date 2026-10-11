@@ -1648,7 +1648,7 @@ def render_json_schema(document: JsonSchema) -> str:
 
 
 def write_json_schemas(directory: Path) -> tuple[Path, Path]:
-    """Write generated schemas while preserving the M2 return contract."""
+    """Write the generated registry schemas and return their paths."""
     directory.mkdir(parents=True, exist_ok=True)
     index_path = directory / "registry-index-v1.json"
     rule_path = directory / "registry-rule-v1.json"

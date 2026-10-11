@@ -1,4 +1,4 @@
-"""Regression contracts from the M6 public-corpus precision review."""
+"""Regression contracts from the public-corpus precision review."""
 
 from pathlib import Path
 

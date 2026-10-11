@@ -1,4 +1,4 @@
-"""Acceptance fixtures for the indexed M2 matcher framework."""
+"""Acceptance fixtures for the indexed matcher framework."""
 
 from pathlib import Path, PurePosixPath
 from typing import cast

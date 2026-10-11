@@ -612,7 +612,7 @@ def test_matcher_identity_normalizes_set_like_keyword_predicates() -> None:
 
 
 def test_schema_supports_all_event_and_matcher_metadata_for_explanation() -> None:
-    """The strict model represents M2 data without executing later behavior."""
+    """The strict model represents registry data without executing later behavior."""
     document = _rule_document()
     document["id"] = "CPY9002"
     document["aliases"] = ["CPY9001"]

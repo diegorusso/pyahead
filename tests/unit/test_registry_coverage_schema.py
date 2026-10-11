@@ -1,4 +1,4 @@
-"""Strict schema and cross-file validation for M5 coverage manifests."""
+"""Strict schema and cross-file validation for coverage manifests."""
 
 import json
 from copy import deepcopy
