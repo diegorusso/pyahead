@@ -52,7 +52,7 @@ from pyahead.model import ConfigurationError, ExitCode
 
 if TYPE_CHECKING:
     import threading
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from types import FrameType
 
 _ARTIFACT_COUNT = 2
@@ -100,6 +100,16 @@ _NO_USABLE_WHEELS_DIAGNOSTIC = (
     "  hint: Wheels are required for `demo` because building from source is "
     "disabled for all packages (i.e., with `--no-build`)\n"
 )
+
+
+def _plain_uv_grammar(diagnostic: str) -> str:
+    """Spell a uv 0.11 solver diagnostic the way uv 0.12.18 prints it."""
+    return diagnostic.replace(
+        "\N{MULTIPLICATION SIGN} No solution found when resolving dependencies:",
+        "error: No solution found when resolving dependencies",
+    ).replace("╰─▶ ", "cause: ")
+
+
 _MISSING_CONFLICT_DISTRIBUTION_DIAGNOSTIC = (
     "  \N{MULTIPLICATION SIGN} No solution found when resolving dependencies:\n"
     "  ╰─▶ Because demo was not found in the provided package locations and you "
@@ -1930,13 +1940,21 @@ def test_replaceable_resolver_order_is_canonicalized(tmp_path: Path) -> None:
         ),
     ],
 )
+@pytest.mark.parametrize(
+    ("uv_version", "spell"),
+    [("0.11.21", lambda text: text), ("0.12.18", _plain_uv_grammar)],
+    ids=["uv-0.11.21", "uv-0.12.18"],
+)
 def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     case: tuple[str | None, str | None, tuple[str, ...], str],
+    uv_version: str,
+    spell: Callable[[str], str],
 ) -> None:
     """Missing names, versions, target wheels, and wheels are availability."""
-    artifact_name, artifact_tag, requirements, diagnostic = case
+    artifact_name, artifact_tag, requirements, tree_diagnostic = case
+    diagnostic = spell(tree_diagnostic)
     metadata_paths: tuple[Path, ...] = ()
     artifacts: tuple[dependency_module.MetadataArtifact, ...] = ()
     if artifact_name is not None:
@@ -1962,7 +1980,7 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
     ) -> subprocess.CompletedProcess[str]:
         calls.append(command)
         if len(calls) == 1:
-            return subprocess.CompletedProcess(command, 0, "uv 0.11.21\n", "")
+            return subprocess.CompletedProcess(command, 0, f"uv {uv_version}\n", "")
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
@@ -1981,7 +1999,7 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
 
     assert result.status is ResolutionStatus.ARTIFACT_UNAVAILABLE
     assert result.complete is True
-    assert result.resolver_version == "0.11.21"
+    assert result.resolver_version == uv_version
     assert len(calls) == _RESOLVER_PROCESS_COUNT
     assert "pip" in calls[1]
     assert "compile" in calls[1]
@@ -1992,6 +2010,7 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
     ("resolver_version", "returncode", "diagnostic"),
     [
         ("0.11.22", 1, _MISSING_DISTRIBUTION_DIAGNOSTIC),
+        ("0.12.17", 1, _plain_uv_grammar(_MISSING_DISTRIBUTION_DIAGNOSTIC)),
         ("0.11.21.0", 1, _MISSING_DISTRIBUTION_DIAGNOSTIC),
         (
             "0.11.21",
@@ -2019,6 +2038,7 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
     ],
     ids=[
         "unreviewed-version",
+        "unreviewed-plain-grammar-version",
         "noncanonical-reviewed-version",
         "unknown-grammar",
         "unknown-hint",
@@ -2458,6 +2478,20 @@ def test_artifact_failure_closes_only_the_root_named_by_uv(
             _UV_012_MACOS_UNSATISFIABLE_DIAGNOSTIC,
             ResolutionStatus.RESOLUTION_FAILED,
             True,
+        ),
+        (
+            "0.12.18 (Homebrew 2026-09-22 aarch64-unknown-linux-gnu)",
+            1,
+            _plain_uv_grammar(_UNSATISFIABLE_DIAGNOSTIC),
+            ResolutionStatus.RESOLUTION_FAILED,
+            True,
+        ),
+        (
+            "0.13.0",
+            1,
+            _plain_uv_grammar(_UNSATISFIABLE_DIAGNOSTIC),
+            ResolutionStatus.UNVERIFIED,
+            False,
         ),
         (
             "0.13.0",

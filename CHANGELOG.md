@@ -4,6 +4,18 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
+## Unreleased
+
+### Fixed
+
+- `pyahead dependencies` with `uv` 0.12.18: a dependency conflict or a closed
+  offline artifact absence was reported as incomplete evidence (exit 3)
+  instead of `resolution-failed` or `artifact-unavailable`. Later 0.12
+  releases print the solver proof under a plain `error: … / cause: …` header
+  rather than `× … / ╰─▶ …`; the proof sentences are unchanged and PyAhead now
+  reads both spellings. Closed artifact absence is accepted from `uv` 0.11.21
+  and 0.12.18 exactly; any other version stays unverified.
+
 ## 0.5.0 - 2026-10-10
 
 Python 3.15.0 was released on 9 October 2026. The registry records it as a

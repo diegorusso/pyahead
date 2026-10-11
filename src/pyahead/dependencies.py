@@ -174,6 +174,13 @@ _STATIC_SDIST_METADATA_VERSION = Version("2.2")
 _UV_NO_SOLUTION_HEADER = (
     "\N{MULTIPLICATION SIGN} No solution found when resolving dependencies:"
 )
+# Later uv 0.12 releases (reviewed at 0.12.18) print the same solver proof under
+# a plain header, with "cause: " where earlier releases drew "╰─▶ ". The proof
+# sentences and hints are unchanged, so this form is rewritten to the one above
+# and every check after that is shared.
+_UV_PLAIN_NO_SOLUTION_HEADER = "error: No solution found when resolving dependencies"
+_UV_PLAIN_CAUSE_PREFIX = "cause: "
+_UV_TREE_CAUSE_PREFIX = "╰─▶ "
 _MIN_UNSATISFIABLE_LINES = 2
 _UV_NON_SOLVER_TERMS = (
     "authentication",
@@ -193,7 +200,7 @@ _UV_ARTIFACT_AVAILABILITY_TERMS = (
     "was not found in the package registry",
     "was not found in the provided package locations",
 )
-_REVIEWED_UV_ARTIFACT_AVAILABILITY_VERSION = Version("0.11.21")
+_REVIEWED_UV_ARTIFACT_AVAILABILITY_VERSIONS = frozenset({"0.11.21", "0.12.18"})
 _UV_MISSING_PACKAGE_PROOF = re.compile(
     r"\A╰─▶ Because (?P<name>[A-Za-z0-9][A-Za-z0-9._-]*) was not found in "
     r"the provided package locations and you require (?P<requirement>.+), we "
@@ -5687,7 +5694,7 @@ def _uv_reports_unsatisfiable(diagnostic: str, version: str) -> bool:
     explanation = " ".join(lines[1:])
     normalized = explanation.casefold()
     return (
-        explanation.startswith("╰─▶ Because ")
+        explanation.startswith(_UV_TREE_CAUSE_PREFIX + "Because ")
         and explanation.endswith("requirements are unsatisfiable.")
         and not any(term in normalized for term in _UV_NON_SOLVER_TERMS)
     )
@@ -5747,12 +5754,12 @@ def _reviewed_uv_artifact_diagnostic(
     version: str,
     closed: Sequence[_ClosedArtifactUnavailability],
 ) -> tuple[str, str | None] | None:
-    """Return one bounded proof and optional reviewed hint from uv 0.11.21."""
+    """Return one bounded proof and optional hint from a reviewed uv release."""
     parsed_version = re.fullmatch(r"(?P<version>[0-9]+(?:\.[0-9]+)+)(?: .*)?", version)
     if (
         parsed_version is None
         or parsed_version.group("version")
-        != str(_REVIEWED_UV_ARTIFACT_AVAILABILITY_VERSION)
+        not in _REVIEWED_UV_ARTIFACT_AVAILABILITY_VERSIONS
         or not closed
     ):
         return None
@@ -5830,7 +5837,7 @@ def _uv_reports_artifact_unavailable(
     version: str,
     closed: Sequence[_ClosedArtifactUnavailability],
 ) -> _ClosedArtifactUnavailability | None:
-    """Recognize reviewed uv 0.11.21 closure grammar and nothing broader."""
+    """Recognize reviewed uv closure grammar and nothing broader."""
     retained = _reviewed_uv_artifact_diagnostic(diagnostic, version, closed)
     if retained is None:
         return None
@@ -5852,6 +5859,13 @@ def _stable_uv_diagnostic(diagnostic: str) -> str:
         lines[0],
     ):
         lines.pop(0)
+    if (
+        len(lines) >= _MIN_UNSATISFIABLE_LINES
+        and lines[0] == _UV_PLAIN_NO_SOLUTION_HEADER
+        and lines[1].startswith(_UV_PLAIN_CAUSE_PREFIX)
+    ):
+        lines[0] = _UV_NO_SOLUTION_HEADER
+        lines[1] = _UV_TREE_CAUSE_PREFIX + lines[1].removeprefix(_UV_PLAIN_CAUSE_PREFIX)
     return "\n".join(lines)
 
 

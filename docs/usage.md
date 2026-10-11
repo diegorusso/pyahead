@@ -571,7 +571,12 @@ A complete negative resolver status applies only to the independently
 corroborated root group. It does not verify unrelated roots or transitive
 requirements; any such incomplete evidence keeps exit code 3 precedence.
 Repository CI pins `uv 0.11.21` for the real offline regression. Other versions
-remain unverified unless their diagnostic series is in the reviewed allowlist.
+remain unverified unless their diagnostic series is in the reviewed allowlist:
+constraint conflicts are recognized from the `uv` 0.11 and 0.12 series, closed
+offline artifact absence from exactly `uv` 0.11.21 and 0.12.18. Later 0.12
+releases print the same solver proof under a plain `error: No solution found
+when resolving dependencies` header with a `cause:` line; PyAhead reads both
+spellings.
 
 The result categories are intentionally not interchangeable:
 
