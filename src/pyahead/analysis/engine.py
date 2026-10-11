@@ -1240,7 +1240,9 @@ def _parse_file_with_context(
         context.target_versions,
         context.source_roots,
     )
-    wrapper = MetadataWrapper(module)
+    # The module was just parsed and is never modified, so every node is
+    # already unique; the defensive deep copy would only double the work.
+    wrapper = MetadataWrapper(module, unsafe_skip_copy=True)
     inline_suppressions = index_inline_suppressions(inline_directives)
     try:
         inline_suppressions = index_inline_suppressions(
