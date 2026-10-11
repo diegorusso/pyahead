@@ -81,6 +81,7 @@ from pyahead.analysis.suppressions import (
 from pyahead.baseline import load_baseline
 from pyahead.config import (
     ConfigurationOverrides,
+    ResolvedConfiguration,
     _load_project_configuration_snapshot,
     _resolve_snapshot_configuration,
 )
@@ -1700,6 +1701,32 @@ def _report_file_progress(request: ScanRequest, progress: FileProgress) -> None:
         request.on_file(progress)
 
 
+def _scan_report(  # noqa: PLR0913 - one report assembly point.
+    registry: Registry,
+    resolved: ResolvedConfiguration,
+    counts: ScanCounts,
+    diagnostics: tuple[Diagnostic, ...],
+    *,
+    findings: tuple[Finding, ...] = (),
+    inferences: tuple[AnalysisInference, ...] = (),
+) -> ScanReport:
+    """Assemble a report; only counts, findings and notes differ between exits."""
+    return ScanReport(
+        schema_version=1,
+        tool_version=__version__,
+        registry_release=registry.release,
+        registry_revision=registry.revision,
+        policy=resolved.policy,
+        root_label=".",
+        counts=counts,
+        findings=findings,
+        diagnostics=diagnostics,
+        inferences=inferences,
+        configuration=resolved.scan,
+        policy_provenance=resolved.policy_provenance,
+    )
+
+
 def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordinator.
     """Scan Python source without importing, executing, or networking."""
     if request.fail_new_only and request.baseline_file is None:
@@ -1757,6 +1784,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         max_file_size_bytes=resolved.scan.max_file_size_bytes,
         allow_explicit_built_in_roots=True,
     )
+
     try:
         if resolved.source_roots_inferred:
             module_discovery = _discover_configured(root, (), module_options)
@@ -1770,20 +1798,11 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
             module_discovery = DiscoveryResult(files=(), issues=())
         discovery = _discover_configured(root, request.paths, discovery_options)
     except DiscoveryIncompleteError as error:
-        return ScanReport(
-            schema_version=1,
-            tool_version=__version__,
-            registry_release=registry.release,
-            registry_revision=registry.revision,
-            policy=policy,
-            root_label=".",
-            counts=ScanCounts(
-                files_discovered=0,
-                files_analyzed=0,
-                files_incomplete=1,
-            ),
-            findings=(),
-            diagnostics=(
+        return _scan_report(
+            registry,
+            resolved,
+            ScanCounts(files_discovered=0, files_analyzed=0, files_incomplete=1),
+            (
                 *suppression_diagnostics,
                 Diagnostic(
                     code="PYA1001",
@@ -1792,9 +1811,6 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
                     incomplete=True,
                 ),
             ),
-            inferences=(),
-            configuration=resolved.scan,
-            policy_provenance=resolved.policy_provenance,
         )
     source_limit_issues = tuple(
         issue
@@ -1806,30 +1822,21 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
             (issue.relative_path, issue.code, issue.message): issue
             for issue in (*discovery.issues, *source_limit_issues)
         }
-        limit_diagnostics = (
-            *suppression_diagnostics,
-            *(
-                _discovery_issue_diagnostic(reported_issues[key])
-                for key in sorted(reported_issues)
-            ),
-        )
-        return ScanReport(
-            schema_version=1,
-            tool_version=__version__,
-            registry_release=registry.release,
-            registry_revision=registry.revision,
-            policy=policy,
-            root_label=".",
-            counts=ScanCounts(
+        return _scan_report(
+            registry,
+            resolved,
+            ScanCounts(
                 files_discovered=discovery.files_discovered,
                 files_analyzed=0,
                 files_incomplete=len(reported_issues),
             ),
-            findings=(),
-            diagnostics=limit_diagnostics,
-            inferences=(),
-            configuration=resolved.scan,
-            policy_provenance=resolved.policy_provenance,
+            (
+                *suppression_diagnostics,
+                *(
+                    _discovery_issue_diagnostic(reported_issues[key])
+                    for key in sorted(reported_issues)
+                ),
+            ),
         )
     project_modules = project_module_paths(
         module_discovery.files,
@@ -1901,14 +1908,10 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
             ),
         ),
     )
-    return ScanReport(
-        schema_version=1,
-        tool_version=__version__,
-        registry_release=registry.release,
-        registry_revision=registry.revision,
-        policy=policy,
-        root_label=".",
-        counts=ScanCounts(
+    return _scan_report(
+        registry,
+        resolved,
+        ScanCounts(
             files_discovered=discovery.files_discovered,
             files_analyzed=analyzed,
             files_incomplete=incomplete_files,
@@ -1938,6 +1941,4 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
                 ),
             )
         ),
-        configuration=resolved.scan,
-        policy_provenance=resolved.policy_provenance,
     )
