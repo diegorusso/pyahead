@@ -272,7 +272,11 @@ def _validate_yaml_graph(node: yaml.nodes.Node, context: str) -> None:
 
 
 def _load_mapping(text: str, context: str) -> Mapping[str, object]:
-    loader = _UniqueKeySafeLoader(text)
+    try:
+        loader = _UniqueKeySafeLoader(text)
+    except yaml.YAMLError as error:
+        message = f"{context} is not valid YAML"
+        raise RegistryError(message) from error
     try:
         node = loader.get_single_node()
         if node is None:

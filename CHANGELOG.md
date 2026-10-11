@@ -4,6 +4,15 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
+## Unreleased
+
+### Fixed
+
+- A `--registry` file containing a control character such as `\x07` was an
+  internal error (`PYA9000`, exit 4) when PyYAML ran without libyaml; it is
+  now invalid input naming the file (exit 2), like every other malformed
+  registry YAML.
+
 ## 0.6.0 - 2026-10-11
 
 The repository becomes a GitHub Action that uploads findings to code

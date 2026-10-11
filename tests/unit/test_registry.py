@@ -332,6 +332,19 @@ def test_registry_rejects_duplicate_rule_keys_recursively(
         load_registry(registry)
 
 
+@pytest.mark.parametrize("character", ["\x07", "\x7f", "\x1b"])
+def test_registry_rejects_control_characters_as_invalid_yaml(
+    tmp_path: Path,
+    character: str,
+) -> None:
+    """A control character is invalid input, not an internal error."""
+    rule_text = (_BUNDLED_REGISTRY / "cpython/CPY0001.yaml").read_text(encoding="utf-8")
+    registry = _write_registry(tmp_path, rule_text + f'notes: "{character}"\n')
+
+    with pytest.raises(RegistryError, match="not valid YAML"):
+        load_registry(registry)
+
+
 def test_registry_rejects_missing_path(tmp_path: Path) -> None:
     """An absent explicit registry is invalid input."""
     with pytest.raises(RegistryError):
