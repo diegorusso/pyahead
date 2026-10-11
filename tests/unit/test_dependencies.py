@@ -1337,8 +1337,7 @@ def test_resolver_timeout_is_incomplete_not_resolution_failure(
         raise subprocess.TimeoutExpired(cast("list[str]", args[0]), timeout=2.5)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         (),
@@ -1985,13 +1984,12 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     configuration = _configuration(
         metadata_paths=metadata_paths,
         requirements=requirements,
         resolve=True,
     )
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         configuration,
         _target(),
         artifacts,
@@ -2078,8 +2076,7 @@ def test_closed_artifact_absence_rejects_unreviewed_uv_evidence(
         return subprocess.CompletedProcess(command, returncode, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("missing==1.0",),
@@ -2121,8 +2118,7 @@ def test_closed_artifact_absence_rejects_ambiguous_failure_streams(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("missing==1.0",),
@@ -2170,8 +2166,7 @@ def test_closed_artifact_absence_rejects_nonempty_stdout(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("missing==1.0",),
@@ -2206,8 +2201,7 @@ def test_resolver_version_rejects_stderr_contamination(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(requirements=("demo==1.0",), resolve=True, network=True),
         _target(),
         (),
@@ -2244,8 +2238,7 @@ def test_closed_artifact_absence_binds_requested_extras(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("missing[speed]==1.0",),
@@ -2286,8 +2279,7 @@ def test_closed_wrong_abi_evidence_binds_hint_version(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("demo==1.0",),
@@ -2530,8 +2522,7 @@ def test_resolver_requires_constraints_and_versioned_solver_evidence(
         return subprocess.CompletedProcess(command, returncode, "", stderr)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             requirements=("demo==1.0", "demo==2.0"),
             resolve=True,
@@ -2699,7 +2690,6 @@ def test_offline_library_range_absence_remains_unverified(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     wheel = tmp_path / "other-1.0-py3-none-any.whl"
     _wheel(wheel)
     artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
@@ -2712,7 +2702,7 @@ def test_offline_library_range_absence_remains_unverified(
         ),
         project_kind=DependencyProjectKind.LIBRARY,
     )
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         configuration,
         _target(),
         artifacts,
@@ -3232,8 +3222,7 @@ def test_resolver_does_not_promote_broad_failure_text_to_unsatisfiable(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         (),
@@ -3269,8 +3258,7 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(metadata_paths=(wheel,), resolve=True),
         _target(),
         artifacts,
@@ -3318,8 +3306,7 @@ def test_resolver_provenance_names_only_the_selected_platform_artifact(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             target=_target(tags=("cp312-cp312-manylinux_2_17_x86_64",)),
             metadata_paths=(linux, windows),
@@ -3365,8 +3352,7 @@ def test_online_selection_is_not_attributed_to_same_version_local_metadata(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(metadata_paths=(wheel,), resolve=True, network=True),
         _target(),
         artifacts,
@@ -4740,12 +4726,11 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
     assert "unavailable" in result.reason
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(
-        dependency_module,
-        "_run_bounded_process",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", ""),
-    )
-    result = UvResolverAdapter().resolve(
+
+    def unidentified(*_args: object, **_kwargs: object) -> object:
+        return subprocess.CompletedProcess([], 1, "", "")
+
+    result = UvResolverAdapter(run_process=unidentified).resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
     assert result.status is ResolutionStatus.UNVERIFIED
@@ -4754,8 +4739,7 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
     def os_error(*_args: object, **_kwargs: object) -> None:
         raise OSError
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", os_error)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=os_error).resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
     assert result.status is ResolutionStatus.UNVERIFIED
@@ -4766,8 +4750,7 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
         reason = "invalid start byte"
         raise UnicodeDecodeError(codec, b"\xff", 0, 1, reason)
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", decoding_error)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=decoding_error).resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
     assert result.status is ResolutionStatus.UNVERIFIED
@@ -4795,8 +4778,7 @@ def test_resolver_malformed_success_output_is_incomplete(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
     assert result.status is ResolutionStatus.UNVERIFIED
@@ -4819,8 +4801,7 @@ def test_resolver_revalidates_artifact_bytes_before_use(
         message = "changed artifacts must fail before resolver execution"
         raise AssertionError(message)
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", forbidden_process)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=forbidden_process).resolve(
         _configuration(metadata_paths=(wheel,), resolve=True),
         _target(),
         artifacts,
@@ -4865,8 +4846,7 @@ def test_resolver_duplicate_filenames_and_online_local_artifacts_are_explicit(
         output.write_text(_pylock(("demo", "1.0", selected.as_uri())), encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         artifacts,
@@ -5447,8 +5427,7 @@ def test_malformed_pylock_file_url_is_unverified_not_an_internal_error(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         (),
@@ -6027,7 +6006,7 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
         "your requirements are unsatisfiable.\n"
     )
 
-    def resolve_with(diagnostic: str) -> None:
+    def uv_failing_with(diagnostic: str) -> UvResolverAdapter:
         calls = 0
 
         def fake_run(
@@ -6039,10 +6018,9 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
                 return subprocess.CompletedProcess(command, 0, "uv 0.12.0\n", "")
             return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
-        monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+        return UvResolverAdapter(run_process=fake_run)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    resolve_with(range_diagnostic)
     library = replace(
         _configuration(
             requirements=("demo<1", "demo>=2"),
@@ -6051,7 +6029,9 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
         ),
         project_kind=DependencyProjectKind.LIBRARY,
     )
-    range_result = UvResolverAdapter().resolve(library, _target(), (), root=tmp_path)
+    range_result = uv_failing_with(range_diagnostic).resolve(
+        library, _target(), (), root=tmp_path
+    )
     assert range_result.status is ResolutionStatus.RESOLUTION_FAILED
     assert range_result.complete is True
 
@@ -6061,13 +6041,12 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
     _wheel(other)
     artifacts, issues = inspect_dependency_metadata((demo, other), root=tmp_path)
     assert issues == ()
-    resolve_with(transitive_diagnostic)
     application = _configuration(
         metadata_paths=(demo, other),
         requirements=("demo==1.0", "other==2.0"),
         resolve=True,
     )
-    transitive_result = UvResolverAdapter().resolve(
+    transitive_result = uv_failing_with(transitive_diagnostic).resolve(
         application, _target(), artifacts, root=tmp_path
     )
     assert transitive_result.status is ResolutionStatus.UNVERIFIED
@@ -7296,10 +7275,9 @@ def test_direct_resolver_calls_share_the_runtime_work_budget(
 
     monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 5)
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
 
     with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
-        UvResolverAdapter().resolve(
+        UvResolverAdapter(run_process=fake_run).resolve(
             _configuration(
                 metadata_paths=(wheel,),
                 requirements=("demo==1.0", "demo==2.0"),
@@ -7336,7 +7314,6 @@ def test_aggregate_requested_extras_share_the_runtime_work_budget(
 
     monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 7)
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     monkeypatch.setattr(
         dependency_module,
         "assess_dependency_metadata",
@@ -7344,7 +7321,7 @@ def test_aggregate_requested_extras_share_the_runtime_work_budget(
     )
 
     with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
-        UvResolverAdapter().resolve(
+        UvResolverAdapter(run_process=fake_run).resolve(
             _configuration(
                 metadata_paths=(wheel,),
                 requirements=("demo[e0,e1,e2,e3]==1.0",),
@@ -7487,8 +7464,7 @@ def test_resolver_executable_inside_the_scanned_root_is_never_run(
         message = "repository-local resolver must not execute"
         raise AssertionError(message)
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", forbidden_process)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=forbidden_process).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         (),

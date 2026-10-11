@@ -5030,6 +5030,20 @@ def _finish_process_readers(
     return reader_survived
 
 
+class ProcessRunner(Protocol):
+    """Run one resolver command and return its completed, decoded process."""
+
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run ``command`` within ``timeout`` seconds."""
+
+
 def _run_bounded_process(
     command: Sequence[str],
     *,
@@ -6061,13 +6075,14 @@ def _prepare_resolver_workspace(
     )
 
 
-def _resolve_in_workspace(
+def _resolve_in_workspace(  # noqa: PLR0913 - the resolver's full input.
     workspace: _ResolverWorkspace,
     configuration: DependencyConfiguration,
     target: EnvironmentTarget,
     artifacts: Sequence[MetadataArtifact],
     *,
     root: Path,
+    run_process: ProcessRunner,
 ) -> ResolverResult:
     resolver_target, preparation_issue = _prepare_resolver_workspace(
         workspace,
@@ -6091,7 +6106,7 @@ def _resolve_in_workspace(
     environment = _resolver_environment(workspace.directory)
     version: str | None = None
     try:
-        version_process = _run_bounded_process(
+        version_process = run_process(
             [workspace.executable, "--version"],
             cwd=workspace.directory,
             env=environment,
@@ -6122,7 +6137,7 @@ def _resolve_in_workspace(
             resolver_target,
             has_artifacts=bool(artifacts),
         )
-        process = _run_bounded_process(
+        process = run_process(
             command,
             cwd=workspace.directory,
             env=environment,
@@ -6192,6 +6207,15 @@ class UvResolverAdapter:
 
     name = "uv"
 
+    def __init__(self, *, run_process: ProcessRunner | None = None) -> None:
+        """Use the bounded, contained process runner unless given another.
+
+        ``run_process`` receives the command with ``cwd``, ``env`` and
+        ``timeout`` keywords and returns its completed process; tests use it
+        to stand in for uv.
+        """
+        self._run_process = _run_bounded_process if run_process is None else run_process
+
     @_with_marker_evaluation_budget
     def resolve(
         self,
@@ -6242,6 +6266,7 @@ class UvResolverAdapter:
                 target,
                 artifacts,
                 root=resolved_root,
+                run_process=self._run_process,
             )
 
 
