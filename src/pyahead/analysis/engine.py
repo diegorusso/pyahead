@@ -17,7 +17,6 @@ from libcst.metadata import (
     FunctionScope,
     GlobalScope,
     MetadataWrapper,
-    ParentNodeProvider,
     PositionProvider,
     QualifiedName,
     QualifiedNameSource,
@@ -234,7 +233,6 @@ class _MatcherVisitor(cst.CSTVisitor):
 
     METADATA_DEPENDENCIES = (
         ExpressionContextProvider,
-        ParentNodeProvider,
         PositionProvider,
         ScopeProvider,
     )
@@ -273,9 +271,51 @@ class _MatcherVisitor(cst.CSTVisitor):
         # of them enclose the current node, so a match can say what narrowed it.
         self._fallback_suites: set[int] = set()
         self._fallback_depth = 0
+        # The nodes enclosing the one being visited, outermost first, and each
+        # one's position in that list: every parent the visitor asks for is
+        # on it or is the current node, so LibCST's ParentNodeProvider (a
+        # whole-module map) is not needed.
+        self._ancestors: list[cst.CSTNode] = []
+        self._ancestor_positions: dict[int, int] = {}
+        self._parents: dict[int, cst.CSTNode] | None = None
         self.matches: list[StaticMatch] = []
         self.inferences: list[AnalysisInference] = []
         self.path_mutations: list[_ImportPathMutation] = []
+
+    def on_visit(self, node: cst.CSTNode) -> bool:
+        """Track ``node`` as the innermost ancestor while it is visited."""
+        self._ancestor_positions[id(node)] = len(self._ancestors)
+        self._ancestors.append(node)
+        return super().on_visit(node)
+
+    def on_leave(self, original_node: cst.CSTNode) -> None:
+        """Stop tracking ``original_node`` once its subtree is done."""
+        super().on_leave(original_node)
+        self._ancestors.pop()
+        del self._ancestor_positions[id(original_node)]
+
+    def _parent(self, node: cst.CSTNode) -> cst.CSTNode | None:
+        """Return the node whose children include ``node``, as LibCST would."""
+        position = self._ancestor_positions.get(id(node))
+        if position is not None and self._ancestors[position] is node:
+            return self._ancestors[position - 1] if position else None
+        if self._ancestors and any(
+            child is node for child in self._ancestors[-1].children
+        ):
+            return self._ancestors[-1]
+        return self._full_parent_map().get(id(node))
+
+    def _full_parent_map(self) -> dict[int, cst.CSTNode]:
+        """Map every node to its parent, built once if a lookup ever needs it."""
+        if self._parents is None:
+            self._parents = {}
+            pending = list(self._ancestors[:1])
+            while pending:
+                parent = pending.pop()
+                for child in parent.children:
+                    self._parents[id(child)] = parent
+                    pending.append(child)
+        return self._parents
 
     @property
     def _reachability(self) -> LexicalReachability:
@@ -358,11 +398,9 @@ class _MatcherVisitor(cst.CSTVisitor):
         reference never runs, and this rule errs toward reporting it.
         """
         current: cst.CSTNode = node
-        while (
-            parent := self.get_metadata(ParentNodeProvider, current, None)
-        ) is not None:
+        while (parent := self._parent(current)) is not None:
             if isinstance(parent, cst.Annotation):
-                owner = self.get_metadata(ParentNodeProvider, parent, None)
+                owner = self._parent(parent)
                 return isinstance(owner, cst.AnnAssign) and isinstance(
                     self.get_metadata(ScopeProvider, owner, None), FunctionScope
                 )
@@ -566,9 +604,7 @@ class _MatcherVisitor(cst.CSTVisitor):
     ) -> tuple[frozenset[PythonMinor], bool]:
         """Exclude versions where short-circuit ``hasattr`` prevents access."""
         current = node
-        while (
-            parent := self.get_metadata(ParentNodeProvider, current, None)
-        ) is not None:
+        while (parent := self._parent(current)) is not None:
             if (
                 isinstance(parent, cst.BooleanOperation)
                 and isinstance(parent.operator, cst.And)
@@ -817,7 +853,7 @@ class _MatcherVisitor(cst.CSTVisitor):
             return
         reference_context = classify_reference_context(
             node,
-            lambda child: self.get_metadata(ParentNodeProvider, child, None),
+            self._parent,
         )
         deferred_annotation = (
             reference_context is ReferenceContext.ANNOTATION
