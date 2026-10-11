@@ -1081,96 +1081,67 @@ def _nesting_diagnostic(
     )
 
 
-def _parse_nesting_diagnostic(
+_RISKY_OPERATORS = frozenset(
+    {"~", "**", "*", "/", "//", "%", "+", "-", "<<", ">>", "&", "^", "|"}
+)
+_LINE_TOKENS = frozenset(
+    {tokenize.NEWLINE, tokenize.NL, tokenize.DEDENT, tokenize.INDENT}
+)
+
+
+@dataclass
+class _TokenNesting:
+    """Delimiter depth and the longest run of operators seen so far."""
+
+    depth: int = 0
+    operators: int = 0
+    operators_exceeded: bool = False
+
+    def feed(self, token: tokenize.TokenInfo) -> bool:
+        """Count one token; return whether delimiter depth passed its limit."""
+        if token.type in _LINE_TOKENS or token.type != tokenize.OP:
+            if token.type in _LINE_TOKENS:
+                self.operators = 0
+            return False
+        if token.string in _RISKY_OPERATORS:
+            self.operators += 1
+            self.operators_exceeded |= self.operators > MAX_CST_DEPTH
+            return False
+        self.operators = 0
+        if token.string in {"(", "[", "{"}:
+            self.depth += 1
+        elif token.string in {")", "]", "}"} and self.depth:
+            self.depth -= 1
+        return self.depth > MAX_PARSE_NESTING
+
+
+def _token_nesting_diagnostic(
     source: str,
     relative_path: PurePosixPath,
 ) -> Diagnostic | None:
-    """Reject pathological delimiter depth before entering LibCST's C stack."""
-    depth = 0
+    """Reject pathological nesting before entering LibCST's C stack.
 
-    try:
-        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-        for token in tokens:
-            if token.type != tokenize.OP:
-                continue
-            if token.string in {"(", "[", "{"}:
-                depth += 1
-                if depth > MAX_PARSE_NESTING:
-                    return _nesting_diagnostic(
-                        relative_path,
-                        "delimiter",
-                        MAX_PARSE_NESTING,
-                    )
-            elif token.string in {")", "]", "}"} and depth:
-                depth -= 1
-    except tokenize.TokenError:
-        if depth >= MAX_PARSE_NESTING:
-            return _nesting_diagnostic(
-                relative_path,
-                "delimiter",
-                MAX_PARSE_NESTING,
-            )
-        return None
-    except IndentationError:
-        # LibCST produces the user-facing syntax diagnostic for malformed tokens.
-        return None
-    return None
-
-
-def _operator_nesting_diagnostic(
-    source: str,
-    relative_path: PurePosixPath,
-) -> Diagnostic | None:
-    """Reject pathological non-delimiter nesting in a single token stream."""
-    risky_operators = {
-        "~",
-        "**",
-        "*",
-        "/",
-        "//",
-        "%",
-        "+",
-        "-",
-        "<<",
-        ">>",
-        "&",
-        "^",
-        "|",
-    }
-    nesting = 0
+    One token stream bounds two shapes. Delimiter depth counts open
+    brackets; past its limit, or at it when the stream ends inside them, the
+    file is rejected, and this takes precedence over the operator bound.
+    Operator nesting counts consecutive binary or unary operators between
+    brackets and line breaks, which LibCST would otherwise parse into an
+    equally deep tree. Malformed tokens are left for LibCST to report.
+    """
+    nesting = _TokenNesting()
+    delimiter = _nesting_diagnostic(relative_path, "delimiter", MAX_PARSE_NESTING)
     try:
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
-            if token.type in {
-                tokenize.NEWLINE,
-                tokenize.NL,
-                tokenize.DEDENT,
-                tokenize.INDENT,
-            }:
-                nesting = 0
-                continue
-            if token.type != tokenize.OP:
-                continue
-            if token.string in {"(", "[", "{"}:
-                nesting = 0
-                continue
-            if token.string in {")", "]", "}"}:
-                nesting = 0
-                continue
-            if token.string in risky_operators:
-                nesting += 1
-                if nesting > MAX_CST_DEPTH:
-                    return _nesting_diagnostic(
-                        relative_path,
-                        "concrete syntax tree",
-                        MAX_CST_DEPTH,
-                    )
-            else:
-                nesting = 0
+            if nesting.feed(token):
+                return delimiter
     except tokenize.TokenError:
-        return None
+        if nesting.depth >= MAX_PARSE_NESTING:
+            return delimiter
     except IndentationError:
         # LibCST produces the user-facing syntax diagnostic for malformed tokens.
-        return None
+        pass
+    if nesting.operators_exceeded:
+        return _nesting_diagnostic(relative_path, "concrete syntax tree", MAX_CST_DEPTH)
     return None
 
 
@@ -1197,13 +1168,9 @@ def _parse_module(
     relative_path: PurePosixPath,
 ) -> tuple[cst.Module | None, Diagnostic | None]:
     """Parse one module after enforcing both parser depth boundaries."""
-    nesting_diagnostic = _parse_nesting_diagnostic(source, relative_path)
+    nesting_diagnostic = _token_nesting_diagnostic(source, relative_path)
     if nesting_diagnostic is not None:
         return None, nesting_diagnostic
-
-    operator_diagnostic = _operator_nesting_diagnostic(source, relative_path)
-    if operator_diagnostic is not None:
-        return None, operator_diagnostic
 
     try:
         module = cst.parse_module(source)
