@@ -4,7 +4,7 @@ import hashlib
 import io
 import tokenize
 from collections import defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -19,7 +19,7 @@ from libcst.metadata import (
     MetadataWrapper,
     ParentNodeProvider,
     PositionProvider,
-    QualifiedNameProvider,
+    QualifiedName,
     QualifiedNameSource,
     ScopeProvider,
 )
@@ -236,7 +236,6 @@ class _MatcherVisitor(cst.CSTVisitor):
         ExpressionContextProvider,
         ParentNodeProvider,
         PositionProvider,
-        QualifiedNameProvider,
         ScopeProvider,
     )
 
@@ -282,12 +281,24 @@ class _MatcherVisitor(cst.CSTVisitor):
     def _reachability(self) -> LexicalReachability:
         return self._reachability_stack[-1]
 
+    def _qualified_names(self, node: cst.CSTNode) -> Collection[QualifiedName]:
+        """Return the names LibCST's QualifiedNameProvider would give ``node``.
+
+        The provider walks the whole module to attach a lazy value to every
+        node, but only candidate nodes are ever asked; resolving through the
+        node's scope on demand gives the same collection without that walk.
+        """
+        scope = self.get_metadata(ScopeProvider, node, None)
+        if scope is None:
+            return set()
+        return scope.get_qualified_names_for(node)
+
     def _matches_guard_name(
         self,
         node: cst.BaseExpression,
         qualified_name: str,
     ) -> bool:
-        names = self.get_metadata(QualifiedNameProvider, node, set())
+        names = self._qualified_names(node)
         resolution = resolve_qualified_name(names, qualified_name)
         if resolution.confidence is not MatchConfidence.HIGH:
             return False
@@ -742,7 +753,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         *,
         source: QualifiedNameSource = QualifiedNameSource.IMPORT,
     ) -> QualifiedResolution:
-        names = self.get_metadata(QualifiedNameProvider, node, set())
+        names = self._qualified_names(node)
         return resolve_qualified_name(names, qualified_name, source=source)
 
     def _resolution_sources(
@@ -751,7 +762,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         qualified_name: str,
         sources: frozenset[QualifiedNameSource],
     ) -> QualifiedResolution:
-        names = self.get_metadata(QualifiedNameProvider, node, set())
+        names = self._qualified_names(node)
         return resolve_qualified_name_sources(names, qualified_name, sources)
 
     def _indexed_bindings(
@@ -763,8 +774,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         if (syntax_terminal := terminal_name(node)) is not None:
             terminals.add(syntax_terminal)
         terminals.update(
-            name.name.rpartition(".")[2]
-            for name in self.get_metadata(QualifiedNameProvider, node, set())
+            name.name.rpartition(".")[2] for name in self._qualified_names(node)
         )
         bindings = {
             (binding.rule.id, repr(binding.matcher)): binding
