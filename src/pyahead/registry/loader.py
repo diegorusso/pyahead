@@ -48,16 +48,12 @@ CanonicalValue: TypeAlias = (
 )
 
 
-class _UniqueKeySafeLoader(yaml.SafeLoader):
-    """Safe YAML loader reserved for strict registry construction."""
-
-
 class _DuplicateKeyError(yaml.YAMLError):
     """Raised before a YAML mapping can overwrite an earlier key."""
 
 
 def _construct_unique_mapping(
-    loader: _UniqueKeySafeLoader,
+    loader: yaml.SafeLoader,
     node: yaml.nodes.MappingNode,
 ) -> Iterator[dict[object, object]]:
     """Construct one mapping while rejecting recursive duplicate keys."""
@@ -77,9 +73,26 @@ def _construct_unique_mapping(
         mapping[key] = loader.construct_object(value_node, deep=False)
 
 
-_UniqueKeySafeLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_unique_mapping,
+def _unique_key_loader(base: type) -> type[yaml.SafeLoader]:
+    """Return a safe loader on ``base`` that rejects duplicate mapping keys."""
+    loader = cast(
+        "type[yaml.SafeLoader]",
+        type("_UniqueKeySafeLoader", (base,), {"__module__": __name__}),
+    )
+    loader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        _construct_unique_mapping,
+    )
+    return loader
+
+
+# libyaml's parser is several times faster than the pure-Python one on the
+# bundled registry. Both compose the same node graph, which the graph limits
+# below check before anything is constructed, and scalars resolve through the
+# same Python resolver either way. Without libyaml (Pyodide, some wheels) the
+# pure-Python parser is used.
+_UniqueKeySafeLoader = _unique_key_loader(
+    cast("type", getattr(yaml, "CSafeLoader", yaml.SafeLoader))
 )
 
 

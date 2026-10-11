@@ -19,6 +19,7 @@ from pyahead.model import (
     ReleaseStatus,
 )
 from pyahead.registry import RegistryError, load_registry
+from pyahead.registry import loader as registry_loader
 from pyahead.registry.loader import MAX_REGISTRY_FILE_BYTES
 from pyahead.registry.presentation import render_rule_explanation
 from pyahead.registry.schema import (
@@ -769,3 +770,44 @@ def test_automation_metadata_is_exposed_without_invoking_tools(
     assert automation.tool is AutomationTool(tool)
     assert automation.rule == "UP999"
     assert f"Automation metadata: {tool} UP999 (not invoked)" in explanation
+
+
+_HOSTILE_YAML = (
+    "a: 1\na: 2\n",
+    "a: &x [1]\nb: *x\n",
+    "a: &x {b: *x}\n",
+    "? [1]\n: 2\n",
+    "a: !!python/object:os.system x\n",
+    "a: [" * 70 + "]" * 70 + "\n",
+    "a: 1\n---\nb: 2\n",
+    "a: '\x07'\n",
+    "\t- a\n",
+    "",
+    "- 1\n",
+    "a: 1.0e+3\nb: 0o17\nc: 2026-10-11\nd: ~\ne: yes\n",
+)
+
+
+def _outcome(loader_base: type, text: str) -> tuple[str, object]:
+    loader = registry_loader._unique_key_loader(loader_base)  # noqa: SLF001
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(registry_loader, "_UniqueKeySafeLoader", loader)
+        try:
+            return ("ok", registry_loader._load_mapping(text, "document"))  # noqa: SLF001
+        except RegistryError as error:
+            return ("error", str(error))
+
+
+@pytest.mark.skipif(not yaml.__with_libyaml__, reason="libyaml is not available")
+@pytest.mark.parametrize("text", _HOSTILE_YAML)
+def test_libyaml_and_pure_parsers_agree_on_hostile_documents(text: str) -> None:
+    """The faster parser accepts and rejects exactly what the pure one does."""
+    assert _outcome(yaml.CSafeLoader, text) == _outcome(yaml.SafeLoader, text)
+
+
+@pytest.mark.skipif(not yaml.__with_libyaml__, reason="libyaml is not available")
+def test_libyaml_and_pure_parsers_agree_on_the_bundled_registry() -> None:
+    """Every bundled document constructs identically under both parsers."""
+    for path in sorted(_BUNDLED_REGISTRY.rglob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        assert _outcome(yaml.CSafeLoader, text) == _outcome(yaml.SafeLoader, text), path
