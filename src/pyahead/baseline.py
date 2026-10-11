@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from pyahead import __version__
+from pyahead._io_errors import NotRegularFileError
 from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.model import ConfigurationError, ScanReport
 
@@ -132,13 +133,11 @@ def load_baseline(path: Path, root: Path) -> Baseline:
     except ValueError as error:
         message = f"{label}: baseline must remain beneath the project root"
         raise ConfigurationError(message) from error
+    except NotRegularFileError as error:
+        message = f"{label}: baseline is not a regular file"
+        raise ConfigurationError(message) from error
     except (OSError, RuntimeError) as error:
-        detail = str(error)
-        message = (
-            f"{label}: baseline is not a regular file"
-            if "regular file" in detail
-            else f"{label}: unable to read baseline"
-        )
+        message = f"{label}: unable to read baseline"
         raise ConfigurationError(message) from error
     try:
         value = json.loads(

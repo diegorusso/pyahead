@@ -28,6 +28,7 @@ import pyahead._rooted_reader as rooted_reader_module
 import pyahead._windows_output as windows_output_module
 import pyahead.dependencies as dependency_module
 from pyahead._human_text import escape_terminal_text
+from pyahead._io_errors import EntryChangedError
 from pyahead.config import load_project_configuration
 from pyahead.dependencies import (
     ArtifactAvailability,
@@ -5469,7 +5470,7 @@ def test_dependency_configuration_rejects_an_input_changed_during_read(
 
     def changed_input(*_args: object) -> bytes:
         message = "input file changed while being read"
-        raise OSError(message)
+        raise EntryChangedError(message)
 
     monkeypatch.setattr(dependency_module, "read_rooted_bytes", changed_input)
 

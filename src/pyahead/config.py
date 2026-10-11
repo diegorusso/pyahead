@@ -10,6 +10,7 @@ from typing import TypeVar
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from pyahead._io_errors import NotRegularFileError
 from pyahead._rooted_reader import (
     RootedReadTooLargeError,
     read_rooted_bytes,
@@ -138,14 +139,12 @@ def _read_toml(
         raise _configuration_error(
             label, "configuration must remain beneath the project root"
         ) from error
+    except NotRegularFileError as error:
+        raise _configuration_error(
+            label, "configuration is not a regular file"
+        ) from error
     except (OSError, RuntimeError) as error:
-        detail = str(error)
-        message = (
-            "configuration is not a regular file"
-            if "regular file" in detail
-            else "unable to read configuration"
-        )
-        raise _configuration_error(label, message) from error
+        raise _configuration_error(label, "unable to read configuration") from error
     try:
         document = tomllib.loads(raw.decode("utf-8", errors="strict"))
     except RecursionError as error:

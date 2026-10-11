@@ -59,6 +59,7 @@ from packaging.utils import (
 from packaging.version import InvalidVersion, Version
 
 from pyahead._human_text import escape_terminal_text
+from pyahead._io_errors import EntryChangedError, NotAFilePathError, NotRegularFileError
 from pyahead._rooted_reader import (
     RootedReadTooLargeError,
     read_rooted_bytes,
@@ -1235,15 +1236,16 @@ def _read_dependency_document(
         raise _configuration_error(
             label, "configuration exceeds the size limit"
         ) from error
+    except NotRegularFileError as error:
+        raise _configuration_error(
+            label, "configuration is not a regular file"
+        ) from error
+    except EntryChangedError as error:
+        raise _configuration_error(
+            label, "configuration changed while being read"
+        ) from error
     except (OSError, RuntimeError, ValueError) as error:
-        detail = str(error)
-        if "regular file" in detail:
-            message = "configuration is not a regular file"
-        elif "changed while" in detail:
-            message = "configuration changed while being read"
-        else:
-            message = "unable to read configuration"
-        raise _configuration_error(label, message) from error
+        raise _configuration_error(label, "unable to read configuration") from error
     if len(raw_document) > _MAX_CONFIGURATION_BYTES:
         _error(label, "configuration exceeds the size limit")
     try:
@@ -1499,22 +1501,20 @@ def _read_artifact(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
             label,
             f"exceeds {_MAX_ARTIFACT_BYTES} bytes",
         ) from error
+    except NotAFilePathError as error:
+        raise _configuration_error(label, "is not a regular file") from error
     except ValueError as error:
         if isinstance(error, ConfigurationError):
             raise
-        message = (
-            "is not a regular file"
-            if "name a file" in str(error)
-            else "must remain beneath the project root"
-        )
-        raise _configuration_error(label, message) from error
+        raise _configuration_error(
+            label, "must remain beneath the project root"
+        ) from error
+    except EntryChangedError as error:
+        raise _configuration_error(
+            label, "metadata input changed while being read"
+        ) from error
     except (OSError, RuntimeError) as error:
-        message = (
-            "metadata input changed while being read"
-            if "changed while" in str(error)
-            else "unable to read metadata input"
-        )
-        raise _configuration_error(label, message) from error
+        raise _configuration_error(label, "unable to read metadata input") from error
     if len(raw) > _MAX_ARTIFACT_BYTES:
         raise _configuration_error(
             label,

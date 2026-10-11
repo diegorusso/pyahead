@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, NoReturn, TypeAlias
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+from pyahead._io_errors import NotRegularFileError
 from pyahead._rooted_reader import (
     RootedReadTooLargeError,
     read_rooted_bytes,
@@ -770,13 +771,15 @@ def _artifact_id(document: EvidenceDocument) -> str:
     return hashlib.sha256(b"pyahead-evidence-artifact-v1\0" + encoded).hexdigest()
 
 
-def _load_evidence(path: Path, root: Path) -> _LoadedEvidence:
+def _read_evidence(path: Path, root: Path) -> tuple[PurePosixPath, bytes]:
     label = path.name
     selected = path if path.is_absolute() else root / path
     try:
         relative_path = repository_relative_path(root, selected)
-        relative = PurePosixPath(relative_path.as_posix())
-        raw = read_rooted_bytes(root, relative_path, MAX_EVIDENCE_BYTES)
+        return (
+            PurePosixPath(relative_path.as_posix()),
+            read_rooted_bytes(root, relative_path, MAX_EVIDENCE_BYTES),
+        )
     except RootedReadTooLargeError:
         message = f"evidence exceeds {MAX_EVIDENCE_BYTES} bytes"
         _raise_error(label, message)
@@ -786,13 +789,15 @@ def _load_evidence(path: Path, root: Path) -> _LoadedEvidence:
         if isinstance(error, ConfigurationError):
             raise
         _raise_error(label, "evidence must remain beneath the project root")
-    except (OSError, RuntimeError) as error:
-        message = (
-            "evidence is not a regular file"
-            if "regular file" in str(error)
-            else "unable to read evidence"
-        )
-        _raise_error(label, message)
+    except NotRegularFileError:
+        _raise_error(label, "evidence is not a regular file")
+    except (OSError, RuntimeError):
+        _raise_error(label, "unable to read evidence")
+
+
+def _load_evidence(path: Path, root: Path) -> _LoadedEvidence:
+    label = path.name
+    relative, raw = _read_evidence(path, root)
     try:
         value = json.loads(
             raw.decode("utf-8"),

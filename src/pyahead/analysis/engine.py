@@ -26,6 +26,7 @@ from libcst.metadata import (
 from libcst.metadata.scope_provider import Scope
 
 from pyahead import __version__
+from pyahead._io_errors import UnsafeEntryError
 from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.analysis.discovery import (
     DiscoveredFile,
@@ -1322,25 +1323,19 @@ def _read_source(
             DiagnosticCategory.DISCOVERY,
             f"source file exceeds the {max_file_size_bytes}-byte analysis limit",
         )
-    except OSError as error:
-        detail = str(error)
-        unsafe_entry = any(
-            marker in detail
-            for marker in ("changed while", "real directories", "regular file")
-        )
+    except UnsafeEntryError:
         return _read_failure(
             path,
-            "PYA1004" if unsafe_entry else "PYA1002",
-            (
-                DiagnosticCategory.DISCOVERY
-                if unsafe_entry
-                else DiagnosticCategory.ENCODING
-            ),
-            (
-                "source entry is not a stable regular file beneath real directories"
-                if unsafe_entry
-                else f"unable to read Python source ({type(error).__name__})"
-            ),
+            "PYA1004",
+            DiagnosticCategory.DISCOVERY,
+            "source entry is not a stable regular file beneath real directories",
+        )
+    except OSError as error:
+        return _read_failure(
+            path,
+            "PYA1002",
+            DiagnosticCategory.ENCODING,
+            f"unable to read Python source ({type(error).__name__})",
         )
 
     try:

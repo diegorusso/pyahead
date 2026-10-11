@@ -8,6 +8,12 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
+from pyahead._io_errors import (
+    EntryChangedError,
+    NotAFilePathError,
+    NotRealDirectoryError,
+    NotRegularFileError,
+)
 from pyahead._windows_output import read_windows_rooted_file
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -29,7 +35,7 @@ def repository_relative_path(root: Path, path: Path) -> Path:
         raise ValueError(message) from error
     if relative == Path() or not relative.name or ".." in relative.parts:
         message = "input must name a file beneath the trusted root"
-        raise ValueError(message)
+        raise NotAFilePathError(message)
     return relative
 
 
@@ -91,7 +97,7 @@ class _RootedReadChain:
             and _same_file(opened_root, self.statuses[0])
         ):
             message = "input root changed while being read"
-            raise OSError(message)
+            raise EntryChangedError(message)
         for index, name in enumerate(self.names, start=1):
             current = os.stat(
                 name,
@@ -104,7 +110,7 @@ class _RootedReadChain:
                 and _same_file(opened, self.statuses[index])
             ):
                 message = "input parent changed while being read"
-                raise OSError(message)
+                raise EntryChangedError(message)
         current_leaf = os.stat(
             leaf_name,
             dir_fd=self.descriptors[-1],
@@ -116,7 +122,7 @@ class _RootedReadChain:
             and _same_stable_file(opened_leaf, leaf_status)
         ):
             message = "input file changed while being read"
-            raise OSError(message)
+            raise EntryChangedError(message)
 
 
 def _open_relative_directory(
@@ -126,7 +132,7 @@ def _open_relative_directory(
     expected = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
     if not stat.S_ISDIR(expected.st_mode):
         message = "input parents must be real directories"
-        raise OSError(message)
+        raise NotRealDirectoryError(message)
     descriptor = os.open(name, _directory_flags(), dir_fd=parent_descriptor)
     try:
         opened = os.fstat(descriptor)
@@ -136,7 +142,7 @@ def _open_relative_directory(
     if not stat.S_ISDIR(opened.st_mode) or not _same_file(expected, opened):
         os.close(descriptor)
         message = "input parent changed while being opened"
-        raise OSError(message)
+        raise EntryChangedError(message)
     return descriptor, opened
 
 
@@ -185,7 +191,7 @@ def _read_posix_rooted_file(root: Path, relative: Path, limit: int) -> bytes:
             expected_root, opened_root
         ):
             message = "input root changed while being opened"
-            raise OSError(message)
+            raise EntryChangedError(message)
         statuses.append(opened_root)
         for name in relative.parent.parts:
             descriptor, opened = _open_relative_directory(name, descriptors[-1])
@@ -201,7 +207,7 @@ def _read_posix_rooted_file(root: Path, relative: Path, limit: int) -> bytes:
         )
         if not stat.S_ISREG(expected_leaf.st_mode):
             message = "input must be a real regular file"
-            raise OSError(message)
+            raise NotRegularFileError(message)
         descriptor = os.open(
             relative.name,
             _file_flags(),
@@ -213,7 +219,7 @@ def _read_posix_rooted_file(root: Path, relative: Path, limit: int) -> bytes:
             expected_leaf, opened_leaf
         ):
             message = "input file changed while being opened"
-            raise OSError(message)
+            raise EntryChangedError(message)
 
         return _read_validated_leaf(
             _RootedReadChain(
