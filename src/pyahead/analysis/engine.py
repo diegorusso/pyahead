@@ -196,6 +196,22 @@ class _ImportPathMutation:
     location: SourceLocation
 
 
+@dataclass(frozen=True)
+class _FileAnalysis:
+    """What one file contributed: matches only when it was fully analysed."""
+
+    suppressions: InlineSuppressionIndex
+    diagnostics: tuple[Diagnostic, ...] = ()
+    matches: tuple[StaticMatch, ...] = ()
+    inferences: tuple[AnalysisInference, ...] = ()
+    path_mutations: tuple[_ImportPathMutation, ...] = ()
+
+    @property
+    def incomplete(self) -> bool:
+        """Whether any diagnostic left this file unanalysed."""
+        return any(diagnostic.incomplete for diagnostic in self.diagnostics)
+
+
 def _scope_name(scope: Scope | None) -> str:
     names: list[str] = []
     current = scope
@@ -1207,23 +1223,20 @@ def _parse_module(
     return module, _cst_nesting_diagnostic(module, relative_path)
 
 
-def _parse_file_with_context(
+def _analyse_file(
     path: DiscoveredFile,
     context: _FileAnalysisContext,
-) -> tuple[
-    tuple[StaticMatch, ...],
-    tuple[AnalysisInference, ...],
-    tuple[_ImportPathMutation, ...],
-    InlineSuppressionIndex,
-    tuple[Diagnostic, ...],
-]:
+) -> _FileAnalysis:
     source, read_diagnostic = _read_source(
         context.root,
         path,
         context.max_file_size_bytes,
     )
     if read_diagnostic is not None:
-        return (), (), (), index_inline_suppressions(()), (read_diagnostic,)
+        return _FileAnalysis(
+            suppressions=index_inline_suppressions(()),
+            diagnostics=(read_diagnostic,),
+        )
     if source is None:  # pragma: no cover - guarded by the diagnostic result.
         msg = "source text is absent without a read diagnostic"
         raise RuntimeError(msg)
@@ -1235,15 +1248,9 @@ def _parse_file_with_context(
     )
     module, parse_diagnostic = _parse_module(source, path.relative_path)
     if parse_diagnostic is not None:
-        return (
-            (),
-            (),
-            (),
-            index_inline_suppressions(inline_directives),
-            (
-                *suppression_diagnostics,
-                parse_diagnostic,
-            ),
+        return _FileAnalysis(
+            suppressions=index_inline_suppressions(inline_directives),
+            diagnostics=(*suppression_diagnostics, parse_diagnostic),
         )
     if module is None:  # pragma: no cover - guarded by the diagnostic result.
         msg = "parsed module is absent without a parse diagnostic"
@@ -1283,19 +1290,16 @@ def _parse_file_with_context(
                 location=_initial_location(path.relative_path),
                 incomplete=True,
             )
-        return (
-            (),
-            (),
-            (),
-            inline_suppressions,
-            (*suppression_diagnostics, diagnostic),
+        return _FileAnalysis(
+            suppressions=inline_suppressions,
+            diagnostics=(*suppression_diagnostics, diagnostic),
         )
-    return (
-        tuple(visitor.matches),
-        tuple(visitor.inferences),
-        tuple(visitor.path_mutations),
-        inline_suppressions,
-        suppression_diagnostics,
+    return _FileAnalysis(
+        suppressions=inline_suppressions,
+        diagnostics=suppression_diagnostics,
+        matches=tuple(visitor.matches),
+        inferences=tuple(visitor.inferences),
+        path_mutations=tuple(visitor.path_mutations),
     )
 
 
@@ -1855,35 +1859,25 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
     incomplete_files = len(discovery.issues)
     analyzed = 0
     for index, path in enumerate(discovery.files, start=1):
-        (
-            file_matches,
-            file_inferences,
-            file_path_mutations,
-            file_suppressions,
-            file_diagnostics,
-        ) = _parse_file_with_context(
-            path,
-            file_context,
-        )
-        inline_suppressions[path.relative_path] = file_suppressions
-        diagnostics.extend(file_diagnostics)
-        file_incomplete = any(diagnostic.incomplete for diagnostic in file_diagnostics)
+        analysis = _analyse_file(path, file_context)
+        inline_suppressions[path.relative_path] = analysis.suppressions
+        diagnostics.extend(analysis.diagnostics)
         _report_file_progress(
             request,
             FileProgress(
                 path=path.relative_path,
                 index=index,
                 total=len(discovery.files),
-                incomplete=file_incomplete,
+                incomplete=analysis.incomplete,
             ),
         )
-        if file_incomplete:
+        if analysis.incomplete:
             incomplete_files += 1
             continue
         analyzed += 1
-        matches.extend(file_matches)
-        inferences.extend(file_inferences)
-        path_mutations.extend(file_path_mutations)
+        matches.extend(analysis.matches)
+        inferences.extend(analysis.inferences)
+        path_mutations.extend(analysis.path_mutations)
 
     matches, path_inferences = _dynamic_path_adjustments(
         matches,

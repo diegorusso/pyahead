@@ -13,8 +13,8 @@ from pyahead.analysis.discovery import (
     project_module_paths,
 )
 from pyahead.analysis.engine import (
+    _analyse_file,
     _FileAnalysisContext,
-    _parse_file_with_context,
 )
 from pyahead.analysis.matchers import build_matcher_index
 from pyahead.model import (
@@ -89,21 +89,24 @@ def _parse_file(
     Diagnostic | None,
 ]:
     """Run the per-file analysis on one discovered file, as ``scan`` does."""
-    matches, inferences, _mutations, _suppressions, diagnostics = (
-        _parse_file_with_context(
-            path,
-            _FileAnalysisContext(
-                root=path.absolute_path.parents[len(path.relative_path.parts) - 1],
-                matcher_index=build_matcher_index(registry),
-                project_modules=project_modules,
-                target_versions=target_versions,
-                source_roots=(".", "src"),
-                max_file_size_bytes=2 * 1024 * 1024,
-                registry=registry,
-            ),
-        )
+    analysis = _analyse_file(
+        path,
+        _FileAnalysisContext(
+            root=path.absolute_path.parents[len(path.relative_path.parts) - 1],
+            matcher_index=build_matcher_index(registry),
+            project_modules=project_modules,
+            target_versions=target_versions,
+            source_roots=(".", "src"),
+            max_file_size_bytes=2 * 1024 * 1024,
+            registry=registry,
+        ),
     )
-    return matches, inferences, diagnostics[0] if diagnostics else None
+    diagnostics = analysis.diagnostics
+    return (
+        analysis.matches,
+        analysis.inferences,
+        diagnostics[0] if diagnostics else None,
+    )
 
 
 def _case_matcher(matcher_name: str, case: str) -> dict[str, object]:
