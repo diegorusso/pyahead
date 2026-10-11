@@ -66,6 +66,7 @@ from pyahead.analysis.reachability import (
     SYS_VERSION_INFO,
     BranchReachability,
     LexicalReachability,
+    ReachabilityTracker,
     branch_reachability,
     import_fallback_versions,
 )
@@ -274,20 +275,12 @@ class _MatcherVisitor(cst.CSTVisitor):
             if path.relative_path.suffix == ".pyi"
             else frozenset({UsageContext.RUNTIME, UsageContext.TYPING})
         )
-        self._reachability_stack = [
+        self._tracker = ReachabilityTracker(
             LexicalReachability(
                 versions=target_versions,
                 usage_contexts=initial_contexts,
             )
-        ]
-        self._suite_reachability: dict[int, LexicalReachability] = {}
-        self._elif_reachability: dict[int, LexicalReachability] = {}
-        self._pushed_suites: set[int] = set()
-        self._pushed_ifs: set[int] = set()
-        # Handler suites narrowed by a recognised import fallback, and how many
-        # of them enclose the current node, so a match can say what narrowed it.
-        self._fallback_suites: set[int] = set()
-        self._fallback_depth = 0
+        )
         # The nodes enclosing the one being visited, outermost first, and each
         # one's position in that list: every parent the visitor asks for is
         # on it or is the current node, so LibCST's ParentNodeProvider (a
@@ -336,7 +329,7 @@ class _MatcherVisitor(cst.CSTVisitor):
 
     @property
     def _reachability(self) -> LexicalReachability:
-        return self._reachability_stack[-1]
+        return self._tracker.current
 
     def _qualified_names(self, node: cst.CSTNode) -> Collection[QualifiedName]:
         """Return the names LibCST's QualifiedNameProvider would give ``node``.
@@ -426,37 +419,12 @@ class _MatcherVisitor(cst.CSTVisitor):
 
     def visit_If(self, node: cst.If) -> None:  # noqa: N802
         """Assign conservative lexical states to ``if``/``elif`` branches."""
-        incoming = self._elif_reachability.get(id(node))
-        if incoming is not None:
-            self._reachability_stack.append(incoming)
-            self._pushed_ifs.add(id(node))
-        branches = self._branches(node)
-        self._suite_reachability[id(node.body)] = branches.if_true
-        if isinstance(node.orelse, cst.Else):
-            self._suite_reachability[id(node.orelse.body)] = branches.if_false
-        elif isinstance(node.orelse, cst.If):
-            self._elif_reachability[id(node.orelse)] = branches.if_false
+        self._tracker.enter_if(node)
+        self._tracker.assign_if(node, self._branches(node))
 
     def leave_If(self, original_node: cst.If) -> None:  # noqa: N802
         """Restore the state active before an ``elif`` node."""
-        if id(original_node) in self._pushed_ifs:
-            self._pushed_ifs.remove(id(original_node))
-            self._reachability_stack.pop()
-
-    def _enter_suite(self, node: cst.BaseSuite) -> None:
-        branch = self._suite_reachability.get(id(node))
-        if branch is not None:
-            self._reachability_stack.append(branch)
-            self._pushed_suites.add(id(node))
-            if id(node) in self._fallback_suites:
-                self._fallback_depth += 1
-
-    def _leave_suite(self, node: cst.BaseSuite) -> None:
-        if id(node) in self._pushed_suites:
-            self._pushed_suites.remove(id(node))
-            self._reachability_stack.pop()
-            if id(node) in self._fallback_suites:
-                self._fallback_depth -= 1
+        self._tracker.leave(original_node)
 
     def _catches_only_import_errors(
         self,
@@ -502,33 +470,32 @@ class _MatcherVisitor(cst.CSTVisitor):
         )
         for handler in node.handlers:
             if self._catches_only_import_errors(handler.type):
-                self._suite_reachability[id(handler.body)] = unreachable_free
-                self._fallback_suites.add(id(handler.body))
+                self._tracker.assign_import_fallback(handler.body, unreachable_free)
 
     def visit_IndentedBlock(self, node: cst.IndentedBlock) -> None:  # noqa: N802
         """Enter a multi-line branch suite."""
-        self._enter_suite(node)
+        self._tracker.enter(node)
 
     def leave_IndentedBlock(  # noqa: N802
         self,
         original_node: cst.IndentedBlock,
     ) -> None:
         """Leave a multi-line branch suite."""
-        self._leave_suite(original_node)
+        self._tracker.leave(original_node)
 
     def visit_SimpleStatementSuite(  # noqa: N802
         self,
         node: cst.SimpleStatementSuite,
     ) -> None:
         """Enter a one-line branch suite."""
-        self._enter_suite(node)
+        self._tracker.enter(node)
 
     def leave_SimpleStatementSuite(  # noqa: N802
         self,
         original_node: cst.SimpleStatementSuite,
     ) -> None:
         """Leave a one-line branch suite."""
-        self._leave_suite(original_node)
+        self._tracker.leave(original_node)
 
     def _record_match(  # noqa: PLR0913 - one override per independent match input.
         self,
@@ -541,7 +508,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         usage_contexts: frozenset[UsageContext] | None = None,
     ) -> None:
         reachability = self._reachability
-        if self._fallback_depth and not any(
+        if self._tracker.in_import_fallback and not any(
             key == "reachability_guard" for key, _ in evidence
         ):
             evidence = (*evidence, ("reachability_guard", "import-fallback"))
