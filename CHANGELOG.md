@@ -4,7 +4,13 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
-## Unreleased
+## 0.6.0 - 2026-10-11
+
+The repository becomes a GitHub Action that uploads findings to code
+scanning, and `pyahead dependencies` reads uv 0.12.18's resolver output. A
+minor release because the Action is a new public interface; the registry is
+the one 0.5.0 shipped (`2026.10.10`, `fa9db725e612`), so the 10 October
+precision record still describes it.
 
 ### Added
 
