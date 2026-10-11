@@ -152,7 +152,7 @@ export function createScanner({ loadPyodide, indexURL, vendorBase, onProgress = 
       pyodide.globals.set("_files_json", JSON.stringify(files));
       pyodide.globals.set("_options_json", JSON.stringify({
         baseline: options.baseline ?? "3.11",
-        horizon: options.horizon ?? "3.14",
+        horizon: options.horizon ?? "3.16",
       }));
       // Called from Python after each file. The message keeps the stage so a
       // listener that only watches stages sees nothing new; the file is for

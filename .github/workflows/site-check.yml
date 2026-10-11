@@ -89,7 +89,7 @@ jobs:
           cd target
           set +e
           pyahead check . \
-            --baseline-python 3.11 --horizon-python 3.14 \
+            --baseline-python 3.11 --horizon-python 3.16 \
             --format json --output local.json --fail-on never
           code=$?
           set -e
