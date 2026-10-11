@@ -93,7 +93,7 @@ check("raising the baseline advances an equal horizon", (await page.inputValue("
 check("an equal horizon cannot be selected", await page.locator("#horizon option").filter({ hasText: "3.12" }).evaluate((option) => option.matches(":disabled")));
 await page.selectOption("#baseline", "3.13");
 check("3.13 advances the horizon to 3.14", (await page.inputValue("#horizon")) === "3.14");
-check("only later horizons remain available", (await page.locator("#horizon option:enabled").allTextContents()).join(",") === "3.14,3.15");
+check("only later horizons remain available", (await page.locator("#horizon option:enabled").allTextContents()).join(",") === "3.14,3.15,3.16");
 await page.selectOption("#horizon", "3.15");
 await page.selectOption("#baseline", "3.11");
 check("lowering the baseline preserves a valid horizon", (await page.inputValue("#horizon")) === "3.15");
