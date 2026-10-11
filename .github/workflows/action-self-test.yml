@@ -1,0 +1,102 @@
+name: Action self-test
+
+# Runs the repository's own action.yml the way a user's workflow would, from
+# source, against the golden project. Upload is off: the golden project's
+# findings must not land in this repository's code scanning.
+
+on:
+  pull_request:
+    paths: ["action.yml", ".github/workflows/action-self-test.yml"]
+  push:
+    branches: [main]
+    paths: ["action.yml", ".github/workflows/action-self-test.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gated:
+    name: A breaking finding fails the gate and still writes SARIF
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run the action
+        id: pyahead
+        continue-on-error: true
+        uses: ./
+        with:
+          path: tests/golden/project
+          baseline-python: "3.11"
+          horizon-python: "3.13"
+          upload: "false"
+
+      - name: Check the outcome
+        env:
+          OUTCOME: ${{ steps.pyahead.outcome }}
+          EXIT_CODE: ${{ steps.pyahead.outputs.exit-code }}
+          SARIF: ${{ steps.pyahead.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = failure
+          test "$EXIT_CODE" = 1
+          test "$SARIF" = tests/golden/project/pyahead.sarif
+          python3 - "$SARIF" <<'EOF'
+          import json, sys
+          run = json.load(open(sys.argv[1]))["runs"][0]
+          assert run["tool"]["driver"]["name"] == "pyahead", run["tool"]["driver"]
+          assert [result["ruleId"] for result in run["results"]] == ["CPY0001"]
+          EOF
+
+  never:
+    name: fail-on never passes and reports the same finding
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run the action
+        id: pyahead
+        uses: ./
+        with:
+          path: tests/golden/project
+          baseline-python: "3.11"
+          horizon-python: "3.13"
+          fail-on: never
+          upload: "false"
+
+      - name: Check the outcome
+        env:
+          EXIT_CODE: ${{ steps.pyahead.outputs.exit-code }}
+        run: test "$EXIT_CODE" = 0
+
+  invalid:
+    name: Invalid input fails without a report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run the action
+        id: pyahead
+        continue-on-error: true
+        uses: ./
+        with:
+          path: tests/golden/project
+          baseline-python: "not-a-version"
+          upload: "false"
+
+      - name: Check the outcome
+        env:
+          OUTCOME: ${{ steps.pyahead.outcome }}
+          EXIT_CODE: ${{ steps.pyahead.outputs.exit-code }}
+          SARIF: ${{ steps.pyahead.outputs.sarif-file }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$EXIT_CODE" = 2
+          test -z "$SARIF"

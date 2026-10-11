@@ -327,6 +327,8 @@ pyahead check --format sarif --output pyahead.sarif
 
 The SARIF file is valid independently of GitHub. Upload availability depends on the repository and GitHub plan. PyAhead must not assume that code scanning is enabled.
 
+The repository root carries a composite GitHub Action, `action.yml`, for this journey. It is a packaging of the same CLI, not a second implementation: it installs the PyPI release matching the tag it is referenced by (or its own source at any other ref), runs `pyahead check --root <path> --format sarif`, uploads the report with `github/codeql-action/upload-sarif`, and only then exits with PyAhead's code, so findings reach code scanning even when the gate fails the job. Upload is an input that defaults on; because availability depends on the repository and plan, users without code scanning set it off and keep the report. Inputs reach its scripts only as environment variables, never as expression interpolation, so no input can inject shell code. `.github/workflows/action-self-test.yml` runs the action from source against the golden project with upload off.
+
 ### 5.4 Existing repository adopting a baseline
 
 ```console

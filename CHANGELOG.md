@@ -6,6 +6,15 @@ stabilizing.
 
 ## Unreleased
 
+### Added
+
+- The repository is a GitHub Action (`action.yml`):
+  `uses: diegorusso/pyahead@v<version>` installs that PyAhead release, scans,
+  uploads SARIF to code scanning, and then applies the `fail-on` gate, so
+  findings reach code scanning even when they fail the job. Inputs mirror the
+  command line; outputs are `exit-code` and `sarif-file`. A self-test workflow
+  runs it from source against the golden project.
+
 ### Fixed
 
 - `pyahead dependencies` with `uv` 0.12.18: a dependency conflict or a closed

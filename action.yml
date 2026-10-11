@@ -1,0 +1,143 @@
+name: PyAhead
+description: >-
+  Find the CPython deprecations and removals a repository will hit, and report
+  them to GitHub code scanning as SARIF.
+author: Diego Russo
+branding:
+  icon: fast-forward
+  color: green
+
+inputs:
+  path:
+    description: Project root to scan, relative to the workspace.
+    default: "."
+  baseline-python:
+    description: >-
+      Oldest Python the project supports. Empty uses the project's
+      configuration, then [project].requires-python.
+    default: ""
+  horizon-python:
+    description: >-
+      Newest Python to look ahead to. Empty uses the project's configuration,
+      then the newest stable or in-development release the registry knows.
+    default: ""
+  fail-on:
+    description: >-
+      Fail the step when a finding reaches this impact: never, breaking, risk,
+      deprecated or any. Empty uses the project's configuration (default
+      breaking).
+    default: ""
+  minimum-confidence:
+    description: Lowest match confidence to report, high or medium. Empty uses the configuration.
+    default: ""
+  sarif-file:
+    description: SARIF report path, relative to the project root.
+    default: pyahead.sarif
+  upload:
+    description: >-
+      Upload the SARIF report to GitHub code scanning. Needs the
+      `security-events: write` permission and code scanning enabled for the
+      repository.
+    default: "true"
+  category:
+    description: Code-scanning category, to keep several PyAhead runs apart.
+    default: pyahead
+  version:
+    description: >-
+      PyAhead version to install from PyPI. Empty installs the version this
+      action is pinned to when it is referenced by a vX.Y.Z tag, and the
+      action's own source otherwise.
+    default: ""
+  python-version:
+    description: Python that runs PyAhead (3.11 or newer). Independent of the versions being assessed.
+    default: "3.13"
+
+outputs:
+  exit-code:
+    description: PyAhead's exit code (0 clean, 1 gated findings, 2 invalid input, 3 incomplete, 4 internal error).
+    value: ${{ steps.check.outputs.exit-code }}
+  sarif-file:
+    description: Path to the SARIF report, relative to the workspace.
+    value: ${{ steps.check.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python for PyAhead
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    # Every input reaches the shell through the environment, never through
+    # expression interpolation into the script, so no input can inject code.
+    - name: Install PyAhead
+      shell: bash
+      env:
+        PYAHEAD_VERSION: ${{ inputs.version }}
+        PYAHEAD_ACTION_REF: ${{ github.action_ref }}
+        PYAHEAD_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        venv="$RUNNER_TEMP/pyahead-venv"
+        python -m venv "$venv"
+        if [[ -n "$PYAHEAD_VERSION" ]]; then
+          spec="pyahead==$PYAHEAD_VERSION"
+        elif [[ "$PYAHEAD_ACTION_REF" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          spec="pyahead==${BASH_REMATCH[1]}"
+        else
+          spec="$PYAHEAD_ACTION_PATH"
+        fi
+        "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$spec"
+        echo "PYAHEAD_BIN=$venv/bin/pyahead" >> "$GITHUB_ENV"
+        "$venv/bin/pyahead" --version
+
+    - name: Scan
+      id: check
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        PYAHEAD_BASELINE: ${{ inputs.baseline-python }}
+        PYAHEAD_HORIZON: ${{ inputs.horizon-python }}
+        PYAHEAD_FAIL_ON: ${{ inputs.fail-on }}
+        PYAHEAD_CONFIDENCE: ${{ inputs.minimum-confidence }}
+        PYAHEAD_SARIF: ${{ inputs.sarif-file }}
+        PYAHEAD_PATH: ${{ inputs.path }}
+      run: |
+        # GitHub runs bash with -e; the exit code is recorded, not obeyed, here.
+        set +e -uo pipefail
+        # --root pins the project to the requested path; without it PyAhead
+        # would walk up to an enclosing pyproject.toml or repository.
+        args=(check . --root . --format sarif --output "$PYAHEAD_SARIF")
+        [[ -n "$PYAHEAD_BASELINE" ]] && args+=(--baseline-python "$PYAHEAD_BASELINE")
+        [[ -n "$PYAHEAD_HORIZON" ]] && args+=(--horizon-python "$PYAHEAD_HORIZON")
+        [[ -n "$PYAHEAD_FAIL_ON" ]] && args+=(--fail-on "$PYAHEAD_FAIL_ON")
+        [[ -n "$PYAHEAD_CONFIDENCE" ]] && args+=(--minimum-confidence "$PYAHEAD_CONFIDENCE")
+        # A report left by an earlier run must not be uploaded as this one's:
+        # invalid input and internal errors write no report at all.
+        rm -f -- "$PYAHEAD_SARIF"
+        "$PYAHEAD_BIN" "${args[@]}"
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [[ -f "$PYAHEAD_SARIF" ]]; then
+          echo "sarif-file=${PYAHEAD_PATH%/}/$PYAHEAD_SARIF" >> "$GITHUB_OUTPUT"
+        fi
+        # The gate is applied after the upload, so findings reach code
+        # scanning even when they fail the job.
+        exit 0
+
+    - name: Upload to code scanning
+      if: ${{ inputs.upload == 'true' && steps.check.outputs.sarif-file != '' }}
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.check.outputs.sarif-file }}
+        category: ${{ inputs.category }}
+
+    - name: Apply the gate
+      shell: bash
+      env:
+        PYAHEAD_EXIT: ${{ steps.check.outputs.exit-code }}
+      run: |
+        if [[ "$PYAHEAD_EXIT" != "0" ]]; then
+          echo "::error title=PyAhead::pyahead check exited $PYAHEAD_EXIT (1 gated findings, 2 invalid input, 3 incomplete scan, 4 internal error)"
+        fi
+        exit "$PYAHEAD_EXIT"

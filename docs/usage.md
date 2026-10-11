@@ -236,6 +236,47 @@ SARIF uses stable rule IDs, relative paths, exact regions, and PyAhead
 fingerprints. Whether GitHub accepts a SARIF upload depends on repository and
 plan settings; PyAhead does not assume code scanning is enabled.
 
+### GitHub Action
+
+`action.yml` at the repository root makes PyAhead a composite GitHub Action:
+
+```yaml
+jobs:
+  pyahead:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: diegorusso/pyahead@v0.6.0
+        with:
+          baseline-python: "3.11"
+```
+
+The action sets up Python, installs PyAhead, runs `pyahead check . --root .
+--format sarif` in `path`, uploads the report with
+`github/codeql-action/upload-sarif` under the category `pyahead`, and only then
+applies the gate, so findings reach code scanning even when they fail the job.
+Referenced by a `vX.Y.Z` tag, it installs exactly that release from PyPI;
+referenced by a branch or commit, it installs the action's own source; the
+`version` input overrides both.
+
+| input | default | meaning |
+| --- | --- | --- |
+| `path` | `.` | project root to scan |
+| `baseline-python`, `horizon-python` | empty | as on the command line; empty uses configuration and inference |
+| `fail-on`, `minimum-confidence` | empty | as on the command line; empty uses configuration |
+| `sarif-file` | `pyahead.sarif` | report path beneath `path`; removed before each scan so a failed run never re-uploads an old one |
+| `upload` | `true` | upload to code scanning; needs `security-events: write` and code scanning enabled |
+| `category` | `pyahead` | code-scanning category |
+| `version` | empty | PyAhead version to install |
+| `python-version` | `3.13` | the Python that runs PyAhead, independent of the versions assessed |
+
+Outputs: `exit-code` (PyAhead's exit code) and `sarif-file` (empty when no
+report was written, as for invalid input). Inputs reach the scripts only as
+environment variables, never as interpolated code.
+
 Human-readable output escapes embedded line breaks, terminal controls, Unicode
 line and paragraph separators, and direction-changing format controls in
 repository-, registry-, evidence-, and diagnostic-provided values. Escapes are

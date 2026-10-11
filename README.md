@@ -212,6 +212,31 @@ prerequisite for the M7–M8 dynamic-evidence work.
 
 ## CI and review workflows
 
+The repository is also a GitHub Action. It installs the PyAhead release named
+by the tag you reference, scans, uploads the SARIF report to code scanning, and
+then fails the job if a finding meets the gate:
+
+```yaml
+jobs:
+  pyahead:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: diegorusso/pyahead@v0.6.0
+        with:
+          baseline-python: "3.11"
+```
+
+Inputs mirror the command line (`path`, `baseline-python`, `horizon-python`,
+`fail-on`, `minimum-confidence`); `upload: "false"` keeps the report local, and
+the `exit-code` and `sarif-file` outputs are there for later steps. See
+[`action.yml`](action.yml).
+
+Outside GitHub Actions, or to drive it yourself:
+
 Write SARIF or deterministic JSON atomically:
 
 ```console
