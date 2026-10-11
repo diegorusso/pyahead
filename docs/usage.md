@@ -653,8 +653,11 @@ incomplete. Do not use it to claim compatibility.
 ## Performance
 
 Checked targets and regression ceilings live in
-`scripts/performance-budgets.json`. The benchmark generates source in temporary
-directories, launches the real CLI, measures wall time, records peak resident
+`scripts/performance-budgets.json`. The benchmark writes a project into a
+temporary directory, either many tiny generated modules (per-file overhead) or
+100 real modules copied from the running interpreter's standard library
+(`asyncio`, `email`, `importlib` and so on, where analysis itself dominates),
+launches the real CLI, measures wall time, records peak resident
 memory where the host exposes it, and exits nonzero when a measurement exceeds
 the checked regression ceiling. Even `--repeat 1` compares two independently
 generated reports; the extra run checks determinism but does not alter the one

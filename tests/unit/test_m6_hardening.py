@@ -157,9 +157,11 @@ def test_performance_targets_and_regression_ceilings_are_versioned() -> None:
         ("one-file", 1, 0.5),
         ("1k-files", 1_000, 5.0),
         ("10k-files", 10_000, 30.0),
+        ("stdlib-100", 100, 60.0),
     ]
+    assert [item.corpus for item in budgets] == ["synthetic"] * 3 + ["stdlib"]
     assert all(item.max_regression_seconds >= item.max_seconds for item in budgets)
-    assert budgets[-1].max_peak_rss_bytes == _GIBIBYTE
+    assert budgets[2].max_peak_rss_bytes == _GIBIBYTE
 
 
 def test_single_timing_repeat_still_compares_two_reports(
@@ -574,3 +576,32 @@ def test_readme_leads_with_limitations_and_links_public_alpha_docs() -> None:
         "docs/false-positive-review.csv",
     ):
         assert (repository / path).is_file()
+
+
+_STDLIB_SAMPLE = 20
+
+
+def test_stdlib_corpus_copies_real_modules_in_a_stable_order(tmp_path: Path) -> None:
+    """The real-code case scans the same named stdlib modules on every run."""
+    first, second = tmp_path / "first", tmp_path / "second"
+    for root in (first, second):
+        benchmark._write_project(root, _STDLIB_SAMPLE, "stdlib")
+    names = sorted(p.relative_to(first).as_posix() for p in first.rglob("*.py"))
+    assert names == sorted(
+        p.relative_to(second).as_posix() for p in second.rglob("*.py")
+    )
+    assert len(names) == _STDLIB_SAMPLE
+    assert all(name.startswith("src/asyncio/") for name in names)
+    assert not any("/test" in name for name in names)
+
+
+def test_unknown_benchmark_corpus_is_rejected(tmp_path: Path) -> None:
+    """A typo in a budget's corpus fails rather than silently scanning tiny files."""
+    path = tmp_path / "budgets.json"
+    path.write_text(
+        '{"schema_version": 1, "cases": [{"name": "x", "files": 1, '
+        '"max_seconds": 1, "max_regression_seconds": 1, "corpus": "pypi"}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(benchmark.BenchmarkError, match="corpus must be one of"):
+        benchmark._load_budgets(path)

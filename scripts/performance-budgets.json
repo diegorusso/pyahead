@@ -18,6 +18,13 @@
       "max_regression_seconds": 300.0,
       "max_seconds": 30.0,
       "name": "10k-files"
+    },
+    {
+      "corpus": "stdlib",
+      "files": 100,
+      "max_regression_seconds": 600.0,
+      "max_seconds": 60.0,
+      "name": "stdlib-100"
     }
   ],
   "schema_version": 1

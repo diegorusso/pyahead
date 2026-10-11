@@ -1,4 +1,9 @@
-"""Measure synthetic scan budgets and fail on a checked-in regression."""
+"""Measure scan budgets and fail on a checked-in regression.
+
+Synthetic cases scan many tiny generated modules and measure per-file
+overhead. The stdlib case scans real modules copied from the running
+interpreter's standard library, where per-file analysis dominates.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +12,11 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import statistics
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 from dataclasses import dataclass
@@ -25,13 +32,20 @@ class BenchmarkError(RuntimeError):
 
 @dataclass(frozen=True)
 class Budget:
-    """One checked-in synthetic scan budget."""
+    """One checked-in scan budget."""
 
     name: str
     files: int
     max_seconds: float
     max_regression_seconds: float
     max_peak_rss_bytes: int | None = None
+    corpus: str = "synthetic"
+
+
+_CORPORA = frozenset({"synthetic", "stdlib"})
+# Real, varied modules present in every supported CPython. Exact contents
+# follow the interpreter running the benchmark, which the results record.
+_STDLIB_PACKAGES = ("asyncio", "email", "importlib", "json", "http", "urllib")
 
 
 def _positive_integer(value: str) -> int:
@@ -89,6 +103,10 @@ def _load_budgets(path: Path) -> tuple[Budget, ...]:
             message = "performance budget names must be unique non-empty strings"
             raise BenchmarkError(message)
         names.add(name)
+        corpus = item.get("corpus", "synthetic")
+        if corpus not in _CORPORA:
+            message = f"{name}.corpus must be one of {', '.join(sorted(_CORPORA))}"
+            raise BenchmarkError(message)
         memory_value = item.get("max_peak_rss_bytes")
         memory = (
             None
@@ -108,6 +126,7 @@ def _load_budgets(path: Path) -> tuple[Budget, ...]:
                     label=f"{name}.max_regression_seconds",
                 ),
                 max_peak_rss_bytes=memory,
+                corpus=corpus,
             )
         )
     return tuple(budgets)
@@ -150,7 +169,7 @@ def _worker(root: Path, report_path: Path) -> int:
     return result
 
 
-def _write_synthetic_project(root: Path, files: int) -> None:
+def _write_project(root: Path, files: int, corpus: str) -> None:
     source = root / "src"
     source.mkdir(parents=True)
     (root / "pyproject.toml").write_text(
@@ -162,9 +181,29 @@ def _write_synthetic_project(root: Path, files: int) -> None:
         ),
         encoding="utf-8",
     )
+    if corpus == "stdlib":
+        _copy_stdlib_modules(source, files)
+        return
     content = '"""Synthetic benchmark module."""\n\nVALUE = 1\n'
     for index in range(files):
         (source / f"module_{index:05d}.py").write_text(content, encoding="utf-8")
+
+
+def _copy_stdlib_modules(source: Path, files: int) -> None:
+    library = Path(sysconfig.get_paths()["stdlib"])
+    modules = sorted(
+        path
+        for package in _STDLIB_PACKAGES
+        for path in (library / package).rglob("*.py")
+        if "test" not in path.relative_to(library).parts[1:]
+    )
+    if len(modules) < files:
+        message = f"the standard library offers only {len(modules)} benchmark modules"
+        raise BenchmarkError(message)
+    for module in modules[:files]:
+        destination = source / module.relative_to(library)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(module, destination)
 
 
 def _run_once(
@@ -211,7 +250,7 @@ def _run_once(
         or scan.get("files_analyzed") != expected_files
         or scan.get("files_incomplete") != 0
     ):
-        message = "benchmark scan did not completely analyze the synthetic corpus"
+        message = "benchmark scan did not completely analyze the corpus"
         raise BenchmarkError(message)
     memory = measurement.get("peak_rss_bytes")
     if memory is not None and (isinstance(memory, bool) or not isinstance(memory, int)):
@@ -228,7 +267,7 @@ def _measure(budget: Budget, *, repeat: int) -> dict[str, Any]:
     determinism_runs = max(2, repeat)
     with tempfile.TemporaryDirectory(prefix=f"pyahead-benchmark-{budget.name}-") as tmp:
         root = Path(tmp)
-        _write_synthetic_project(root, budget.files)
+        _write_project(root, budget.files, budget.corpus)
         for run_index in range(determinism_runs):
             duration, memory, report_digest = _run_once(
                 root,
@@ -257,6 +296,7 @@ def _measure(budget: Budget, *, repeat: int) -> dict[str, Any]:
             "max_regression_seconds": budget.max_regression_seconds,
             "max_seconds": budget.max_seconds,
         },
+        "corpus": budget.corpus,
         "files": budget.files,
         "measurements": {
             "duration_seconds": [round(value, 6) for value in durations],
