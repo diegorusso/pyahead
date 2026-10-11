@@ -807,118 +807,95 @@ def _error(label: str, message: str) -> NoReturn:
 
 
 @dataclass
-class _MarkerEvaluationBudget:
+class _WorkBudget:
+    """Units of work shared by every step of one public operation.
+
+    Exhaustion empties the budget before ``exhausted`` raises, so nothing
+    later in the same operation can spend what is left.
+    """
+
     remaining: int
+    exhausted: Callable[[], NoReturn]
 
     def consume(self, amount: int) -> None:
         if amount > self.remaining:
-            message = (
-                "dependency marker evaluation: exceeds the aggregate "
-                "marker-evaluation budget"
-            )
-            raise _MarkerEvaluationLimitError(message)
+            self.remaining = 0
+            self.exhausted()
         self.remaining -= amount
 
 
-_ACTIVE_MARKER_BUDGET: ContextVar[_MarkerEvaluationBudget | None] = ContextVar(
+def _marker_budget_exhausted() -> NoReturn:
+    message = (
+        "dependency marker evaluation: exceeds the aggregate marker-evaluation budget"
+    )
+    raise _MarkerEvaluationLimitError(message)
+
+
+def _archive_budget_exhausted() -> NoReturn:
+    _fail_metadata("aggregate archive expansion exceeds the size limit")
+
+
+def _metadata_requirement_budget_exhausted() -> NoReturn:
+    _error(
+        "tool.pyahead.dependencies.metadata",
+        "exceeds the aggregate Requires-Dist limit",
+    )
+
+
+_ACTIVE_MARKER_BUDGET: ContextVar[_WorkBudget | None] = ContextVar(
     "pyahead_dependency_marker_budget",
     default=None,
 )
-
-
-@dataclass
-class _ArchiveExpansionBudget:
-    remaining: int
-
-    def consume(self, amount: int) -> None:
-        if amount > self.remaining:
-            self.remaining = 0
-            _fail_metadata("aggregate archive expansion exceeds the size limit")
-        self.remaining -= amount
-
-
-_ACTIVE_ARCHIVE_BUDGET: ContextVar[_ArchiveExpansionBudget | None] = ContextVar(
+_ACTIVE_ARCHIVE_BUDGET: ContextVar[_WorkBudget | None] = ContextVar(
     "pyahead_dependency_archive_budget",
+    default=None,
+)
+_ACTIVE_METADATA_REQUIREMENT_BUDGET: ContextVar[_WorkBudget | None] = ContextVar(
+    "pyahead_dependency_metadata_requirement_budget",
     default=None,
 )
 
 
-@dataclass
-class _MetadataRequirementBudget:
-    remaining: int
+def _scoped_budget(
+    active: ContextVar[_WorkBudget | None],
+    limit: Callable[[], int],
+    exhausted: Callable[[], NoReturn],
+) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
+    """Give the outermost decorated call a fresh budget that nested calls share."""
 
-    def consume(self, amount: int) -> None:
-        if amount > self.remaining:
-            self.remaining = 0
-            _error(
-                "tool.pyahead.dependencies.metadata",
-                "exceeds the aggregate Requires-Dist limit",
-            )
-        self.remaining -= amount
+    def decorate(function: Callable[_P, _R]) -> Callable[_P, _R]:
+        @wraps(function)
+        def bounded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            if active.get() is not None:
+                return function(*args, **kwargs)
+            token = active.set(_WorkBudget(limit(), exhausted))
+            try:
+                return function(*args, **kwargs)
+            finally:
+                active.reset(token)
+
+        return bounded
+
+    return decorate
 
 
-_ACTIVE_METADATA_REQUIREMENT_BUDGET: ContextVar[_MetadataRequirementBudget | None] = (
-    ContextVar(
-        "pyahead_dependency_metadata_requirement_budget",
-        default=None,
-    )
+# Limits are read when an operation starts, so tests can lower them.
+_with_marker_evaluation_budget = _scoped_budget(
+    _ACTIVE_MARKER_BUDGET,
+    lambda: _MAX_MARKER_EVALUATIONS,
+    _marker_budget_exhausted,
 )
-
-
-def _with_marker_evaluation_budget(function: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Share one runtime marker budget across a complete public operation."""
-
-    @wraps(function)
-    def bounded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        if _ACTIVE_MARKER_BUDGET.get() is not None:
-            return function(*args, **kwargs)
-        token = _ACTIVE_MARKER_BUDGET.set(
-            _MarkerEvaluationBudget(_MAX_MARKER_EVALUATIONS)
-        )
-        try:
-            return function(*args, **kwargs)
-        finally:
-            _ACTIVE_MARKER_BUDGET.reset(token)
-
-    return bounded
-
-
-def _with_archive_expansion_budget(function: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Share one decompression budget across every artifact in an inspection."""
-
-    @wraps(function)
-    def bounded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        if _ACTIVE_ARCHIVE_BUDGET.get() is not None:
-            return function(*args, **kwargs)
-        token = _ACTIVE_ARCHIVE_BUDGET.set(
-            _ArchiveExpansionBudget(_MAX_TOTAL_ARCHIVE_EXPANDED_BYTES)
-        )
-        try:
-            return function(*args, **kwargs)
-        finally:
-            _ACTIVE_ARCHIVE_BUDGET.reset(token)
-
-    return bounded
-
-
-def _with_metadata_requirement_budget(
-    function: Callable[_P, _R],
-) -> Callable[_P, _R]:
-    """Count parsed Requires-Dist fields even when later validation rejects."""
-
-    @wraps(function)
-    def bounded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        if _ACTIVE_METADATA_REQUIREMENT_BUDGET.get() is not None:
-            return function(*args, **kwargs)
-        token = _ACTIVE_METADATA_REQUIREMENT_BUDGET.set(
-            _MetadataRequirementBudget(_MAX_METADATA_REQUIREMENTS)
-        )
-        try:
-            return function(*args, **kwargs)
-        finally:
-            _ACTIVE_METADATA_REQUIREMENT_BUDGET.reset(token)
-
-    return bounded
+_with_archive_expansion_budget = _scoped_budget(
+    _ACTIVE_ARCHIVE_BUDGET,
+    lambda: _MAX_TOTAL_ARCHIVE_EXPANDED_BYTES,
+    _archive_budget_exhausted,
+)
+# Counts parsed Requires-Dist fields even when later validation rejects them.
+_with_metadata_requirement_budget = _scoped_budget(
+    _ACTIVE_METADATA_REQUIREMENT_BUDGET,
+    lambda: _MAX_METADATA_REQUIREMENTS,
+    _metadata_requirement_budget_exhausted,
+)
 
 
 def _consume_dependency_work(amount: int) -> None:
