@@ -1280,60 +1280,6 @@ def _parse_file_with_context(
     )
 
 
-def _registry_from_matcher_index(index: MatcherIndex) -> Registry:
-    bindings = (
-        *(binding for values in index.module_imports.values() for binding in values),
-        *(
-            binding
-            for values in index.qualified_references.values()
-            for binding in values
-        ),
-        *(binding for values in index.qualified_calls.values() for binding in values),
-        *(binding for values in index.call_shapes.values() for binding in values),
-        *(
-            binding
-            for values in index.literal_dynamic_imports.values()
-            for binding in values
-        ),
-        *(binding for values in index.builtin_patterns.values() for binding in values),
-    )
-    rules = {binding.rule.id: binding.rule for binding in bindings}
-    return Registry(
-        release="test",
-        revision="test",
-        retired_ids=(),
-        rules=tuple(rules[rule_id] for rule_id in sorted(rules)),
-    )
-
-
-def _parse_file(
-    path: DiscoveredFile,
-    matcher_index: MatcherIndex,
-    project_modules: dict[str, tuple[PurePosixPath, ...]],
-    target_versions: frozenset[PythonMinor],
-) -> tuple[
-    tuple[StaticMatch, ...],
-    tuple[AnalysisInference, ...],
-    Diagnostic | None,
-]:
-    """Retain the M2 focused matcher-test adapter."""
-    matches, inferences, _mutations, _suppressions, diagnostics = (
-        _parse_file_with_context(
-            path,
-            _FileAnalysisContext(
-                root=path.absolute_path.parents[len(path.relative_path.parts) - 1],
-                matcher_index=matcher_index,
-                project_modules=project_modules,
-                target_versions=target_versions,
-                source_roots=(".", "src"),
-                max_file_size_bytes=2 * 1024 * 1024,
-                registry=_registry_from_matcher_index(matcher_index),
-            ),
-        )
-    )
-    return matches, inferences, diagnostics[0] if diagnostics else None
-
-
 def _initial_location(relative_path: PurePosixPath) -> SourceLocation:
     position = SourcePosition(line=1, column=1)
     return SourceLocation(

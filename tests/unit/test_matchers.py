@@ -1,25 +1,35 @@
 """Acceptance fixtures for the indexed M2 matcher framework."""
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 import pytest
 import yaml
 
 from pyahead.analysis import ScanRequest, scan
-from pyahead.analysis.discovery import discover_python_files, project_module_paths
-from pyahead.analysis.engine import _parse_file
+from pyahead.analysis.discovery import (
+    DiscoveredFile,
+    discover_python_files,
+    project_module_paths,
+)
+from pyahead.analysis.engine import (
+    _FileAnalysisContext,
+    _parse_file_with_context,
+)
 from pyahead.analysis.matchers import build_matcher_index
 from pyahead.model import (
     AnalysisInference,
     BuiltinPattern,
+    Diagnostic,
     ExitCode,
     MatchConfidence,
     Policy,
+    Registry,
     ScanReport,
     StaticMatch,
 )
 from pyahead.registry import load_registry
+from pyahead.versions import PythonMinor
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures/matchers"
 RULE_ID = "CPY9001"
@@ -66,6 +76,34 @@ NAMESPACE_PACKAGE_MATCHERS = {
         "qualified_name": "targetpkg.old.old_call",
     },
 }
+
+
+def _parse_file(
+    path: DiscoveredFile,
+    registry: Registry,
+    project_modules: dict[str, tuple[PurePosixPath, ...]],
+    target_versions: frozenset[PythonMinor],
+) -> tuple[
+    tuple[StaticMatch, ...],
+    tuple[AnalysisInference, ...],
+    Diagnostic | None,
+]:
+    """Run the per-file analysis on one discovered file, as ``scan`` does."""
+    matches, inferences, _mutations, _suppressions, diagnostics = (
+        _parse_file_with_context(
+            path,
+            _FileAnalysisContext(
+                root=path.absolute_path.parents[len(path.relative_path.parts) - 1],
+                matcher_index=build_matcher_index(registry),
+                project_modules=project_modules,
+                target_versions=target_versions,
+                source_roots=(".", "src"),
+                max_file_size_bytes=2 * 1024 * 1024,
+                registry=registry,
+            ),
+        )
+    )
+    return matches, inferences, diagnostics[0] if diagnostics else None
 
 
 def _case_matcher(matcher_name: str, case: str) -> dict[str, object]:
@@ -196,7 +234,7 @@ def _raw_case(
     selected = discover_python_files(root, (Path("source.py"),))
     matches, inferences, diagnostic = _parse_file(
         selected.files[0],
-        build_matcher_index(registry),
+        registry,
         project_module_paths(root_discovery.files, root_discovery.issues),
         Policy.parse("3.11", "3.13").target_versions,
     )
@@ -716,7 +754,7 @@ def test_dynamic_import_supports_builtin_and_keyword_name(tmp_path: Path) -> Non
     root_discovery = discover_python_files(tmp_path / "project", ())
     matches, _inferences, diagnostic = _parse_file(
         root_discovery.files[0],
-        build_matcher_index(load_registry(registry)),
+        load_registry(registry),
         project_module_paths(root_discovery.files, root_discovery.issues),
         Policy.parse("3.11", "3.13").target_versions,
     )
