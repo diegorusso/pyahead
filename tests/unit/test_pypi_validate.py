@@ -139,12 +139,12 @@ def _reference_interpreter(  # noqa: PLR0913 - mirrors the manifest entry's own 
     filename: str = "pkg-1.0.0-py3-none-any.whl",
     is_wheel: bool = False,
 ) -> pypi_validate.InstalledInterpreter | None:
-    """`_reference_interpreter` with a not-a-wheel default.
+    """Return the first reference candidate, with a not-a-wheel default.
 
     Keeps plain `requires_python` resolution tests from tripping the
     wheel-tag check.
     """
-    return pypi_validate._reference_interpreter(
+    candidates = pypi_validate._reference_candidates(
         requires_python,
         installed,
         baseline_minor=baseline_minor,
@@ -152,6 +152,7 @@ def _reference_interpreter(  # noqa: PLR0913 - mirrors the manifest entry's own 
         filename=filename,
         is_wheel=is_wheel,
     )
+    return candidates[0] if candidates else None
 
 
 def test_reference_interpreter_picks_the_lowest_satisfying_minor() -> None:

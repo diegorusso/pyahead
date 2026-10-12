@@ -145,7 +145,7 @@ def _reference_minor() -> int | None:
     installed = pypi_validate._installed_interpreters(
         uv, timeout=_SUBPROCESS_TIMEOUT_SECONDS
     )
-    reference = pypi_validate._reference_interpreter(
+    candidates = pypi_validate._reference_candidates(
         None,
         installed,
         baseline_minor=11,
@@ -153,7 +153,7 @@ def _reference_minor() -> int | None:
         filename="",
         is_wheel=False,
     )
-    return reference.minor if reference is not None else None
+    return candidates[0].minor if candidates else None
 
 
 # --- driving the three scripts as real subprocesses --------------------------

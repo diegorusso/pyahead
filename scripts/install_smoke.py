@@ -263,25 +263,6 @@ def _credential_match_view(text: str) -> _CredentialMatchView:
     return _CredentialMatchView("".join(rendered), tuple(starts), tuple(ends))
 
 
-def _canonical_assignment_value_span(
-    text: str,
-    name_end: int,
-) -> tuple[int, int] | None:
-    """Locate one named credential value in canonical match text."""
-    cursor = name_end
-    if cursor < len(text) and text[cursor] in "\"'":
-        cursor += 1
-    while cursor < len(text) and text[cursor].isspace():
-        cursor += 1
-    if cursor >= len(text) or text[cursor] not in "=:,":
-        return None
-    cursor += 1
-    while cursor < len(text) and text[cursor].isspace():
-        cursor += 1
-    value_start = cursor
-    return value_start, _canonical_credential_value_end(text, value_start)
-
-
 def _canonical_credential_value_end(
     text: str,
     value_start: int,

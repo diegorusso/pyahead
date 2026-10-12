@@ -250,34 +250,6 @@ def _installed_interpreters(
     return installed
 
 
-def _reference_interpreter(  # noqa: PLR0913 - mirrors the manifest entry's own fields.
-    requires_python: str | None,
-    installed: Mapping[int, InstalledInterpreter],
-    *,
-    baseline_minor: int,
-    horizon_minor: int,
-    filename: str,
-    is_wheel: bool,
-) -> InstalledInterpreter | None:
-    """Pick the lowest available minor satisfying `requires_python`, clamped up.
-
-    For a wheel artifact, a candidate minor must also be able to install
-    the pinned wheel itself: `requires_python` alone cannot predict a wheel
-    built only for a narrower range of interpreters than the distribution
-    claims to support, and installing under a tag-incompatible venv would
-    fail for a reason unrelated to anything this harness is measuring.
-    """
-    candidates = _reference_candidates(
-        requires_python,
-        installed,
-        baseline_minor=baseline_minor,
-        horizon_minor=horizon_minor,
-        filename=filename,
-        is_wheel=is_wheel,
-    )
-    return candidates[0] if candidates else None
-
-
 def _reference_candidates(  # noqa: PLR0913 - mirrors the manifest entry's own fields.
     requires_python: str | None,
     installed: Mapping[int, InstalledInterpreter],
