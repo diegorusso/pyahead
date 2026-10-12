@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 import libcst as cst
+import pytest
 from libcst.metadata import MetadataWrapper, ParentNodeProvider
 
 from pyahead.analysis.discovery import DiscoveredFile
@@ -74,3 +75,10 @@ def test_a_node_off_the_stack_falls_back_to_a_full_parent_map() -> None:
     name = class_def.name
     assert visitor._parent(name) is class_def  # noqa: SLF001
     assert visitor._parent(cst.Name("detached")) is None  # noqa: SLF001
+
+
+def test_positions_need_the_wrapper_being_visited() -> None:
+    """A visitor built without its wrapper cannot invent locations."""
+    visitor = _Recorder()
+    with pytest.raises(RuntimeError, match="metadata wrapper"):
+        visitor._position(cst.Name("x"))  # noqa: SLF001

@@ -249,21 +249,27 @@ def _location(
 class _MatcherVisitor(cst.CSTVisitor):
     """Run all indexed matchers in one metadata-aware traversal."""
 
+    # PositionProvider is not declared: it generates the code for the whole
+    # module, and most files never record anything that needs a location.
+    # _position resolves it through the wrapper the first time one does.
     METADATA_DEPENDENCIES = (
         ExpressionContextProvider,
-        PositionProvider,
         ScopeProvider,
     )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - one traversal's complete context.
         self,
         path: DiscoveredFile,
         matcher_index: MatcherIndex,
         project_modules: dict[str, tuple[PurePosixPath, ...]],
         target_versions: frozenset[PythonMinor],
         source_roots: tuple[str, ...],
+        *,
+        wrapper: MetadataWrapper | None = None,
     ) -> None:
         """Configure one coordinated read-only traversal."""
+        self._wrapper = wrapper
+        self._positions: Mapping[cst.CSTNode, CodeRange] | None = None
         self._path = path
         self._index = matcher_index
         self._project_modules = project_modules
@@ -327,6 +333,15 @@ class _MatcherVisitor(cst.CSTVisitor):
                     pending.append(child)
         return self._parents
 
+    def _position(self, node: cst.CSTNode) -> CodeRange:
+        """Return where ``node`` is, resolving positions on first use."""
+        if self._positions is None:
+            if self._wrapper is None:
+                message = "positions need the metadata wrapper being visited"
+                raise RuntimeError(message)
+            self._positions = self._wrapper.resolve(PositionProvider)
+        return self._positions[node]
+
     @property
     def _reachability(self) -> LexicalReachability:
         return self._tracker.current
@@ -362,7 +377,7 @@ class _MatcherVisitor(cst.CSTVisitor):
     def _record_patch_guard_inference(self, node: cst.BaseExpression) -> None:
         location = _location(
             self._path,
-            self.get_metadata(PositionProvider, node),
+            self._position(node),
         )
         if location in self._guard_inference_keys:
             return
@@ -515,7 +530,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         # Empty lexical states still count toward syntactic fingerprint ordinals.
         location = _location(
             self._path,
-            self.get_metadata(PositionProvider, node),
+            self._position(node),
         )
         scope = self.get_metadata(ScopeProvider, node)
         self.matches.append(
@@ -624,7 +639,7 @@ class _MatcherVisitor(cst.CSTVisitor):
     ) -> None:
         location = _location(
             self._path,
-            self.get_metadata(PositionProvider, node),
+            self._position(node),
         )
         self.inferences.append(
             AnalysisInference(
@@ -657,7 +672,7 @@ class _MatcherVisitor(cst.CSTVisitor):
     ) -> None:
         location = _location(
             self._path,
-            self.get_metadata(PositionProvider, node),
+            self._position(node),
         )
         key = (
             location.region.start.line,
@@ -697,7 +712,7 @@ class _MatcherVisitor(cst.CSTVisitor):
     ) -> None:
         location = _location(
             self._path,
-            self.get_metadata(PositionProvider, node),
+            self._position(node),
         )
         self.inferences.append(
             AnalysisInference(
@@ -1015,7 +1030,7 @@ class _MatcherVisitor(cst.CSTVisitor):
                         operation=operation,
                         location=_location(
                             self._path,
-                            self.get_metadata(PositionProvider, node),
+                            self._position(node),
                         ),
                     )
                 )
@@ -1246,16 +1261,17 @@ def _analyse_file(
         msg = "parsed module is absent without a parse diagnostic"
         raise RuntimeError(msg)
 
+    # The module was just parsed and is never modified, so every node is
+    # already unique; the defensive deep copy would only double the work.
+    wrapper = MetadataWrapper(module, unsafe_skip_copy=True)
     visitor = _MatcherVisitor(
         path,
         context.matcher_index,
         context.project_modules,
         context.target_versions,
         context.source_roots,
+        wrapper=wrapper,
     )
-    # The module was just parsed and is never modified, so every node is
-    # already unique; the defensive deep copy would only double the work.
-    wrapper = MetadataWrapper(module, unsafe_skip_copy=True)
     inline_suppressions = index_inline_suppressions(inline_directives)
     try:
         inline_suppressions = index_inline_suppressions(
