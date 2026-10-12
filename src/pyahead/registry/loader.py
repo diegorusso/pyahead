@@ -580,10 +580,10 @@ def load_registry(source: Path | None = None) -> Registry:
     The bundled registry is read once per process and reused. It is immutable
     data inside the installed package, so it cannot change while the process
     runs, and `Registry` is frozen, so callers cannot alter what they share.
-    Reading it costs roughly 0.6 seconds, which is unnoticeable for a single
-    CLI run and dominates everything else wherever the analyser is called more
-    than once in a process — most sharply under WebAssembly, where it was the
-    whole cost of a scan.
+    Reading it costs about 0.3 seconds with libyaml (more without), which is
+    unnoticeable for a single CLI run and dominates everything else wherever
+    the analyser is called more than once in a process — most sharply under
+    WebAssembly, where it was the whole cost of a scan.
 
     An explicit source is never cached. It is a file on disk that can change,
     and a caller who names one is asking for what is there now.

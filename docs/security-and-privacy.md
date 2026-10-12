@@ -337,9 +337,9 @@ each artifact, and receive exact-commit hosted evidence on supported operating
 systems. Published files are immutable; a faulty artifact is yanked and
 replaced only by a new version.
 
-GitHub Actions use read-only repository contents by default. Release
-publication is not automatic in the M6 workflow and remains an explicit
-maintainer action. Do not place package-index tokens in configuration, command
+GitHub Actions use read-only repository contents by default. Publishing a
+release to PyPI waits for an explicit maintainer approval in the release
+workflow. Do not place package-index tokens in configuration, command
 history, logs, reports, or corpus manifests.
 
 ## Vulnerability reporting
