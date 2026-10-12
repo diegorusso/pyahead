@@ -631,37 +631,53 @@ class _MatcherVisitor(cst.CSTVisitor):
             current = parent
         return self._reachability.versions, False
 
+    def _record_competing_module(
+        self,
+        location: SourceLocation,
+        subject: str,
+        candidates: tuple[PurePosixPath, ...],
+        evidence: dict[str, str | tuple[str, ...]],
+    ) -> None:
+        """Say that ``subject`` was not classified because a project module competes."""
+        self.inferences.append(
+            AnalysisInference(
+                code="PYA2001",
+                kind="module-resolution",
+                message=(
+                    f"did not classify {subject} because a competing project "
+                    "module exists"
+                ),
+                location=location,
+                evidence=tuple(
+                    sorted(
+                        {
+                            **evidence,
+                            "candidate_paths": tuple(
+                                path.as_posix() for path in candidates
+                            ),
+                            "resolution": "competing-project-module",
+                            "source_roots": self._source_roots,
+                        }.items()
+                    )
+                ),
+            )
+        )
+
     def _record_import_inference(
         self,
         node: cst.Import | cst.ImportFrom,
         imported: ImportedModule,
         candidates: tuple[PurePosixPath, ...],
     ) -> None:
-        location = _location(
-            self._path,
-            self._position(node),
-        )
-        self.inferences.append(
-            AnalysisInference(
-                code="PYA2001",
-                kind="module-resolution",
-                message=(
-                    f"did not classify import of {imported.module!r} as standard "
-                    "library because a competing project module exists"
-                ),
-                location=location,
-                evidence=(
-                    ("bound_names", imported.bound_names),
-                    (
-                        "candidate_paths",
-                        tuple(path.as_posix() for path in candidates),
-                    ),
-                    ("imported_module", imported.module),
-                    ("resolution", "competing-project-module"),
-                    ("source_roots", self._source_roots),
-                    ("syntax", imported.syntax),
-                ),
-            )
+        self._record_competing_module(
+            _location(self._path, self._position(node)),
+            f"import of {imported.module!r} as standard library",
+            candidates,
+            {
+                "bound_names": imported.bound_names,
+                "imported_module": imported.module,
+                "syntax": imported.syntax,
+            },
         )
 
     def _record_qualified_inference(
@@ -670,10 +686,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         qualified_name: str,
         candidates: tuple[PurePosixPath, ...],
     ) -> None:
-        location = _location(
-            self._path,
-            self._position(node),
-        )
+        location = _location(self._path, self._position(node))
         key = (
             location.region.start.line,
             location.region.start.column,
@@ -682,25 +695,11 @@ class _MatcherVisitor(cst.CSTVisitor):
         if key in self._inference_keys:
             return
         self._inference_keys.add(key)
-        self.inferences.append(
-            AnalysisInference(
-                code="PYA2001",
-                kind="module-resolution",
-                message=(
-                    f"did not classify reference to {qualified_name!r} because a "
-                    "competing project module exists"
-                ),
-                location=location,
-                evidence=(
-                    (
-                        "candidate_paths",
-                        tuple(path.as_posix() for path in candidates),
-                    ),
-                    ("qualified_name", qualified_name),
-                    ("resolution", "competing-project-module"),
-                    ("source_roots", self._source_roots),
-                ),
-            )
+        self._record_competing_module(
+            location,
+            f"reference to {qualified_name!r}",
+            candidates,
+            {"qualified_name": qualified_name},
         )
 
     def _record_dynamic_import_inference(
@@ -710,30 +709,11 @@ class _MatcherVisitor(cst.CSTVisitor):
         dynamic_function: str,
         candidates: tuple[PurePosixPath, ...],
     ) -> None:
-        location = _location(
-            self._path,
-            self._position(node),
-        )
-        self.inferences.append(
-            AnalysisInference(
-                code="PYA2001",
-                kind="module-resolution",
-                message=(
-                    f"did not classify dynamic import of {module!r} as standard "
-                    "library because a competing project module exists"
-                ),
-                location=location,
-                evidence=(
-                    (
-                        "candidate_paths",
-                        tuple(path.as_posix() for path in candidates),
-                    ),
-                    ("dynamic_function", dynamic_function),
-                    ("imported_module", module),
-                    ("resolution", "competing-project-module"),
-                    ("source_roots", self._source_roots),
-                ),
-            )
+        self._record_competing_module(
+            _location(self._path, self._position(node)),
+            f"dynamic import of {module!r} as standard library",
+            candidates,
+            {"dynamic_function": dynamic_function, "imported_module": module},
         )
 
     def _record_import(
