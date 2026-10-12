@@ -394,6 +394,8 @@ pyahead/
 │       ├── __main__.py
 │       ├── _fs/                     # hardened rooted reads and atomic writes
 │       ├── _human_text.py
+│       ├── _schema_check.py         # checks inputs against published schemas
+│       ├── _toml.py
 │       ├── baseline.py
 │       ├── cli.py
 │       ├── config.py
