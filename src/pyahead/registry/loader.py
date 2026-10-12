@@ -175,6 +175,13 @@ class _PackageFiles:
             raise RegistryError(_read_error(relative_path)) from error
 
 
+def _still_same_entry(expected: os.stat_result, path: Path) -> bool:
+    try:
+        return os.path.samestat(expected, path.lstat())
+    except OSError:
+        return False
+
+
 @dataclass(frozen=True)
 class _PathFiles:
     """Registry files rooted at an explicit directory."""
@@ -207,7 +214,8 @@ class _PathFiles:
     def read_text(self, relative_path: PurePosixPath) -> str:
         """Read one bounded regular file that no symlink leads to."""
         candidate = self.root.joinpath(*relative_path.parts)
-        _validate_file_status(self._checked_status(candidate), relative_path)
+        expected = self._checked_status(candidate)
+        _validate_file_status(expected, relative_path)
         try:
             data = read_rooted_bytes(
                 self.root, Path(*relative_path.parts), MAX_REGISTRY_FILE_BYTES
@@ -223,6 +231,11 @@ class _PathFiles:
             raise RegistryError(message) from error
         except (OSError, RuntimeError, ValueError) as error:
             raise RegistryError(_read_error(relative_path)) from error
+        # The rooted read refuses links and in-read changes; this catches a
+        # replacement between the checks above and that read.
+        if not _still_same_entry(expected, candidate):
+            message = "registry entry changed while it was being opened"
+            raise RegistryError(message)
         return _decode_registry_bytes(data, relative_path)
 
 

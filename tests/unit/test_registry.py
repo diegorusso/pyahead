@@ -452,28 +452,24 @@ def test_registry_detects_file_replacement_between_check_and_open(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The opened descriptor must identify the same file that was validated."""
+    """The file read must be the file whose path and type were checked."""
     rule_text = (_BUNDLED_REGISTRY / "cpython/CPY0001.yaml").read_text(encoding="utf-8")
     registry = _write_registry(tmp_path / "root", rule_text)
     rule_path = registry / "cpython/CPY0001.yaml"
     replacement = tmp_path / "replacement.yaml"
     replacement.write_text(rule_text, encoding="utf-8")
-    original_open = os.open
+    original_read = registry_loader.read_rooted_bytes
     replaced = False
 
-    def replace_before_open(path: str | Path, flags: int, **kwargs: int) -> int:
+    def replace_before_read(root: Path, path: Path, limit: int) -> bytes:
         nonlocal replaced
-        if Path(path).name == rule_path.name and not replaced:
+        if path.name == rule_path.name and not replaced:
             replaced = True
             rule_path.replace(tmp_path / "original.yaml")
             replacement.replace(rule_path)
-        return original_open(path, flags, **kwargs)
+        return original_read(root, path, limit)
 
-    monkeypatch.setattr(os, "open", replace_before_open)
-    # The wrapper still opens relative to a directory descriptor.
-    monkeypatch.setattr(
-        os, "supports_dir_fd", os.supports_dir_fd | {replace_before_open}
-    )
+    monkeypatch.setattr(registry_loader, "read_rooted_bytes", replace_before_read)
 
     with pytest.raises(RegistryError, match="changed while it was being opened"):
         load_registry(registry)
