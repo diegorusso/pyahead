@@ -572,6 +572,9 @@ def test_generated_json_schemas_are_current_and_closed(tmp_path: Path) -> None:
     assert generated[1].read_text(encoding="utf-8") == (
         schema_directory / "registry-rule-v1.json"
     ).read_text(encoding="utf-8")
+    assert (tmp_path / "registry-releases-v1.json").read_text(encoding="utf-8") == (
+        schema_directory / "registry-releases-v1.json"
+    ).read_text(encoding="utf-8")
     rule_schema = registry_rule_json_schema()
     assert rule_schema["additionalProperties"] is False
     matcher_schema = cast(

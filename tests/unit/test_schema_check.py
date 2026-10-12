@@ -75,3 +75,38 @@ def test_the_offending_value_is_never_echoed() -> None:
     assert problem is not None
     assert hostile not in "".join(problem)
     assert "\x1b" not in "".join(problem)
+
+
+def test_a_named_pattern_reads_as_what_it_stands_for() -> None:
+    """Callers can say what a pattern means instead of "invalid format"."""
+    problem = schema_problem(
+        _SCHEMA,
+        {**_VALID, "name": "ABC"},
+        "doc",
+        formats={"^[a-z]+$": "a lowercase word"},
+    )
+    assert problem == ("doc.name", "must be a lowercase word")
+
+
+def test_one_of_reports_the_closest_alternative() -> None:
+    """A tagged union names the problem in the branch the document meant."""
+    schema = {
+        "oneOf": [
+            {
+                "additionalProperties": False,
+                "properties": {"kind": {"const": "a"}, "x": {"type": "string"}},
+                "required": ["kind", "x"],
+                "type": "object",
+            },
+            {
+                "additionalProperties": False,
+                "properties": {"kind": {"const": "b"}, "y": {"type": "integer"}},
+                "required": ["kind", "y"],
+                "type": "object",
+            },
+        ]
+    }
+    problem = schema_problem(schema, {"kind": "b", "y": 1, "z": 2}, "doc")
+    assert problem == ("doc", "contains unknown field(s): z")
+    problem = schema_problem(schema, {"kind": "a", "x": 3}, "doc")
+    assert problem == ("doc.x", "must be a string")

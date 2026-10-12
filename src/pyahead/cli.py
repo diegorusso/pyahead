@@ -30,6 +30,7 @@ from pyahead.model import (
 )
 from pyahead.output import OutputError, write_text_atomic
 from pyahead.registry import RegistryError, load_registry
+from pyahead.registry.loader import validate_registry
 from pyahead.registry.presentation import (
     render_registry_coverage,
     render_registry_list,
@@ -608,7 +609,12 @@ def _render_registry_coverage(registry: Registry) -> str:
 
 def _run_registry(arguments: Namespace) -> int:
     try:
-        registry = load_registry(_selected_registry_source(arguments))
+        source = _selected_registry_source(arguments)
+        registry = (
+            validate_registry(source)
+            if arguments.registry_command == "validate"
+            else load_registry(source)
+        )
         if arguments.registry_command == "validate":
             noun = "rule" if len(registry.rules) == 1 else "rules"
             rendered = (

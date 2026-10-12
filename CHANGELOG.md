@@ -15,6 +15,16 @@ stabilizing.
   rejected, with a message naming the field and the rule it breaks, for
   example `evidence document.warnings[0].location.path: has an invalid
   format`; the wording of these messages differs from 0.6.0.
+- A `--registry` directory is checked against the published registry schemas
+  (`docs/schema/registry-*.json`, now including
+  `registry-releases-v1.json` for `releases.yaml`) before its cross-file and
+  timeline rules, instead of by a parallel hand-written parser. The same
+  files are accepted and rejected as before (checked on 98,000 mutated
+  documents against the 0.6.0 parser); error messages name the field and
+  the rule, for example `cpython/CPY0001.yaml.timeline[0].python must be a
+  Python minor such as '3.13'`, and differ in wording from 0.6.0. The
+  bundled registry is checked against the schemas by
+  `pyahead registry validate`, not on every scan.
 
 ### Fixed
 

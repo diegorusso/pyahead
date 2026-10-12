@@ -8,10 +8,17 @@ validation.
 
 The generated structural schemas are
 [`schema/registry-index-v1.json`](schema/registry-index-v1.json),
-[`schema/registry-rule-v1.json`](schema/registry-rule-v1.json), and
-[`schema/registry-coverage-v1.json`](schema/registry-coverage-v1.json).
-Runtime validation also enforces cross-file, coverage-ownership, and
-ordered-timeline invariants that JSON Schema cannot express concisely.
+[`schema/registry-rule-v1.json`](schema/registry-rule-v1.json),
+[`schema/registry-coverage-v1.json`](schema/registry-coverage-v1.json), and
+[`schema/registry-releases-v1.json`](schema/registry-releases-v1.json).
+PyAhead checks an alternate registry against these same schemas, so a schema
+error names the field and the rule it breaks, for example
+`cpython/CPY0001.yaml.timeline[0].python must be a Python minor such as
+'3.13'`. Runtime validation then enforces what JSON Schema cannot express:
+cross-file and coverage-ownership rules, timeline order, matcher and source
+uniqueness, and call-shape bounds that contradict each other. The bundled
+registry is checked against the schemas by `pyahead registry validate` and the
+test suite rather than on every scan.
 Regenerate the checked-in schemas after an intentional schema change:
 
 ```console

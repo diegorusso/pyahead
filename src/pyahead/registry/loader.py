@@ -11,7 +11,7 @@ from functools import lru_cache
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PurePosixPath
-from typing import IO, Protocol, TypeAlias, cast
+from typing import IO, Any, Protocol, TypeAlias, cast
 
 import yaml
 
@@ -26,6 +26,10 @@ from pyahead.model import (
 )
 from pyahead.registry.schema import (
     RegistryError,
+    _build_coverage_manifest,
+    _build_manifest,
+    _build_release_metadata,
+    _build_rule,
     parse_coverage_manifest,
     parse_manifest,
     parse_release_metadata,
@@ -462,8 +466,14 @@ def _validate_coverage(
         raise RegistryError(message)
 
 
-def _read_registry(source: Path | None) -> Registry:
-    """Read and validate a registry from the package data or a given path."""
+def _read_registry(source: Path | None, *, check_schemas: bool) -> Registry:
+    """Read a registry from the package data or a given path.
+
+    With ``check_schemas`` every file is checked against its published JSON
+    Schema before it is built; without, the files are trusted to conform,
+    which only the bundled registry is (the test suite and
+    ``pyahead registry validate`` check it). Semantic checks run either way.
+    """
     if source is None:
         files: _RegistryFiles = _PackageFiles(resources.files("pyahead.data.registry"))
         manifest_path = _MANIFEST_NAME
@@ -473,7 +483,12 @@ def _read_registry(source: Path | None) -> Registry:
     manifest_data = _load_mapping(
         files.read_text(manifest_path), manifest_path.as_posix()
     )
-    manifest = parse_manifest(manifest_data, manifest_path.as_posix())
+    context = manifest_path.as_posix()
+    manifest = (
+        parse_manifest(manifest_data, context)
+        if check_schemas
+        else _build_manifest(cast("dict[str, Any]", manifest_data), context)
+    )
     contents: dict[PurePosixPath, object] = {manifest_path: manifest_data}
     releases: tuple[PythonRelease, ...]
     if manifest.release_path is None:
@@ -484,16 +499,22 @@ def _read_registry(source: Path | None) -> Registry:
             manifest.release_path.as_posix(),
         )
         contents[manifest.release_path] = release_data
-        releases = parse_release_metadata(
-            release_data,
-            manifest.release_path.as_posix(),
+        context = manifest.release_path.as_posix()
+        releases = (
+            parse_release_metadata(release_data, context)
+            if check_schemas
+            else _build_release_metadata(cast("dict[str, Any]", release_data), context)
         )
     identities: dict[str, str] = {}
     rules: list[Rule] = []
     for path in manifest.rule_paths:
         rule_data = _load_mapping(files.read_text(path), path.as_posix())
         contents[path] = rule_data
-        rule = parse_rule(rule_data, path.as_posix())
+        rule = (
+            parse_rule(rule_data, path.as_posix())
+            if check_schemas
+            else _build_rule(cast("dict[str, Any]", rule_data), path.as_posix())
+        )
         _validate_identity(rule, path, identities)
         rules.append(rule)
 
@@ -506,7 +527,13 @@ def _read_registry(source: Path | None) -> Registry:
     for path in manifest.coverage_paths:
         coverage_data = _load_mapping(files.read_text(path), path.as_posix())
         contents[path] = coverage_data
-        coverage.append(parse_coverage_manifest(coverage_data, path.as_posix()))
+        coverage.append(
+            parse_coverage_manifest(coverage_data, path.as_posix())
+            if check_schemas
+            else _build_coverage_manifest(
+                cast("dict[str, Any]", coverage_data), path.as_posix()
+            )
+        )
     _validate_coverage(tuple(coverage), tuple(rules))
 
     return Registry(
@@ -521,7 +548,17 @@ def _read_registry(source: Path | None) -> Registry:
 
 @lru_cache(maxsize=1)
 def _bundled_registry() -> Registry:
-    return _read_registry(None)
+    return _read_registry(None, check_schemas=False)
+
+
+def validate_registry(source: Path | None = None) -> Registry:
+    """Load a registry after checking every file against its JSON Schema.
+
+    ``load_registry`` already does this for an explicit source. For the
+    bundled registry it skips the schema pass, which would cost every scan
+    about as much as reading the registry; this is how to ask for it.
+    """
+    return _read_registry(source, check_schemas=True)
 
 
 def load_registry(source: Path | None = None) -> Registry:
@@ -539,5 +576,5 @@ def load_registry(source: Path | None = None) -> Registry:
     and a caller who names one is asking for what is there now.
     """
     if source is not None:
-        return _read_registry(source)
+        return _read_registry(source, check_schemas=True)
     return _bundled_registry()

@@ -103,6 +103,7 @@ def test_sdist_ships_every_published_schema(distributions: _Distributions) -> No
         "evidence-v1.json",
         "registry-coverage-v1.json",
         "registry-index-v1.json",
+        "registry-releases-v1.json",
         "registry-rule-v1.json",
         "report-v1.json",
     } <= schemas

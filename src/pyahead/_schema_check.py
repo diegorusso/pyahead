@@ -32,7 +32,7 @@ _TYPE_NAMES = {
 def _validator(schema_json: str) -> Callable[[object], ValidationError | None]:
     # Imported on first use: most scans check no external document.
     from jsonschema import Draft202012Validator, validators  # noqa: PLC0415
-    from jsonschema.exceptions import best_match  # noqa: PLC0415
+    from jsonschema.exceptions import relevance  # noqa: PLC0415
 
     # JSON Schema counts 1.0 as an integer; PyAhead's documents never have.
     strict = validators.extend(  # type: ignore[no-untyped-call]
@@ -44,7 +44,21 @@ def _validator(schema_json: str) -> Callable[[object], ValidationError | None]:
     validator = strict(json.loads(schema_json))
 
     def first_error(instance: object) -> ValidationError | None:
-        error: ValidationError | None = best_match(validator.iter_errors(instance))
+        error: ValidationError | None = max(
+            validator.iter_errors(instance), key=relevance, default=None
+        )
+        # A oneOf/anyOf failure says only that no alternative fits; report
+        # the closest alternative's own problem instead: the alternative
+        # with the fewest problems, then the first listed.
+        while error is not None and error.validator in {"oneOf", "anyOf"}:
+            branches: dict[int, list[ValidationError]] = {}
+            for problem in error.context or ():
+                branch = cast("int", problem.relative_schema_path[0])
+                branches.setdefault(branch, []).append(problem)
+            if not branches:
+                break
+            closest = min(sorted(branches.items()), key=lambda item: len(item[1]))
+            error = max(closest[1], key=relevance)
         return error
 
     return first_error
@@ -86,10 +100,12 @@ _EXPECTATIONS: dict[str, Callable[[object], str]] = {
 }
 
 
-def _message(error: ValidationError) -> str:
+def _message(error: ValidationError, formats: Mapping[str, str]) -> str:
     keyword = str(error.validator)
     expected: object = error.validator_value
     instance: object = error.instance
+    if keyword == "pattern" and isinstance(expected, str) and expected in formats:
+        return f"must be {formats[expected]}"
     if keyword == "type":
         names = [expected] if isinstance(expected, str) else cast("list[str]", expected)
         return "must be " + " or ".join(_TYPE_NAMES.get(n, n) for n in names)
@@ -109,13 +125,17 @@ def schema_problem(
     schema: Mapping[str, object],
     instance: object,
     context: str,
+    *,
+    formats: Mapping[str, str] | None = None,
 ) -> tuple[str, str] | None:
     """Return where and how ``instance`` first breaks ``schema``, or ``None``.
 
     The location is ``context`` followed by the field path, as in
     ``rule x.timeline[0].python``; callers phrase the error their own way.
+    ``formats`` names what a schema pattern stands for, so a mismatch reads
+    "must be a dotted Python name" rather than "has an invalid format".
     """
     error = _validator(json.dumps(schema, sort_keys=True))(instance)
     if error is None:
         return None
-    return _location(context, error), _message(error)
+    return _location(context, error), _message(error, formats or {})

@@ -337,7 +337,11 @@ def parse_evidence_document(value: object) -> EvidenceDocument:
     problem = schema_problem(evidence_json_schema(), value, "evidence document")
     if problem is not None:
         location, message = problem
-        if location == "evidence document.run" and message.startswith("does not"):
+        if location == "evidence document.run.warnings_dropped" and (
+            message == "must equal 0"
+        ):
+            # Only the run's oneOf can demand zero: say which rule it is.
+            location = "evidence document.run"
             message = "warnings_complete may be true only when warnings_dropped is zero"
         _raise_error(location, message)
     document = cast("dict[str, dict[str, object]]", value)
