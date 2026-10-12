@@ -6,6 +6,16 @@ stabilizing.
 
 ## Unreleased
 
+### Changed
+
+- `--evidence` files are checked against the published
+  `docs/schema/evidence-v1.json` itself (with `jsonschema`, now a runtime
+  dependency) before they are read, instead of by a parallel hand-written
+  parser. Valid evidence is read exactly as before. An invalid file is still
+  rejected, with a message naming the field and the rule it breaks, for
+  example `evidence document.warnings[0].location.path: has an invalid
+  format`; the wording of these messages differs from 0.6.0.
+
 ### Fixed
 
 - One Python file whose dedent matched no outer indentation level (for

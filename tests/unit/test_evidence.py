@@ -128,7 +128,7 @@ def test_checked_in_evidence_schema_is_current_closed_and_runtime_compatible() -
     ("field", "message"),
     [
         ("location", "must be an object"),
-        ("test_node", "must be a non-empty string"),
+        ("test_node", "must be a string"),
     ],
 )
 def test_optional_warning_fields_reject_null_but_accept_omission(
@@ -182,26 +182,26 @@ def test_schema_and_runtime_allow_unproven_capture_without_dropped_records() -> 
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda value: value.update(extra=True), "unknown or missing keys"),
+        (lambda value: value.update(extra=True), r"unknown field\(s\): extra"),
         (
             lambda value: cast("dict[str, object]", value["source"]).update(
                 commit="abc"
             ),
-            "full 40- or 64-character",
+            r"source\.commit: has an invalid format",
         ),
         (
             lambda value: cast(
                 "dict[str, object]",
                 cast("list[object]", value["warnings"])[0],
             )["location"].update(path="../outside.py"),  # type: ignore[union-attr]
-            "repository-relative POSIX",
+            r"warnings\[0\]\.location\.path: has an invalid format",
         ),
         (
             lambda value: cast(
                 "dict[str, object]",
                 cast("list[object]", value["warnings"])[0],
             ).update(message="\ud800"),
-            "valid Unicode",
+            r"warnings\[0\]\.message: has an invalid format",
         ),
     ],
 )
@@ -249,7 +249,7 @@ def test_schema_and_runtime_reject_final_line_terminators(
 
     with pytest.raises(ValidationError):
         Draft202012Validator(evidence_json_schema()).validate(document)
-    with pytest.raises(ConfigurationError, match="line-break"):
+    with pytest.raises(ConfigurationError, match="has an invalid format"):
         parse_evidence_document(document)
 
 

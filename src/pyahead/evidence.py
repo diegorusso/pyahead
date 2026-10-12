@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, NoReturn, TypeAlias
+from typing import TYPE_CHECKING, NoReturn, TypeAlias, cast
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -20,6 +20,7 @@ from pyahead._fs.rooted import (
     read_rooted_bytes,
     repository_relative_path,
 )
+from pyahead._schema_check import schema_problem
 from pyahead.model import (
     ConfigurationError,
     EvidenceArtifact,
@@ -57,8 +58,6 @@ _RUN_KEYS = frozenset(
 _WARNING_REQUIRED_KEYS = frozenset(
     {"category", "kind", "message", "occurrences", "phase"}
 )
-_WARNING_OPTIONAL_KEYS = frozenset({"location", "test_node"})
-_LOCATION_KEYS = frozenset({"line", "path"})
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 _PYTHON_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+._a-zA-Z0-9]*)?\Z")
 _SUPPORTED_EVIDENCE_MAJOR = 3
@@ -268,21 +267,6 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return value
 
 
-def _mapping(value: object, where: str) -> dict[str, object]:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        _raise_error(where, "must be an object")
-    return value
-
-
-def _exact_keys(
-    value: dict[str, object],
-    keys: frozenset[str],
-    where: str,
-) -> None:
-    if set(value) != keys:
-        _raise_error(where, "has unknown or missing keys")
-
-
 def _bounded_string(value: object, where: str, *, limit: int) -> str:
     if not isinstance(value, str) or not value or len(value) > limit:
         message = f"must be a non-empty string of at most {limit} characters"
@@ -293,24 +277,6 @@ def _bounded_string(value: object, where: str, *, limit: int) -> str:
         value.encode("utf-8")
     except UnicodeEncodeError:
         _raise_error(where, "must contain valid Unicode without lone surrogates")
-    return value
-
-
-def _non_negative_integer(value: object, where: str) -> int:
-    if type(value) is not int or value < 0:
-        _raise_error(where, "must be a non-negative integer")
-    return value
-
-
-def _positive_integer(value: object, where: str) -> int:
-    if type(value) is not int or value <= 0:
-        _raise_error(where, "must be a positive integer")
-    return value
-
-
-def _boolean(value: object, where: str) -> bool:
-    if type(value) is not bool:
-        _raise_error(where, "must be a boolean")
     return value
 
 
@@ -340,177 +306,61 @@ def resolve_source_commit(
     _raise_error(where, message)
 
 
-def _relative_path(value: object, where: str) -> PurePosixPath:
-    text = _bounded_string(value, where, limit=_MAX_TEXT_LENGTH)
-    path = PurePosixPath(text)
-    if (
-        path.is_absolute()
-        or ".." in path.parts
-        or path.as_posix() != text
-        or "\\" in text
-        or text in {"", "."}
-    ):
-        _raise_error(where, "must be a repository-relative POSIX path")
-    return path
-
-
-def _optional_location(value: object, where: str) -> EvidenceLocation:
-    document = _mapping(value, where)
-    _exact_keys(document, _LOCATION_KEYS, where)
+def _location(document: dict[str, object] | None) -> EvidenceLocation | None:
+    if document is None:
+        return None
     return EvidenceLocation(
-        path=_relative_path(document["path"], f"{where}.path"),
-        line=_positive_integer(document["line"], f"{where}.line"),
+        path=PurePosixPath(cast("str", document["path"])),
+        line=cast("int", document["line"]),
     )
 
 
-def _parse_warning(value: object, index: int) -> WarningEvidence:
-    where = f"evidence warning {index}"
-    document = _mapping(value, where)
-    keys = set(document)
-    if not _WARNING_REQUIRED_KEYS.issubset(keys) or not keys.issubset(
-        _WARNING_REQUIRED_KEYS | _WARNING_OPTIONAL_KEYS
-    ):
-        _raise_error(where, "has unknown or missing keys")
-    kind = _bounded_string(document["kind"], f"{where}.kind", limit=64)
-    if kind not in _WARNING_KINDS:
-        _raise_error(where, "kind is not supported")
-    phase = _bounded_string(document["phase"], f"{where}.phase", limit=16)
-    if phase not in _WARNING_PHASES:
-        _raise_error(where, "phase is not supported")
-    test_node = (
-        _bounded_string(
-            document["test_node"],
-            f"{where}.test_node",
-            limit=_MAX_TEXT_LENGTH,
-        )
-        if "test_node" in document
-        else None
-    )
+def _warning(document: dict[str, object]) -> WarningEvidence:
     return WarningEvidence(
-        kind=kind,
-        category=_bounded_string(
-            document["category"],
-            f"{where}.category",
-            limit=512,
-        ),
-        message=_bounded_string(
-            document["message"],
-            f"{where}.message",
-            limit=_MAX_MESSAGE_LENGTH,
-        ),
-        phase=phase,
-        location=(
-            _optional_location(document["location"], f"{where}.location")
-            if "location" in document
-            else None
-        ),
-        test_node=test_node,
-        occurrences=_positive_integer(
-            document["occurrences"],
-            f"{where}.occurrences",
-        ),
+        kind=cast("str", document["kind"]),
+        category=cast("str", document["category"]),
+        message=cast("str", document["message"]),
+        phase=cast("str", document["phase"]),
+        location=_location(cast("dict[str, object] | None", document.get("location"))),
+        test_node=cast("str | None", document.get("test_node")),
+        occurrences=cast("int", document["occurrences"]),
     )
 
 
 def parse_evidence_document(value: object) -> EvidenceDocument:
-    """Validate one closed-world evidence schema version 1 document."""
-    document = _mapping(value, "evidence document")
-    _exact_keys(document, _TOP_LEVEL_KEYS, "evidence document")
-    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
-        _raise_error("evidence schema_version", "must equal 1")
+    """Validate one closed-world evidence schema version 1 document.
 
-    provider = _mapping(document["provider"], "evidence provider")
-    _exact_keys(provider, _PROVIDER_KEYS, "evidence provider")
-    provider_name = _bounded_string(
-        provider["name"],
-        "evidence provider.name",
-        limit=64,
-    )
-    if provider_name != "pytest-warnings":
-        _raise_error("evidence provider.name", "must equal 'pytest-warnings'")
-
-    source = _mapping(document["source"], "evidence source")
-    _exact_keys(source, _SOURCE_KEYS, "evidence source")
-
-    environment = _mapping(document["environment"], "evidence environment")
-    _exact_keys(environment, _ENVIRONMENT_KEYS, "evidence environment")
-    python_version = _bounded_string(
-        environment["python_version"],
-        "evidence environment.python_version",
-        limit=64,
-    )
-    if _PYTHON_VERSION_RE.fullmatch(python_version) is None:
-        _raise_error(
-            "evidence environment.python_version",
-            "must be a concrete Python version",
-        )
-
-    run = _mapping(document["run"], "evidence run")
-    _exact_keys(run, _RUN_KEYS, "evidence run")
-    framework = _bounded_string(run["framework"], "evidence run.framework", limit=64)
-    if framework != "pytest":
-        _raise_error("evidence run.framework", "must equal 'pytest'")
-
-    warnings = document["warnings"]
-    if not isinstance(warnings, list):
-        _raise_error("evidence warnings", "must be an array")
-    if len(warnings) > MAX_EVIDENCE_WARNINGS:
-        message = f"must contain at most {MAX_EVIDENCE_WARNINGS} items"
-        _raise_error("evidence warnings", message)
-
-    warnings_complete = _boolean(
-        run["warnings_complete"],
-        "evidence run.warnings_complete",
-    )
-    warnings_dropped = _non_negative_integer(
-        run["warnings_dropped"],
-        "evidence run.warnings_dropped",
-    )
-    if warnings_complete and warnings_dropped != 0:
-        _raise_error(
-            "evidence run",
-            "warnings_complete may be true only when warnings_dropped is zero",
-        )
-
+    The published schema decides the document's shape, bounds and text
+    rules; what is left here is building the model and lowercasing the
+    commit.
+    """
+    problem = schema_problem(evidence_json_schema(), value, "evidence document")
+    if problem is not None:
+        location, message = problem
+        if location == "evidence document.run" and message.startswith("does not"):
+            message = "warnings_complete may be true only when warnings_dropped is zero"
+        _raise_error(location, message)
+    document = cast("dict[str, dict[str, object]]", value)
+    provider, source = document["provider"], document["source"]
+    environment, run = document["environment"], document["run"]
     return EvidenceDocument(
-        provider=provider_name,
-        provider_version=_bounded_string(
-            provider["version"],
-            "evidence provider.version",
-            limit=64,
-        ),
-        source_commit=normalize_source_commit(
-            source["commit"],
-            "evidence source.commit",
-        ),
+        provider=cast("str", provider["name"]),
+        provider_version=cast("str", provider["version"]),
+        source_commit=cast("str", source["commit"]).lower(),
         environment=EvidenceEnvironment(
-            implementation=_bounded_string(
-                environment["implementation"],
-                "evidence environment.implementation",
-                limit=64,
-            ),
-            python_version=python_version,
-            platform=_bounded_string(
-                environment["platform"],
-                "evidence environment.platform",
-                limit=128,
-            ),
+            implementation=cast("str", environment["implementation"]),
+            python_version=cast("str", environment["python_version"]),
+            platform=cast("str", environment["platform"]),
         ),
-        framework=framework,
-        framework_version=_bounded_string(
-            run["framework_version"],
-            "evidence run.framework_version",
-            limit=64,
-        ),
-        tests_collected=_non_negative_integer(
-            run["tests_collected"],
-            "evidence run.tests_collected",
-        ),
-        exit_code=_non_negative_integer(run["exit_code"], "evidence run.exit_code"),
-        warnings_complete=warnings_complete,
-        warnings_dropped=warnings_dropped,
+        framework=cast("str", run["framework"]),
+        framework_version=cast("str", run["framework_version"]),
+        tests_collected=cast("int", run["tests_collected"]),
+        exit_code=cast("int", run["exit_code"]),
+        warnings_complete=cast("bool", run["warnings_complete"]),
+        warnings_dropped=cast("int", run["warnings_dropped"]),
         warnings=tuple(
-            _parse_warning(item, index) for index, item in enumerate(warnings)
+            _warning(item)
+            for item in cast("list[dict[str, object]]", document["warnings"])
         ),
     )
 
