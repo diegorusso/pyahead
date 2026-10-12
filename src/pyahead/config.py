@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
@@ -16,6 +15,7 @@ from pyahead._fs.rooted import (
     read_rooted_bytes,
     repository_relative_path,
 )
+from pyahead._toml import parse_toml_document
 from pyahead.model import (
     ConfigurationError,
     EffectiveConfiguration,
@@ -146,19 +146,7 @@ def _read_toml(
         ) from error
     except (OSError, RuntimeError) as error:
         raise _configuration_error(label, "unable to read configuration") from error
-    try:
-        document = tomllib.loads(raw.decode("utf-8", errors="strict"))
-    except RecursionError as error:
-        raise _configuration_error(
-            label, "configuration nesting is too deep"
-        ) from error
-    except UnicodeError as error:
-        raise _configuration_error(
-            label, "configuration is not valid UTF-8 TOML"
-        ) from error
-    except tomllib.TOMLDecodeError as error:
-        raise _configuration_error(label, "configuration is not valid TOML") from error
-    return document
+    return parse_toml_document(raw, label)
 
 
 def _table(value: object, label: str) -> dict[str, object]:

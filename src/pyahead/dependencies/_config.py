@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import stat
-import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
@@ -22,6 +21,7 @@ from pyahead._fs.rooted import (
     read_rooted_bytes,
     repository_relative_path,
 )
+from pyahead._toml import parse_toml_document
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -261,18 +261,7 @@ def _read_dependency_document(
         raise _configuration_error(label, "unable to read configuration") from error
     if len(raw_document) > _MAX_CONFIGURATION_BYTES:
         _error(label, "configuration exceeds the size limit")
-    try:
-        return tomllib.loads(raw_document.decode("utf-8", errors="strict"))
-    except RecursionError as error:
-        raise _configuration_error(
-            label, "configuration nesting is too deep"
-        ) from error
-    except UnicodeError as error:
-        raise _configuration_error(
-            label, "configuration is not valid UTF-8 TOML"
-        ) from error
-    except tomllib.TOMLDecodeError as error:
-        raise _configuration_error(label, "configuration is not valid TOML") from error
+    return parse_toml_document(raw_document, label)
 
 
 def _read_dependency_table(
