@@ -54,6 +54,7 @@ _PYPROJECT_LABEL = "pyproject.toml"
 MAX_PYPROJECT_BYTES = 2 * 1024 * 1024
 _ACTIVE_RELEASE_STATUSES = frozenset({ReleaseStatus.STABLE, ReleaseStatus.PRERELEASE})
 _ConfigurationEnum = TypeVar("_ConfigurationEnum", FailOn, MatchConfidence)
+_Value = TypeVar("_Value")
 
 
 @dataclass(frozen=True)
@@ -557,6 +558,11 @@ def _resolve_source_roots(
     return configured, provenance, False
 
 
+def _first(*values: _Value | None, default: _Value) -> _Value:
+    """Return the first value that is set: override, then project, then default."""
+    return next((value for value in values if value is not None), default)
+
+
 def _resolve_configuration(
     root: Path,
     registry: Registry,
@@ -635,42 +641,24 @@ def _resolve_configuration(
         "command-line",
     )
     scan = EffectiveConfiguration(
-        include=(
-            overrides.include
-            if overrides.include is not None
-            else project.include or ()
-        ),
-        exclude=(
-            overrides.exclude
-            if overrides.exclude is not None
-            else project.exclude or ()
-        ),
+        include=_first(overrides.include, project.include, default=()),
+        exclude=_first(overrides.exclude, project.exclude, default=()),
         source_roots=source_roots,
         source_roots_provenance=source_roots_provenance,
-        respect_gitignore=(
-            overrides.respect_gitignore
-            if overrides.respect_gitignore is not None
-            else (
-                project.respect_gitignore
-                if project.respect_gitignore is not None
-                else True
-            )
+        respect_gitignore=_first(
+            overrides.respect_gitignore, project.respect_gitignore, default=True
         ),
         minimum_confidence=minimum_confidence or MatchConfidence.HIGH,
         fail_on=fail_on or FailOn.BREAKING,
-        show_unscheduled=(
-            overrides.show_unscheduled
-            if overrides.show_unscheduled is not None
-            else (
-                project.show_unscheduled
-                if project.show_unscheduled is not None
-                else True
-            )
+        show_unscheduled=_first(
+            overrides.show_unscheduled, project.show_unscheduled, default=True
         ),
-        max_file_size_bytes=(
-            overrides.max_file_size_bytes
-            if overrides.max_file_size_bytes is not None
-            else project.max_file_size_bytes or _DEFAULT_MAX_FILE_SIZE_BYTES
+        # A project value of 0 has always meant "unset" here; parsing rejects
+        # it, so only a hand-built ProjectConfiguration can carry one.
+        max_file_size_bytes=_first(
+            overrides.max_file_size_bytes,
+            project.max_file_size_bytes or None,
+            default=_DEFAULT_MAX_FILE_SIZE_BYTES,
         ),
         per_file_ignores=_merge_per_file_ignores(
             project.per_file_ignores, overrides.per_file_ignores

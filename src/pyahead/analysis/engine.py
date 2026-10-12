@@ -5,7 +5,7 @@ import io
 import tokenize
 from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path, PurePosixPath
 
 import libcst as cst
@@ -1668,6 +1668,16 @@ def _report_file_progress(request: ScanRequest, progress: FileProgress) -> None:
         request.on_file(progress)
 
 
+def _overrides(request: ScanRequest) -> ConfigurationOverrides:
+    """Every configuration override is a ScanRequest field of the same name."""
+    return ConfigurationOverrides(
+        **{
+            field.name: getattr(request, field.name)
+            for field in fields(ConfigurationOverrides)
+        }
+    )
+
+
 def _scan_report(  # noqa: PLR0913 - one report assembly point.
     registry: Registry,
     resolved: ResolvedConfiguration,
@@ -1713,22 +1723,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         root,
         registry,
         project_snapshot,
-        ConfigurationOverrides(
-            baseline_python=request.baseline_python,
-            horizon_python=request.horizon_python,
-            include=request.include,
-            exclude=request.exclude,
-            source_roots=request.source_roots,
-            respect_gitignore=request.respect_gitignore,
-            minimum_confidence=request.minimum_confidence,
-            fail_on=request.fail_on,
-            show_unscheduled=request.show_unscheduled,
-            max_file_size_bytes=request.max_file_size_bytes,
-            per_file_ignores=request.per_file_ignores,
-            fail_new_only=request.fail_new_only,
-            show_suppressed=request.show_suppressed,
-            allow_incomplete=request.allow_incomplete,
-        ),
+        _overrides(request),
     )
     policy = resolved.policy
     baseline = (
