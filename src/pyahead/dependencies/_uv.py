@@ -26,8 +26,8 @@ from pyahead.model import ConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-from pyahead._io_errors import EntryChangedError, NotRegularFileError
-from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
+from pyahead._fs.errors import EntryChangedError, NotRegularFileError
+from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.dependencies._archives import _read_artifact
 from pyahead.dependencies._artifacts import _validate_metadata_artifacts
 from pyahead.dependencies._config import (

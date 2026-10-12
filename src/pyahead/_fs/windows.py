@@ -8,7 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
-from pyahead._io_errors import NotRealDirectoryError, NotRegularFileError
+from pyahead._fs.errors import NotRealDirectoryError, NotRegularFileError
 
 if TYPE_CHECKING:
     from pathlib import Path

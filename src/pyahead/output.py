@@ -8,7 +8,7 @@ from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from pyahead._windows_output import write_windows_atomic
+from pyahead._fs.windows import write_windows_atomic
 
 
 class OutputError(OSError):

@@ -15,8 +15,8 @@ from typing import IO, Protocol, TypeAlias, cast
 
 import yaml
 
-from pyahead._io_errors import NotAFilePathError, UnsafeEntryError
-from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
+from pyahead._fs.errors import NotAFilePathError, UnsafeEntryError
+from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.model import (
     CoverageDisposition,
     CoverageManifest,

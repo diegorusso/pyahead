@@ -9,8 +9,8 @@ from typing import cast
 
 import pytest
 
-import pyahead._rooted_reader as rooted_reader_module
-import pyahead._windows_output as windows_output_module
+import pyahead._fs.rooted as rooted_reader_module
+import pyahead._fs.windows as windows_output_module
 import pyahead.config as config_module
 import pyahead.output as output_module
 from pyahead.baseline import load_baseline

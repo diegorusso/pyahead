@@ -15,8 +15,8 @@ from packaging.utils import (
     parse_sdist_filename,
 )
 
-from pyahead._io_errors import EntryChangedError, NotAFilePathError
-from pyahead._rooted_reader import (
+from pyahead._fs.errors import EntryChangedError, NotAFilePathError
+from pyahead._fs.rooted import (
     RootedReadTooLargeError,
     read_rooted_bytes,
     repository_relative_path,

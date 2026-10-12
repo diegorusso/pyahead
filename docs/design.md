@@ -392,10 +392,8 @@ pyahead/
 │   └── pyahead/
 │       ├── __init__.py
 │       ├── __main__.py
+│       ├── _fs/                     # hardened rooted reads and atomic writes
 │       ├── _human_text.py
-│       ├── _io_errors.py
-│       ├── _rooted_reader.py
-│       ├── _windows_output.py
 │       ├── baseline.py
 │       ├── cli.py
 │       ├── config.py

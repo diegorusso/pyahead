@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import pyahead._rooted_reader as rooted_reader_module
+import pyahead._fs.rooted as rooted_reader_module
 from pyahead.analysis import ScanRequest, scan
 from pyahead.analysis.discovery import (
     DiscoveryIncompleteError,

@@ -25,8 +25,8 @@ from libcst.metadata import (
 from libcst.metadata.scope_provider import Scope
 
 from pyahead import __version__
-from pyahead._io_errors import UnsafeEntryError
-from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
+from pyahead._fs.errors import UnsafeEntryError
+from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.analysis.discovery import (
     DiscoveredFile,
     DiscoveryError,

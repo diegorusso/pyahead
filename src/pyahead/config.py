@@ -10,8 +10,8 @@ from typing import TypeVar
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from pyahead._io_errors import NotRegularFileError
-from pyahead._rooted_reader import (
+from pyahead._fs.errors import NotRegularFileError
+from pyahead._fs.rooted import (
     RootedReadTooLargeError,
     read_rooted_bytes,
     repository_relative_path,

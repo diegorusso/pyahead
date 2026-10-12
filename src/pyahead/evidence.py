@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, NoReturn, TypeAlias
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-from pyahead._io_errors import NotRegularFileError
-from pyahead._rooted_reader import (
+from pyahead._fs.errors import NotRegularFileError
+from pyahead._fs.rooted import (
     RootedReadTooLargeError,
     read_rooted_bytes,
     repository_relative_path,

@@ -8,13 +8,13 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
-from pyahead._io_errors import (
+from pyahead._fs.errors import (
     EntryChangedError,
     NotAFilePathError,
     NotRealDirectoryError,
     NotRegularFileError,
 )
-from pyahead._windows_output import read_windows_rooted_file
+from pyahead._fs.windows import read_windows_rooted_file
 
 _READ_CHUNK_BYTES = 64 * 1024
 

@@ -16,8 +16,8 @@ from packaging.utils import (
     canonicalize_name,
 )
 
-from pyahead._io_errors import EntryChangedError, NotRegularFileError
-from pyahead._rooted_reader import (
+from pyahead._fs.errors import EntryChangedError, NotRegularFileError
+from pyahead._fs.rooted import (
     RootedReadTooLargeError,
     read_rooted_bytes,
     repository_relative_path,

@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from pyahead import __version__
-from pyahead._io_errors import NotRegularFileError
-from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
+from pyahead._fs.errors import NotRegularFileError
+from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.model import ConfigurationError, ScanReport
 
 _TOP_LEVEL_KEYS = frozenset(

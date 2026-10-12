@@ -24,10 +24,10 @@ import pytest
 from jsonschema import Draft202012Validator
 from packaging.requirements import Requirement
 
-import pyahead._rooted_reader as rooted_reader_module
-import pyahead._windows_output as windows_output_module
+import pyahead._fs.rooted as rooted_reader_module
+import pyahead._fs.windows as windows_output_module
+from pyahead._fs.errors import EntryChangedError
 from pyahead._human_text import escape_terminal_text
-from pyahead._io_errors import EntryChangedError
 from pyahead.config import load_project_configuration
 from pyahead.dependencies import (
     ArtifactAvailability,
