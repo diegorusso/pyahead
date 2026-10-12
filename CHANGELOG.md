@@ -6,8 +6,24 @@ stabilizing.
 
 ## Unreleased
 
+### Added
+
+- `UvResolverAdapter(run_process=...)` accepts the function that runs uv
+  (a `ProcessRunner`, now exported from `pyahead.dependencies`), so a
+  library caller or a test can stand in for the bounded, contained default.
+- `pyahead.registry.validate_registry(source=None)` loads a registry after
+  checking every file against its published schema; `pyahead registry
+  validate` uses it.
+- `docs/schema/registry-releases-v1.json` describes `releases.yaml`.
+
 ### Changed
 
+- Scans are faster, with byte-identical reports: on the development host
+  (aarch64) 100 real standard-library modules take 22.9 s instead of
+  48.4 s, and start-up plus one file 0.96 s instead of 1.70 s. Registry
+  YAML is parsed with libyaml when PyYAML has it, and the analyser computes
+  qualified names, parents and source positions only for the nodes and
+  files that need them.
 - `--evidence` files are checked against the published
   `docs/schema/evidence-v1.json` itself (with `jsonschema`, now a runtime
   dependency) before they are read, instead of by a parallel hand-written
