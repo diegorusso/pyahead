@@ -26,6 +26,8 @@ from pyahead.model import ConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+from pyahead._io_errors import EntryChangedError, NotRegularFileError
+from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.dependencies._archives import _read_artifact
 from pyahead.dependencies._artifacts import _validate_metadata_artifacts
 from pyahead.dependencies._config import (
@@ -421,31 +423,18 @@ def _uv_reports_constraint_conflict(
 
 def _read_resolver_result(path: Path) -> str:
     """Read one regular resolver result with identity and byte limits."""
-    descriptor = -1
     try:
-        expected_status = path.lstat()
-        if not stat.S_ISREG(expected_status.st_mode):
-            _fail_metadata("resolver output is not a regular file")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        descriptor = os.open(path, flags)
-        status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode) or not os.path.samestat(
-            expected_status, status
-        ):
-            _fail_metadata("resolver output changed while being read")
-        with os.fdopen(descriptor, "rb", closefd=True) as stream:
-            descriptor = -1
-            raw = stream.read(_MAX_RESOLVER_RESULT_BYTES + 1)
-    except _MetadataError:
-        raise
+        raw = read_rooted_bytes(
+            path.parent, Path(path.name), _MAX_RESOLVER_RESULT_BYTES
+        )
+    except NotRegularFileError:
+        _fail_metadata("resolver output is not a regular file")
+    except EntryChangedError:
+        _fail_metadata("resolver output changed while being read")
+    except RootedReadTooLargeError:
+        _fail_metadata("resolver output exceeds the size limit")
     except (OSError, RuntimeError, ValueError):
         _fail_metadata("unable to read resolver output")
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    if len(raw) > _MAX_RESOLVER_RESULT_BYTES:
-        _fail_metadata("resolver output exceeds the size limit")
     try:
         return raw.decode("utf-8", errors="strict")
     except UnicodeError:

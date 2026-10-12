@@ -8287,3 +8287,30 @@ def test_bounded_process_requires_both_output_pipes(
             ["resolver"], cwd=tmp_path, env={}, timeout=1
         )
     assert cleaned == [process]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")
+def test_resolver_output_must_be_a_regular_file_in_the_workspace(
+    tmp_path: Path,
+) -> None:
+    """A linked or non-file pylock.toml is refused before it is parsed."""
+    outside = tmp_path / "outside.toml"
+    outside.write_text('lock-version = "1.0"\n', encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    linked = workspace / "pylock.toml"
+    try:
+        linked.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is not permitted")
+    with pytest.raises(ValueError, match="not a regular file"):
+        dependency_module._read_resolver_result(linked)  # noqa: SLF001
+
+    linked.unlink()
+    linked.mkdir()
+    with pytest.raises(ValueError, match="not a regular file"):
+        dependency_module._read_resolver_result(linked)  # noqa: SLF001
+
+    linked.rmdir()
+    with pytest.raises(ValueError, match="unable to read resolver output"):
+        dependency_module._read_resolver_result(linked)  # noqa: SLF001
