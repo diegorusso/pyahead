@@ -80,7 +80,9 @@ requirements = ["demo==1.0"]
 metadata = ["wheelhouse/demo-1.0-py3-none-any.whl"]
 resolve = false
 network = false
-timeout-seconds = 5
+# Tests that resolve run the real uv, whose first start on a cold CI runner
+# can take several seconds.
+timeout-seconds = 60
 resolver = "uv"
 
 [[tool.pyahead.dependencies.targets]]
