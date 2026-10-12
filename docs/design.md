@@ -393,12 +393,13 @@ pyahead/
 │       ├── __init__.py
 │       ├── __main__.py
 │       ├── _human_text.py
+│       ├── _io_errors.py
 │       ├── _rooted_reader.py
 │       ├── _windows_output.py
 │       ├── baseline.py
 │       ├── cli.py
 │       ├── config.py
-│       ├── dependencies.py          # separate dependency report pipeline
+│       ├── dependencies/            # separate dependency report pipeline
 │       ├── evidence.py              # pytest-warning artifact ingestion
 │       ├── model.py
 │       ├── output.py

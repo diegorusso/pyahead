@@ -8,7 +8,6 @@ from jsonschema import Draft202012Validator
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
-import pyahead.dependencies as dependency_module
 from pyahead.dependencies import (
     ArtifactAvailability,
     DependencyAssessment,
@@ -26,6 +25,7 @@ from pyahead.dependencies import (
     TargetDependencyResult,
     dependency_report_document,
 )
+from tests._dependency_internals import internals as dependency_module
 
 ROOT = Path(__file__).parents[2]
 MATRIX_PATH = Path(__file__).with_name("dependency-status-matrix.json")
