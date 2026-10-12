@@ -127,7 +127,7 @@ def test_manifest_rule_paths_share_one_canonical_posix_grammar(
 
     with pytest.raises(ValidationError):
         Draft202012Validator(registry_index_json_schema()).validate(document)
-    with pytest.raises(RegistryError, match="unsafe registry rule path"):
+    with pytest.raises(RegistryError, match="safe relative path to a registry file"):
         parse_manifest(document)
 
 
@@ -322,7 +322,7 @@ def test_literal_dynamic_import_cannot_be_authored_as_high_confidence() -> None:
 
     with pytest.raises(ValidationError):
         validator.validate(document)
-    with pytest.raises(RegistryError, match="must be medium"):
+    with pytest.raises(RegistryError, match='must equal "medium"'):
         parse_rule(document, "CPY0001.yaml")
 
 
@@ -612,7 +612,7 @@ def test_matcher_identity_normalizes_set_like_keyword_predicates() -> None:
 
 
 def test_schema_supports_all_event_and_matcher_metadata_for_explanation() -> None:
-    """The strict model represents M2 data without executing later behavior."""
+    """The strict model represents registry data without executing later behavior."""
     document = _rule_document()
     document["id"] = "CPY9002"
     document["aliases"] = ["CPY9001"]
@@ -766,5 +766,6 @@ def test_schema_generator_main_writes_all_documents(tmp_path: Path) -> None:
     assert sorted(path.name for path in tmp_path.iterdir()) == [
         "registry-coverage-v1.json",
         "registry-index-v1.json",
+        "registry-releases-v1.json",
         "registry-rule-v1.json",
     ]

@@ -2,16 +2,15 @@
 
 import json
 import math
-import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
-from enum import StrEnum
 from itertools import pairwise
 from pathlib import Path, PurePosixPath
-from typing import TypeAlias, TypeVar, cast
+from typing import Any, NoReturn, TypeAlias, cast
 
 from pyahead._human_text import SafeArgumentParser
+from pyahead._schema_check import schema_problem
 from pyahead.model import (
     AutomationReference,
     AutomationTool,
@@ -46,18 +45,15 @@ from pyahead.model import (
 )
 from pyahead.versions import (
     PYTHON_MINOR_PATTERN,
-    InvalidPythonMinorError,
     PythonMinor,
 )
 
 RULE_ID_PATTERN = r"CPY[0-9]{4}"
-_RULE_ID_RE = re.compile(f"{RULE_ID_PATTERN}\\Z")
 _DOTTED_NAME_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
-_DOTTED_NAME_RE = re.compile(f"{_DOTTED_NAME_PATTERN}\\Z")
+_IDENTIFIER_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
+_DATE_PATTERN = r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
 _SOURCE_ID_PATTERN = r"[a-z0-9][a-z0-9.-]*"
-_SOURCE_ID_RE = re.compile(f"{_SOURCE_ID_PATTERN}\\Z")
 _TAG_PATTERN = r"[a-z0-9][a-z0-9-]*"
-_TAG_RE = re.compile(f"{_TAG_PATTERN}\\Z")
 # The union of Python ``str.isspace()`` and ECMAScript whitespace makes
 # canonical registry boundaries independent of the regex engine used by a
 # Draft 2020-12 JSON Schema consumer. Interior whitespace remains permitted.
@@ -67,19 +63,17 @@ _REGISTRY_WHITESPACE_CLASS = (
 )
 _SURROGATE_CLASS = r"\ud800-\udfff"
 _NON_REGISTRY_WHITESPACE = rf"[^{_REGISTRY_WHITESPACE_CLASS}]"
+_UNICODE_STRING_PATTERN = rf"(?![\s\S]*[{_SURROGATE_CLASS}])[\s\S]*"
 _TRIMMED_STRING_PATTERN = (
     rf"(?![\s\S]*[{_SURROGATE_CLASS}])"
     rf"{_NON_REGISTRY_WHITESPACE}"
     rf"(?:[\s\S]*{_NON_REGISTRY_WHITESPACE})?"
 )
-_TERMINAL_WHITESPACE_RE = re.compile(rf"[{_REGISTRY_WHITESPACE_CLASS}]\Z")
-_SURROGATE_RE = re.compile(rf"[{_SURROGATE_CLASS}]")
 _RULE_PATH_SEGMENT_PATTERN = r"[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?"
 _RULE_PATH_PATTERN = (
     rf"(?:{_RULE_PATH_SEGMENT_PATTERN}/)*"
     rf"{_RULE_PATH_SEGMENT_PATTERN}\.ya?ml"
 )
-_RULE_PATH_RE = re.compile(f"{_RULE_PATH_PATTERN}\\Z")
 _HOST_LABEL_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 _HOST_PATTERN = rf"{_HOST_LABEL_PATTERN}(?:\.{_HOST_LABEL_PATTERN})*"
 _PORT_PATTERN = (
@@ -91,7 +85,6 @@ _HTTPS_URL_PATTERN = (
     rf"https://(?![^/?#]*@){_HOST_PATTERN}(?::{_PORT_PATTERN})?"
     rf"(?:[/?#][^{_REGISTRY_WHITESPACE_CLASS}]*)?"
 )
-_HTTPS_URL_RE = re.compile(f"(?:{_HTTPS_URL_PATTERN})\\Z")
 
 _EVENT_IMPACT_KEYS: dict[ChangeEventKind, str] = {
     ChangeEventKind.DEPRECATED: "on_deprecation",
@@ -104,7 +97,6 @@ _EVENT_IMPACT_KEYS: dict[ChangeEventKind, str] = {
 _TERMINAL_EVENTS = frozenset({ChangeEventKind.REMOVED, ChangeEventKind.SUPPORT_DROPPED})
 
 JsonSchema: TypeAlias = dict[str, object]
-_StrEnumT = TypeVar("_StrEnumT", bound=StrEnum)
 
 
 class RegistryError(ValueError):
@@ -122,188 +114,76 @@ class RegistryManifest:
     release_path: PurePosixPath | None
 
 
-def _mapping(value: object, context: str) -> Mapping[str, object]:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        message = f"{context} must be a mapping with string keys"
-        raise RegistryError(message)
-    return cast("dict[str, object]", value)
+def _formats() -> dict[str, str]:
+    """Return what each registry schema pattern stands for, for error messages."""
+    return {
+        _json_schema_exact_pattern(pattern): description
+        for pattern, description in (
+            (RULE_ID_PATTERN, "a rule ID in the CPY0000 format"),
+            (_DOTTED_NAME_PATTERN, "a dotted Python name"),
+            (_IDENTIFIER_PATTERN, "one Python identifier"),
+            (_SOURCE_ID_PATTERN, "a lowercase source ID"),
+            (_TAG_PATTERN, "a lowercase tag"),
+            (_RULE_PATH_PATTERN, "a safe relative path to a registry file"),
+            (_HTTPS_URL_PATTERN, "a direct HTTPS URL without credentials"),
+            (_TRIMMED_STRING_PATTERN, "a non-empty, trimmed string"),
+            (_UNICODE_STRING_PATTERN, "a string without lone surrogates"),
+            (PYTHON_MINOR_PATTERN, "a Python minor such as '3.13'"),
+            (_DATE_PATTERN, "a date in YYYY-MM-DD form"),
+        )
+    }
 
 
-def _sequence(value: object, context: str) -> Sequence[object]:
-    if not isinstance(value, list):
-        message = f"{context} must be a list"
-        raise RegistryError(message)
-    return cast("list[object]", value)
-
-
-def _fields(
-    data: Mapping[str, object],
-    context: str,
-    *,
-    required: frozenset[str],
-    optional: frozenset[str] = frozenset(),
-) -> None:
-    missing = sorted(required.difference(data))
-    if missing:
-        message = f"{context} is missing required field(s): {', '.join(missing)}"
-        raise RegistryError(message)
-    unknown = sorted(set(data).difference(required | optional))
-    if unknown:
-        message = f"{context} contains unknown field(s): {', '.join(unknown)}"
+def _check(schema: JsonSchema, data: object, context: str) -> None:
+    """Reject a document that breaks its published schema, naming the field."""
+    problem = schema_problem(schema, data, context, formats=_formats())
+    if problem is not None:
+        location, message = problem
+        message = f"{location} {message}"
         raise RegistryError(message)
 
 
-def _string(value: object, context: str) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or _SURROGATE_RE.search(value) is not None
-        or _TERMINAL_WHITESPACE_RE.fullmatch(value[0]) is not None
-        or _TERMINAL_WHITESPACE_RE.fullmatch(value[-1]) is not None
-    ):
-        message = f"{context} must be a non-empty, trimmed string"
-        raise RegistryError(message)
-    return value
+def _fail(message: str) -> NoReturn:
+    raise RegistryError(message)
 
 
-def _integer(value: object, context: str, *, minimum: int = 0) -> int:
-    if type(value) is not int or value < minimum:
-        message = f"{context} must be an integer greater than or equal to {minimum}"
-        raise RegistryError(message)
-    return value
-
-
-def _schema_version(value: object, context: str) -> None:
-    if type(value) is not int or value != 1:
-        message = f"{context}.schema_version must equal 1"
-        raise RegistryError(message)
-
-
-def _enum_value(
-    value: object,
-    enum_type: type[_StrEnumT],
-    context: str,
-) -> _StrEnumT:
-    if not isinstance(value, str):
-        message = f"{context} must be a string"
-        raise RegistryError(message)
+def _date(text: str, context: str) -> str:
+    """Reject a well-formed YYYY-MM-DD string that is not a calendar date."""
     try:
-        return enum_type(value)
+        date.fromisoformat(text)
     except ValueError as error:
-        message = f"{context} contains an unsupported value {value!r}"
+        message = f"{context} must be an ISO 8601 calendar date"
         raise RegistryError(message) from error
+    return text
 
 
-def _unique_strings(
-    value: object,
-    context: str,
-    *,
-    pattern: re.Pattern[str] | None = None,
-    allow_empty: bool = True,
-) -> tuple[str, ...]:
-    items = _sequence(value, context)
-    if not allow_empty and not items:
-        message = f"{context} must not be empty"
-        raise RegistryError(message)
-    strings = tuple(
-        _string(item, f"{context}[{index}]") for index, item in enumerate(items)
-    )
-    if pattern is not None and any(pattern.fullmatch(item) is None for item in strings):
-        message = f"{context} contains an invalid value"
-        raise RegistryError(message)
-    if len(set(strings)) != len(strings):
-        message = f"{context} must not contain duplicates"
-        raise RegistryError(message)
-    return strings
-
-
-def _https_url(value: object, context: str) -> str:
-    url = _string(value, context)
-    message = f"{context} must be a direct HTTPS URL without credentials"
-    if _HTTPS_URL_RE.fullmatch(url) is None:
-        raise RegistryError(message)
-    return url
-
-
-def _dotted_name(value: object, context: str) -> str:
-    name = _string(value, context)
-    if _DOTTED_NAME_RE.fullmatch(name) is None:
-        message = f"{context} must be a dotted Python name"
-        raise RegistryError(message)
-    return name
-
-
-def _rule_id(value: object, context: str) -> str:
-    identifier = _string(value, context)
-    if _RULE_ID_RE.fullmatch(identifier) is None:
-        message = f"{context} must use the CPY0000 format"
-        raise RegistryError(message)
-    return identifier
-
-
-def _safe_rule_path(value: object, context: str) -> PurePosixPath:
-    text = _string(value, context)
-    if _RULE_PATH_RE.fullmatch(text) is None:
-        message = f"{context} contains unsafe registry rule path {text!r}"
-        raise RegistryError(message)
-    return PurePosixPath(text)
+def _unique(values: Sequence[object], context: str, what: str) -> None:
+    if len(set(values)) != len(values):
+        _fail(f"{context} must use unique {what}")
 
 
 def parse_manifest(data: object, context: str = "index.yaml") -> RegistryManifest:
     """Validate one strict registry manifest mapping."""
-    manifest = _mapping(data, context)
-    _fields(
-        manifest,
-        context,
-        required=frozenset({"schema_version", "release", "rules"}),
-        optional=frozenset({"coverage", "releases", "retired_ids"}),
-    )
-    _schema_version(manifest["schema_version"], context)
-    raw_paths = _sequence(manifest["rules"], f"{context}.rules")
-    if not raw_paths:
-        message = f"{context}.rules must not be empty"
-        raise RegistryError(message)
-    paths = tuple(
-        _safe_rule_path(item, f"{context}.rules[{index}]")
-        for index, item in enumerate(raw_paths)
-    )
-    if len(set(paths)) != len(paths):
-        message = f"{context}.rules must not contain duplicates"
-        raise RegistryError(message)
-    coverage_paths = tuple(
-        _safe_rule_path(item, f"{context}.coverage[{index}]")
-        for index, item in enumerate(
-            _sequence(manifest.get("coverage", []), f"{context}.coverage")
-        )
-    )
-    if len(set(coverage_paths)) != len(coverage_paths):
-        message = f"{context}.coverage must not contain duplicates"
-        raise RegistryError(message)
-    retired_ids = tuple(
-        _rule_id(item, f"{context}.retired_ids[{index}]")
-        for index, item in enumerate(
-            _sequence(manifest.get("retired_ids", []), f"{context}.retired_ids")
-        )
-    )
-    if len(set(retired_ids)) != len(retired_ids):
-        message = f"{context}.retired_ids must not contain duplicates"
-        raise RegistryError(message)
+    _check(registry_index_json_schema(), data, context)
+    return _build_manifest(cast("dict[str, Any]", data), context)
+
+
+def _build_manifest(manifest: dict[str, Any], context: str) -> RegistryManifest:
+    paths = tuple(PurePosixPath(item) for item in manifest["rules"])
+    coverage_paths = tuple(PurePosixPath(item) for item in manifest.get("coverage", []))
     release_path = (
-        _safe_rule_path(manifest["releases"], f"{context}.releases")
-        if "releases" in manifest
-        else None
+        PurePosixPath(manifest["releases"]) if "releases" in manifest else None
     )
     all_paths = (*paths, *coverage_paths)
     if release_path is not None:
         all_paths = (*all_paths, release_path)
     if len(set(all_paths)) != len(all_paths):
-        message = f"{context} registry file paths must be unique across sections"
-        raise RegistryError(message)
+        _fail(f"{context} registry file paths must be unique across sections")
     return RegistryManifest(
-        release=_string(manifest["release"], f"{context}.release"),
+        release=manifest["release"],
         rule_paths=paths,
         coverage_paths=coverage_paths,
-        retired_ids=retired_ids,
+        retired_ids=tuple(manifest.get("retired_ids", [])),
         release_path=release_path,
     )
 
@@ -327,112 +207,39 @@ def parse_coverage_manifest(
     context: str = "coverage.yaml",
 ) -> CoverageManifest:
     """Validate one closed authoritative-source coverage manifest."""
-    document = _mapping(data, context)
-    _fields(
-        document,
-        context,
-        required=frozenset({"schema_version", "source", "source_keys", "entries"}),
-    )
-    _schema_version(document["schema_version"], context)
+    _check(registry_coverage_json_schema(), data, context)
+    return _build_coverage_manifest(cast("dict[str, Any]", data), context)
 
-    source_context = f"{context}.source"
-    source_data = _mapping(document["source"], source_context)
-    _fields(
-        source_data,
-        source_context,
-        required=frozenset({"id", "title", "url", "checked_on"}),
-    )
-    source_id = _string(source_data["id"], f"{source_context}.id")
-    if _SOURCE_ID_RE.fullmatch(source_id) is None:
-        message = f"{source_context}.id must be a lowercase source ID"
-        raise RegistryError(message)
+
+def _build_coverage_manifest(
+    document: dict[str, Any], context: str
+) -> CoverageManifest:
+    source_data = document["source"]
     source = CoverageSource(
-        id=source_id,
-        title=_string(source_data["title"], f"{source_context}.title"),
-        url=_https_url(source_data["url"], f"{source_context}.url"),
-        checked_on=_date(source_data["checked_on"], f"{source_context}.checked_on"),
+        id=source_data["id"],
+        title=source_data["title"],
+        url=source_data["url"],
+        checked_on=_date(source_data["checked_on"], f"{context}.source.checked_on"),
     )
-
-    source_keys = _unique_strings(
-        document["source_keys"],
-        f"{context}.source_keys",
-        allow_empty=False,
+    entries = tuple(
+        CoverageEntry(
+            source_key=entry["source_key"],
+            disposition=CoverageDisposition(entry["disposition"]),
+            rules=tuple(entry.get("rules", [])),
+            note=entry.get("note"),
+        )
+        for entry in document["entries"]
     )
-
-    raw_entries = _sequence(document["entries"], f"{context}.entries")
-    if not raw_entries:
-        message = f"{context}.entries must not be empty"
-        raise RegistryError(message)
-    entries: list[CoverageEntry] = []
-    for index, value in enumerate(raw_entries):
-        entry_context = f"{context}.entries[{index}]"
-        entry_data = _mapping(value, entry_context)
-        _fields(
-            entry_data,
-            entry_context,
-            required=frozenset({"source_key", "disposition"}),
-            optional=frozenset({"rules", "note"}),
-        )
-        disposition = _enum_value(
-            entry_data["disposition"],
-            CoverageDisposition,
-            f"{entry_context}.disposition",
-        )
-        rules = tuple(
-            _rule_id(item, f"{entry_context}.rules[{rule_index}]")
-            for rule_index, item in enumerate(
-                _sequence(entry_data.get("rules", []), f"{entry_context}.rules")
-            )
-        )
-        if len(set(rules)) != len(rules):
-            message = f"{entry_context}.rules must not contain duplicates"
-            raise RegistryError(message)
-        if disposition in _RULE_BACKED_COVERAGE and not rules:
-            message = f"{entry_context} requires at least one canonical rule ID"
-            raise RegistryError(message)
-        if disposition not in _RULE_BACKED_COVERAGE and rules:
-            message = f"{entry_context} cannot reference rules for this disposition"
-            raise RegistryError(message)
-        note = (
-            _string(entry_data["note"], f"{entry_context}.note")
-            if "note" in entry_data
-            else None
-        )
-        if disposition in _NOTE_REQUIRED_COVERAGE and note is None:
-            message = f"{entry_context} requires a note for this disposition"
-            raise RegistryError(message)
-        entries.append(
-            CoverageEntry(
-                source_key=_string(
-                    entry_data["source_key"], f"{entry_context}.source_key"
-                ),
-                disposition=disposition,
-                rules=rules,
-                note=note,
-            )
-        )
-    keys = tuple(entry.source_key for entry in entries)
-    if len(set(keys)) != len(keys):
-        message = f"{context}.entries must use unique source_key values"
-        raise RegistryError(message)
+    _unique(
+        [entry.source_key for entry in entries],
+        f"{context}.entries",
+        "source_key values",
+    )
     return CoverageManifest(
         source=source,
-        source_keys=source_keys,
-        entries=tuple(entries),
+        source_keys=tuple(document["source_keys"]),
+        entries=entries,
     )
-
-
-def _date(value: object, context: str) -> str:
-    text = _string(value, context)
-    try:
-        parsed = date.fromisoformat(text)
-    except ValueError as error:
-        message = f"{context} must be an ISO 8601 calendar date"
-        raise RegistryError(message) from error
-    if parsed.isoformat() != text:
-        message = f"{context} must use canonical YYYY-MM-DD form"
-        raise RegistryError(message)
-    return text
 
 
 def parse_release_metadata(
@@ -440,487 +247,248 @@ def parse_release_metadata(
     context: str = "releases.yaml",
 ) -> tuple[PythonRelease, ...]:
     """Validate strict informative Python release metadata."""
-    document = _mapping(data, context)
-    _fields(
-        document,
-        context,
-        required=frozenset({"schema_version", "releases"}),
-    )
-    _schema_version(document["schema_version"], context)
-    raw_releases = _sequence(document["releases"], f"{context}.releases")
-    if not raw_releases:
-        message = f"{context}.releases must not be empty"
-        raise RegistryError(message)
+    _check(registry_releases_json_schema(), data, context)
+    return _build_release_metadata(cast("dict[str, Any]", data), context)
 
-    releases: list[PythonRelease] = []
-    for index, value in enumerate(raw_releases):
-        release_context = f"{context}.releases[{index}]"
-        release = _mapping(value, release_context)
-        _fields(
-            release,
-            release_context,
-            required=frozenset({"python", "status"}),
-            optional=frozenset({"expected_final_on", "released_on", "source"}),
+
+def _build_release_metadata(
+    document: dict[str, Any], context: str
+) -> tuple[PythonRelease, ...]:
+    releases = tuple(
+        PythonRelease(
+            python=PythonMinor.parse(release["python"]),
+            status=ReleaseStatus(release["status"]),
+            released_on=(
+                _date(
+                    release["released_on"], f"{context}.releases[{index}].released_on"
+                )
+                if "released_on" in release
+                else None
+            ),
+            expected_final_on=(
+                _date(
+                    release["expected_final_on"],
+                    f"{context}.releases[{index}].expected_final_on",
+                )
+                if "expected_final_on" in release
+                else None
+            ),
+            source=release.get("source"),
         )
-        try:
-            python = PythonMinor.parse(
-                _string(release["python"], f"{release_context}.python")
-            )
-        except InvalidPythonMinorError as error:
-            message = f"{release_context}.python must be a Python minor such as '3.13'"
-            raise RegistryError(message) from error
-        releases.append(
-            PythonRelease(
-                python=python,
-                status=_enum_value(
-                    release["status"],
-                    ReleaseStatus,
-                    f"{release_context}.status",
-                ),
-                released_on=(
-                    _date(release["released_on"], f"{release_context}.released_on")
-                    if "released_on" in release
-                    else None
-                ),
-                expected_final_on=(
-                    _date(
-                        release["expected_final_on"],
-                        f"{release_context}.expected_final_on",
-                    )
-                    if "expected_final_on" in release
-                    else None
-                ),
-                source=(
-                    _https_url(release["source"], f"{release_context}.source")
-                    if "source" in release
-                    else None
-                ),
-            )
-        )
+        for index, release in enumerate(document["releases"])
+    )
     if any(
         current.python >= following.python for current, following in pairwise(releases)
     ):
-        message = f"{context}.releases must be strictly ordered by Python version"
-        raise RegistryError(message)
-    return tuple(releases)
-
-
-def _parse_scope(
-    value: object, context: str
-) -> tuple[str, str, tuple[UsageContext, ...]]:
-    scope = _mapping(value, context)
-    _fields(
-        scope,
-        context,
-        required=frozenset({"ecosystem", "runtime", "contexts"}),
-    )
-    ecosystem = _string(scope["ecosystem"], f"{context}.ecosystem")
-    runtime = _string(scope["runtime"], f"{context}.runtime")
-    if ecosystem != "python" or runtime != "cpython":
-        message = (
-            f"{context} supports only the python/cpython scope in schema version 1"
-        )
-        raise RegistryError(message)
-    raw_contexts = _sequence(scope["contexts"], f"{context}.contexts")
-    if not raw_contexts:
-        message = f"{context}.contexts must not be empty"
-        raise RegistryError(message)
-    contexts = tuple(
-        _enum_value(item, UsageContext, f"{context}.contexts[{index}]")
-        for index, item in enumerate(raw_contexts)
-    )
-    if len(set(contexts)) != len(contexts):
-        message = f"{context}.contexts must not contain duplicates"
-        raise RegistryError(message)
-    return ecosystem, runtime, contexts
-
-
-def _parse_subject(value: object, context: str) -> tuple[SubjectKind, str]:
-    subject = _mapping(value, context)
-    _fields(subject, context, required=frozenset({"kind", "name"}))
-    kind = _enum_value(subject["kind"], SubjectKind, f"{context}.kind")
-    name = _string(subject["name"], f"{context}.name")
-    if kind is not SubjectKind.SYNTAX and _DOTTED_NAME_RE.fullmatch(name) is None:
-        message = (
-            f"{context}.name must be a dotted Python name for {kind.value} subjects"
-        )
-        raise RegistryError(message)
-    return kind, name
-
-
-def _parse_event(value: object, context: str) -> RuleEvent:
-    event = _mapping(value, context)
-    _fields(
-        event,
-        context,
-        required=frozenset({"event", "python", "certainty", "source"}),
-    )
-    try:
-        python = PythonMinor.parse(_string(event["python"], f"{context}.python"))
-    except InvalidPythonMinorError as error:
-        message = f"{context}.python must be a Python minor such as '3.13'"
-        raise RegistryError(message) from error
-    source_id = _string(event["source"], f"{context}.source")
-    if _SOURCE_ID_RE.fullmatch(source_id) is None:
-        message = f"{context}.source must be a lowercase source ID"
-        raise RegistryError(message)
-    return RuleEvent(
-        kind=_enum_value(event["event"], ChangeEventKind, f"{context}.event"),
-        python=python,
-        certainty=_enum_value(
-            event["certainty"], RegistryCertainty, f"{context}.certainty"
-        ),
-        source_id=source_id,
-    )
+        _fail(f"{context}.releases must be strictly ordered by Python version")
+    return releases
 
 
 def _validate_timeline(events: tuple[RuleEvent, ...], context: str) -> None:
-    if not events:
-        message = f"{context} must not be empty"
-        raise RegistryError(message)
     if len({event.kind for event in events}) != len(events):
-        message = f"{context} must not repeat an event kind"
-        raise RegistryError(message)
+        _fail(f"{context} must not repeat an event kind")
     if any(
         current.python >= following.python for current, following in pairwise(events)
     ):
-        message = f"{context} must be strictly ordered by increasing Python version"
-        raise RegistryError(message)
+        _fail(f"{context} must be strictly ordered by increasing Python version")
     terminal_indexes = [
         index for index, event in enumerate(events) if event.kind in _TERMINAL_EVENTS
     ]
     if terminal_indexes and terminal_indexes != [len(events) - 1]:
-        message = f"{context} may contain one terminal event, and it must be last"
-        raise RegistryError(message)
+        _fail(f"{context} may contain one terminal event, and it must be last")
 
 
 def _parse_impact(
-    value: object,
+    impact: dict[str, Any],
     events: tuple[RuleEvent, ...],
     context: str,
 ) -> tuple[tuple[ChangeEventKind, Impact], ...]:
-    impact = _mapping(value, context)
-    allowed = frozenset(_EVENT_IMPACT_KEYS.values())
-    required = frozenset(_EVENT_IMPACT_KEYS[event.kind] for event in events)
-    _fields(impact, context, required=required, optional=allowed - required)
-    parsed: list[tuple[ChangeEventKind, Impact]] = []
-    for kind, key in _EVENT_IMPACT_KEYS.items():
-        if key in impact:
-            parsed.append((kind, _enum_value(impact[key], Impact, f"{context}.{key}")))
-    return tuple(parsed)
-
-
-def _parse_reference_contexts(
-    value: object, context: str
-) -> tuple[ReferenceContext, ...]:
-    raw_contexts = _sequence(value, context)
-    if not raw_contexts:
-        message = f"{context} must not be empty when provided"
-        raise RegistryError(message)
-    contexts = tuple(
-        _enum_value(item, ReferenceContext, f"{context}[{index}]")
-        for index, item in enumerate(raw_contexts)
+    """Pair impacts with events; the schema cannot see which events exist."""
+    required = {_EVENT_IMPACT_KEYS[event.kind] for event in events}
+    missing = sorted(required.difference(impact))
+    if missing:
+        _fail(f"{context} is missing required field(s): {', '.join(missing)}")
+    return tuple(
+        (kind, Impact(impact[key]))
+        for kind, key in _EVENT_IMPACT_KEYS.items()
+        if key in impact
     )
-    if len(set(contexts)) != len(contexts):
-        message = f"{context} must not contain duplicates"
-        raise RegistryError(message)
-    return contexts
 
 
-def _parse_literal(value: object, context: str) -> LiteralValue:
-    if value is None or type(value) in {bool, float, int, str}:
-        if isinstance(value, float) and not math.isfinite(value):
-            message = f"{context} must be a finite JSON scalar"
-            raise RegistryError(message)
-        if isinstance(value, str) and _SURROGATE_RE.search(value) is not None:
-            message = f"{context} must not contain an invalid Unicode surrogate"
-            raise RegistryError(message)
-        return cast("LiteralValue", value)
-    message = f"{context} must be a JSON scalar literal"
-    raise RegistryError(message)
-
-
-def _parse_literal_argument(value: object, context: str) -> LiteralArgumentPredicate:
-    argument = _mapping(value, context)
-    _fields(
-        argument,
-        context,
-        required=frozenset({"equals"}),
-        optional=frozenset({"position", "keyword"}),
-    )
-    has_position = "position" in argument
-    has_keyword = "keyword" in argument
-    if has_position == has_keyword:
-        message = f"{context} must select exactly one of position or keyword"
-        raise RegistryError(message)
-    position = (
-        _integer(argument["position"], f"{context}.position") if has_position else None
-    )
-    keyword = (
-        _dotted_name(argument["keyword"], f"{context}.keyword") if has_keyword else None
-    )
-    if keyword is not None and "." in keyword:
-        message = f"{context}.keyword must be one Python identifier"
-        raise RegistryError(message)
+def _literal_argument(argument: dict[str, Any]) -> LiteralArgumentPredicate:
     return LiteralArgumentPredicate(
-        position=position,
-        keyword=keyword,
-        equals=_parse_literal(argument["equals"], f"{context}.equals"),
+        position=argument.get("position"),
+        keyword=argument.get("keyword"),
+        equals=cast("LiteralValue", argument["equals"]),
     )
 
 
-_CALL_SHAPE_FIELDS = frozenset(
-    {
-        "min_positional_args",
-        "max_positional_args",
-        "min_keyword_args",
-        "max_keyword_args",
-        "required_keywords",
-        "forbidden_keywords",
-        "literal_arguments",
-    }
-)
-
-
-def _call_shape_bounds(
-    matcher: Mapping[str, object],
-    context: str,
-) -> tuple[int | None, int | None]:
-    minimum = (
-        _integer(
-            matcher["min_positional_args"],
-            f"{context}.min_positional_args",
-        )
-        if "min_positional_args" in matcher
-        else None
-    )
-    maximum = (
-        _integer(
-            matcher["max_positional_args"],
-            f"{context}.max_positional_args",
-        )
-        if "max_positional_args" in matcher
-        else None
+def _parse_call_shape(matcher: dict[str, Any], context: str) -> CallShapeMatcher:
+    """Build a call shape and reject predicates that contradict each other."""
+    minimum = matcher.get("min_positional_args")
+    maximum = matcher.get("max_positional_args")
+    min_keywords = matcher.get("min_keyword_args")
+    max_keywords = matcher.get("max_keyword_args")
+    required = tuple(matcher.get("required_keywords", []))
+    forbidden = tuple(matcher.get("forbidden_keywords", []))
+    literals = tuple(
+        _literal_argument(item) for item in matcher.get("literal_arguments", [])
     )
     if minimum is not None and maximum is not None and minimum > maximum:
-        message = f"{context} minimum positional count exceeds its maximum"
-        raise RegistryError(message)
-    return minimum, maximum
-
-
-def _call_shape_keywords(
-    matcher: Mapping[str, object],
-    context: str,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    required = (
-        _unique_strings(
-            matcher["required_keywords"],
-            f"{context}.required_keywords",
-            pattern=_DOTTED_NAME_RE,
-            allow_empty=False,
-        )
-        if "required_keywords" in matcher
-        else ()
-    )
-    forbidden = (
-        _unique_strings(
-            matcher["forbidden_keywords"],
-            f"{context}.forbidden_keywords",
-            pattern=_DOTTED_NAME_RE,
-            allow_empty=False,
-        )
-        if "forbidden_keywords" in matcher
-        else ()
-    )
-    if any("." in keyword for keyword in required + forbidden):
-        message = f"{context} keyword predicates must use single identifiers"
-        raise RegistryError(message)
+        _fail(f"{context} minimum positional count exceeds its maximum")
+    if (
+        min_keywords is not None
+        and max_keywords is not None
+        and (min_keywords > max_keywords)
+    ):
+        _fail(f"{context} minimum keyword count exceeds its maximum")
     if set(required).intersection(forbidden):
-        message = f"{context} cannot both require and forbid a keyword"
-        raise RegistryError(message)
-    return required, forbidden
-
-
-def _call_shape_literals(
-    matcher: Mapping[str, object],
-    context: str,
-    forbidden_keywords: tuple[str, ...],
-    maximum: int | None,
-) -> tuple[LiteralArgumentPredicate, ...]:
-    raw_literals = (
-        _sequence(matcher["literal_arguments"], f"{context}.literal_arguments")
-        if "literal_arguments" in matcher
-        else ()
-    )
-    if "literal_arguments" in matcher and not raw_literals:
-        message = f"{context}.literal_arguments must not be empty"
-        raise RegistryError(message)
-    literals = tuple(
-        _parse_literal_argument(item, f"{context}.literal_arguments[{index}]")
-        for index, item in enumerate(raw_literals)
-    )
-    literal_keys = tuple(
+        _fail(f"{context} cannot both require and forbid a keyword")
+    if max_keywords is not None and len(required) > max_keywords:
+        _fail(f"{context} requires more keywords than its maximum allows")
+    selectors = [
         ("position", item.position)
         if item.position is not None
         else ("keyword", item.keyword)
         for item in literals
-    )
-    if len(set(literal_keys)) != len(literal_keys):
-        message = f"{context}.literal_arguments must not repeat an argument"
-        raise RegistryError(message)
-    if any(
-        item.keyword in forbidden_keywords
-        for item in literals
-        if item.keyword is not None
-    ):
-        message = f"{context} cannot require a literal for a forbidden keyword"
-        raise RegistryError(message)
+    ]
+    if len(set(selectors)) != len(selectors):
+        _fail(f"{context}.literal_arguments must not repeat an argument")
+    if any(item.keyword in forbidden for item in literals if item.keyword is not None):
+        _fail(f"{context} cannot require a literal for a forbidden keyword")
     if maximum is not None and any(
         item.position is not None and item.position >= maximum for item in literals
     ):
-        message = f"{context} positional literal is outside the maximum shape"
-        raise RegistryError(message)
-    return literals
-
-
-def _parse_call_shape(
-    matcher: Mapping[str, object],
-    kind: MatcherKind,
-    context: str,
-) -> CallShapeMatcher:
-    _fields(
-        matcher,
-        context,
-        required=frozenset({"kind", "qualified_name"}),
-        optional=_CALL_SHAPE_FIELDS,
-    )
-    if not set(matcher).intersection(_CALL_SHAPE_FIELDS):
-        message = f"{context} must declare at least one call-shape predicate"
-        raise RegistryError(message)
-    minimum, maximum = _call_shape_bounds(matcher, context)
-    min_keyword_args = (
-        _integer(
-            matcher["min_keyword_args"],
-            f"{context}.min_keyword_args",
-            minimum=1,
-        )
-        if "min_keyword_args" in matcher
-        else None
-    )
-    max_keyword_args = (
-        _integer(matcher["max_keyword_args"], f"{context}.max_keyword_args")
-        if "max_keyword_args" in matcher
-        else None
-    )
-    if (
-        min_keyword_args is not None
-        and max_keyword_args is not None
-        and min_keyword_args > max_keyword_args
-    ):
-        message = f"{context} minimum keyword count exceeds its maximum"
-        raise RegistryError(message)
-    required_keywords, forbidden_keywords = _call_shape_keywords(matcher, context)
-    if max_keyword_args is not None and len(required_keywords) > max_keyword_args:
-        message = f"{context} requires more keywords than its maximum allows"
-        raise RegistryError(message)
-    literal_arguments = _call_shape_literals(
-        matcher, context, forbidden_keywords, maximum
-    )
-    if (
-        minimum is None
-        and maximum is None
-        and min_keyword_args is None
-        and max_keyword_args is None
-        and not required_keywords
-        and not forbidden_keywords
-        and not literal_arguments
-    ):
-        message = f"{context} must declare at least one effective call-shape predicate"
-        raise RegistryError(message)
+        _fail(f"{context} positional literal is outside the maximum shape")
     return CallShapeMatcher(
-        kind=kind,
-        qualified_name=_dotted_name(
-            matcher["qualified_name"], f"{context}.qualified_name"
-        ),
+        kind=MatcherKind.CALL_SHAPE,
+        qualified_name=matcher["qualified_name"],
         min_positional_args=minimum,
         max_positional_args=maximum,
-        min_keyword_args=min_keyword_args,
-        max_keyword_args=max_keyword_args,
-        required_keywords=required_keywords,
-        forbidden_keywords=forbidden_keywords,
-        literal_arguments=literal_arguments,
+        min_keyword_args=min_keywords,
+        max_keyword_args=max_keywords,
+        required_keywords=required,
+        forbidden_keywords=forbidden,
+        literal_arguments=literals,
     )
 
 
-def _parse_matcher(value: object, context: str) -> RuleMatcher:
-    matcher = _mapping(value, context)
-    if "kind" not in matcher:
-        message = f"{context} is missing required field(s): kind"
-        raise RegistryError(message)
-    kind = _enum_value(matcher["kind"], MatcherKind, f"{context}.kind")
+def _parse_matcher(matcher: dict[str, Any], context: str) -> RuleMatcher:
+    kind = MatcherKind(matcher["kind"])
     if kind is MatcherKind.MODULE_IMPORT:
-        _fields(matcher, context, required=frozenset({"kind", "module"}))
-        return ModuleImportMatcher(
-            kind=kind,
-            module=_dotted_name(matcher["module"], f"{context}.module"),
-        )
+        return ModuleImportMatcher(kind=kind, module=matcher["module"])
     if kind is MatcherKind.QUALIFIED_REFERENCE:
-        _fields(
-            matcher,
-            context,
-            required=frozenset({"kind", "qualified_name"}),
-            optional=frozenset({"contexts"}),
-        )
-        contexts = (
-            _parse_reference_contexts(matcher["contexts"], f"{context}.contexts")
-            if "contexts" in matcher
-            else ()
-        )
         return QualifiedReferenceMatcher(
             kind=kind,
-            qualified_name=_dotted_name(
-                matcher["qualified_name"], f"{context}.qualified_name"
+            qualified_name=matcher["qualified_name"],
+            contexts=tuple(
+                ReferenceContext(item) for item in matcher.get("contexts", [])
             ),
-            contexts=contexts,
         )
     if kind is MatcherKind.QUALIFIED_CALL:
-        _fields(
-            matcher,
-            context,
-            required=frozenset({"kind", "qualified_name"}),
-        )
-        return QualifiedCallMatcher(
-            kind=kind,
-            qualified_name=_dotted_name(
-                matcher["qualified_name"], f"{context}.qualified_name"
-            ),
-        )
+        return QualifiedCallMatcher(kind=kind, qualified_name=matcher["qualified_name"])
     if kind is MatcherKind.CALL_SHAPE:
-        return _parse_call_shape(matcher, kind, context)
+        return _parse_call_shape(matcher, context)
     if kind is MatcherKind.LITERAL_DYNAMIC_IMPORT:
-        _fields(
-            matcher,
-            context,
-            required=frozenset({"kind", "module"}),
-            optional=frozenset({"confidence"}),
-        )
-        confidence = _enum_value(
-            matcher.get("confidence", MatchConfidence.MEDIUM.value),
-            MatchConfidence,
-            f"{context}.confidence",
-        )
-        if confidence is not MatchConfidence.MEDIUM:
-            message = f"{context}.confidence must be medium for literal dynamic imports"
-            raise RegistryError(message)
         return LiteralDynamicImportMatcher(
             kind=kind,
-            module=_dotted_name(matcher["module"], f"{context}.module"),
-            confidence=confidence,
+            module=matcher["module"],
+            confidence=MatchConfidence(
+                matcher.get("confidence", MatchConfidence.MEDIUM.value)
+            ),
         )
-    _fields(matcher, context, required=frozenset({"kind", "pattern"}))
-    return BuiltinPatternMatcher(
-        kind=kind,
-        pattern=_enum_value(matcher["pattern"], BuiltinPattern, f"{context}.pattern"),
+    return BuiltinPatternMatcher(kind=kind, pattern=BuiltinPattern(matcher["pattern"]))
+
+
+def _literal_value(value: object, context: str) -> LiteralValue:
+    """Reject the YAML-only scalars a JSON Schema cannot see: inf, nan."""
+    if isinstance(value, float) and not math.isfinite(value):
+        _fail(f"{context} must be a finite JSON scalar")
+    return cast("LiteralValue", value)
+
+
+def _remediation(remediation: dict[str, Any]) -> Remediation:
+    automation = remediation.get("automation")
+    return Remediation(
+        summary=remediation["summary"],
+        documentation_url=remediation.get("documentation_url"),
+        automation=(
+            AutomationReference(
+                tool=AutomationTool(automation["tool"]), rule=automation["rule"]
+            )
+            if automation is not None
+            else None
+        ),
+    )
+
+
+def parse_rule(data: object, context: str) -> Rule:
+    """Validate one rule mapping and convert it to the immutable domain model."""
+    _check(registry_rule_json_schema(), data, context)
+    return _build_rule(cast("dict[str, Any]", data), context)
+
+
+def _build_rule(document: dict[str, Any], context: str) -> Rule:
+    """Build a rule whose shape the schema has checked; check what it cannot."""
+    identifier: str = document["id"]
+    aliases = tuple(document.get("aliases", []))
+    if identifier in aliases:
+        _fail(f"{context}.aliases must be unique and differ from the canonical ID")
+    events = tuple(
+        RuleEvent(
+            kind=ChangeEventKind(event["event"]),
+            python=PythonMinor.parse(event["python"]),
+            certainty=RegistryCertainty(event["certainty"]),
+            source_id=event["source"],
+        )
+        for event in document["timeline"]
+    )
+    _validate_timeline(events, f"{context}.timeline")
+    matchers = tuple(
+        _parse_matcher(item, f"{context}.matchers[{index}]")
+        for index, item in enumerate(document["matchers"])
+    )
+    for index, matcher in enumerate(matchers):
+        if isinstance(matcher, CallShapeMatcher):
+            for position, predicate in enumerate(matcher.literal_arguments):
+                _literal_value(
+                    predicate.equals,
+                    f"{context}.matchers[{index}].literal_arguments[{position}].equals",
+                )
+    if len({_matcher_identity(matcher) for matcher in matchers}) != len(matchers):
+        _fail(f"{context}.matchers must not contain duplicates")
+    sources = tuple(
+        SourceReference(id=source["id"], title=source["title"], url=source["url"])
+        for source in document["sources"]
+    )
+    source_ids = [source.id for source in sources]
+    _unique(source_ids, f"{context}.sources", "IDs")
+    missing_sources = sorted(
+        {event.source_id for event in events}.difference(source_ids)
+    )
+    if missing_sources:
+        _fail(
+            f"{context}.timeline references missing source(s): "
+            f"{', '.join(missing_sources)}"
+        )
+    scope = document["scope"]
+    subject = document["subject"]
+    return Rule(
+        id=identifier,
+        aliases=aliases,
+        title=document["title"],
+        summary=document["summary"],
+        ecosystem=scope["ecosystem"],
+        runtime=scope["runtime"],
+        subject_kind=SubjectKind(subject["kind"]),
+        subject=subject["name"],
+        contexts=tuple(UsageContext(item) for item in scope["contexts"]),
+        events=events,
+        event_impacts=_parse_impact(document["impact"], events, f"{context}.impact"),
+        matchers=matchers,
+        remediation=_remediation(document["remediation"]),
+        sources=sources,
+        tags=tuple(document["tags"]),
     )
 
 
@@ -980,165 +548,6 @@ def _matcher_identity(matcher: RuleMatcher) -> tuple[object, ...]:
     if isinstance(matcher, LiteralDynamicImportMatcher):
         return (matcher.kind.value, matcher.module, matcher.confidence.value)
     return (matcher.kind.value, matcher.pattern.value)
-
-
-def _parse_remediation(value: object, context: str) -> Remediation:
-    remediation = _mapping(value, context)
-    _fields(
-        remediation,
-        context,
-        required=frozenset({"summary"}),
-        optional=frozenset({"documentation_url", "automation"}),
-    )
-    documentation_url = (
-        _https_url(remediation["documentation_url"], f"{context}.documentation_url")
-        if "documentation_url" in remediation
-        else None
-    )
-    raw_automation = remediation.get("automation")
-    automation: AutomationReference | None = None
-    if raw_automation is not None:
-        automation_data = _mapping(raw_automation, f"{context}.automation")
-        _fields(
-            automation_data,
-            f"{context}.automation",
-            required=frozenset({"tool", "rule"}),
-        )
-        automation = AutomationReference(
-            tool=_enum_value(
-                automation_data["tool"],
-                AutomationTool,
-                f"{context}.automation.tool",
-            ),
-            rule=_string(automation_data["rule"], f"{context}.automation.rule"),
-        )
-    return Remediation(
-        summary=_string(remediation["summary"], f"{context}.summary"),
-        documentation_url=documentation_url,
-        automation=automation,
-    )
-
-
-def _parse_source(value: object, context: str) -> SourceReference:
-    source = _mapping(value, context)
-    _fields(
-        source,
-        context,
-        required=frozenset({"id", "title", "url"}),
-    )
-    source_id = _string(source["id"], f"{context}.id")
-    if _SOURCE_ID_RE.fullmatch(source_id) is None:
-        message = f"{context}.id must be a lowercase source ID"
-        raise RegistryError(message)
-    return SourceReference(
-        id=source_id,
-        title=_string(source["title"], f"{context}.title"),
-        url=_https_url(source["url"], f"{context}.url"),
-    )
-
-
-def parse_rule(data: object, context: str) -> Rule:
-    """Validate one rule mapping and convert it to the immutable domain model."""
-    document = _mapping(data, context)
-    _fields(
-        document,
-        context,
-        required=frozenset(
-            {
-                "schema_version",
-                "id",
-                "title",
-                "summary",
-                "scope",
-                "subject",
-                "timeline",
-                "impact",
-                "matchers",
-                "remediation",
-                "sources",
-                "tags",
-            }
-        ),
-        optional=frozenset({"aliases"}),
-    )
-    _schema_version(document["schema_version"], context)
-    identifier = _rule_id(document["id"], f"{context}.id")
-    aliases = tuple(
-        _rule_id(item, f"{context}.aliases[{index}]")
-        for index, item in enumerate(
-            _sequence(document.get("aliases", []), f"{context}.aliases")
-        )
-    )
-    if identifier in aliases or len(set(aliases)) != len(aliases):
-        message = f"{context}.aliases must be unique and differ from the canonical ID"
-        raise RegistryError(message)
-    ecosystem, runtime, contexts = _parse_scope(document["scope"], f"{context}.scope")
-    subject_kind, subject = _parse_subject(document["subject"], f"{context}.subject")
-    events = tuple(
-        _parse_event(item, f"{context}.timeline[{index}]")
-        for index, item in enumerate(
-            _sequence(document["timeline"], f"{context}.timeline")
-        )
-    )
-    _validate_timeline(events, f"{context}.timeline")
-    matchers = tuple(
-        _parse_matcher(item, f"{context}.matchers[{index}]")
-        for index, item in enumerate(
-            _sequence(document["matchers"], f"{context}.matchers")
-        )
-    )
-    if not matchers:
-        message = f"{context}.matchers must not be empty"
-        raise RegistryError(message)
-    if len({_matcher_identity(matcher) for matcher in matchers}) != len(matchers):
-        message = f"{context}.matchers must not contain duplicates"
-        raise RegistryError(message)
-    sources = tuple(
-        _parse_source(item, f"{context}.sources[{index}]")
-        for index, item in enumerate(
-            _sequence(document["sources"], f"{context}.sources")
-        )
-    )
-    if not sources:
-        message = f"{context}.sources must not be empty"
-        raise RegistryError(message)
-    source_ids = tuple(source.id for source in sources)
-    if len(set(source_ids)) != len(source_ids):
-        message = f"{context}.sources must use unique IDs"
-        raise RegistryError(message)
-    missing_sources = sorted(
-        {event.source_id for event in events}.difference(source_ids)
-    )
-    if missing_sources:
-        message = (
-            f"{context}.timeline references missing source(s): "
-            f"{', '.join(missing_sources)}"
-        )
-        raise RegistryError(message)
-    tags = _unique_strings(
-        document["tags"],
-        f"{context}.tags",
-        pattern=_TAG_RE,
-    )
-    return Rule(
-        id=identifier,
-        aliases=aliases,
-        title=_string(document["title"], f"{context}.title"),
-        summary=_string(document["summary"], f"{context}.summary"),
-        ecosystem=ecosystem,
-        runtime=runtime,
-        subject_kind=subject_kind,
-        subject=subject,
-        contexts=contexts,
-        events=events,
-        event_impacts=_parse_impact(document["impact"], events, f"{context}.impact"),
-        matchers=matchers,
-        remediation=_parse_remediation(
-            document["remediation"], f"{context}.remediation"
-        ),
-        sources=sources,
-        tags=tags,
-    )
 
 
 def _object_schema(
@@ -1295,9 +704,7 @@ def registry_coverage_json_schema() -> JsonSchema:
             "source": _object_schema(
                 {
                     "checked_on": {
-                        "pattern": _json_schema_exact_pattern(
-                            r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
-                        ),
+                        "pattern": _json_schema_exact_pattern(_DATE_PATTERN),
                         "type": "string",
                     },
                     "id": {
@@ -1322,6 +729,49 @@ def registry_coverage_json_schema() -> JsonSchema:
     }
 
 
+def registry_releases_json_schema() -> JsonSchema:
+    """Generate the structural JSON Schema for ``releases.yaml``."""
+    calendar_date = {
+        "pattern": _json_schema_exact_pattern(_DATE_PATTERN),
+        "type": "string",
+    }
+    return {
+        "$id": "https://pyahead.dev/schema/registry-releases-v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": False,
+        "properties": {
+            "releases": {
+                "items": _object_schema(
+                    {
+                        "expected_final_on": calendar_date,
+                        "python": {
+                            "pattern": _json_schema_exact_pattern(PYTHON_MINOR_PATTERN),
+                            "type": "string",
+                        },
+                        "released_on": calendar_date,
+                        "source": _https_url_schema(),
+                        "status": {
+                            "enum": [status.value for status in ReleaseStatus],
+                            "type": "string",
+                        },
+                    },
+                    ["python", "status"],
+                ),
+                "minItems": 1,
+                "type": "array",
+            },
+            "schema_version": {"const": 1, "type": "integer"},
+        },
+        "required": ["schema_version", "releases"],
+        "title": "PyAhead registry Python releases schema version 1",
+        "type": "object",
+        "x-pyahead-semantic-validation": [
+            "dates are real calendar dates",
+            "releases are strictly ordered by Python version",
+        ],
+    }
+
+
 def _matcher_schemas() -> list[JsonSchema]:
     dotted_name = {
         "pattern": _json_schema_exact_pattern(_DOTTED_NAME_PATTERN),
@@ -1336,9 +786,7 @@ def _matcher_schemas() -> list[JsonSchema]:
             {"type": "boolean"},
             {"type": "number"},
             {
-                "pattern": _json_schema_exact_pattern(
-                    rf"(?![\s\S]*[{_SURROGATE_CLASS}])[\s\S]*"
-                ),
+                "pattern": _json_schema_exact_pattern(_UNICODE_STRING_PATTERN),
                 "type": "string",
             },
             {"type": "null"},
@@ -1347,14 +795,14 @@ def _matcher_schemas() -> list[JsonSchema]:
     literal_argument_common: JsonSchema = {
         "equals": literal,
         "keyword": {
-            "pattern": _json_schema_exact_pattern(r"[A-Za-z_][A-Za-z0-9_]*"),
+            "pattern": _json_schema_exact_pattern(_IDENTIFIER_PATTERN),
             "type": "string",
         },
         "position": {"minimum": 0, "type": "integer"},
     }
     keyword_array = {
         "items": {
-            "pattern": _json_schema_exact_pattern(r"[A-Za-z_][A-Za-z0-9_]*"),
+            "pattern": _json_schema_exact_pattern(_IDENTIFIER_PATTERN),
             "type": "string",
         },
         "minItems": 1,
@@ -1648,11 +1096,12 @@ def render_json_schema(document: JsonSchema) -> str:
 
 
 def write_json_schemas(directory: Path) -> tuple[Path, Path]:
-    """Write generated schemas while preserving the M2 return contract."""
+    """Write the generated registry schemas and return their paths."""
     directory.mkdir(parents=True, exist_ok=True)
     index_path = directory / "registry-index-v1.json"
     rule_path = directory / "registry-rule-v1.json"
     coverage_path = directory / "registry-coverage-v1.json"
+    releases_path = directory / "registry-releases-v1.json"
     index_path.write_text(
         render_json_schema(registry_index_json_schema()), encoding="utf-8"
     )
@@ -1661,6 +1110,9 @@ def write_json_schemas(directory: Path) -> tuple[Path, Path]:
     )
     coverage_path.write_text(
         render_json_schema(registry_coverage_json_schema()), encoding="utf-8"
+    )
+    releases_path.write_text(
+        render_json_schema(registry_releases_json_schema()), encoding="utf-8"
     )
     return index_path, rule_path
 

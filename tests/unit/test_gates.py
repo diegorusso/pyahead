@@ -1,4 +1,4 @@
-"""Tests for M4 gate thresholds and precedence."""
+"""Tests for gate thresholds and precedence."""
 
 from dataclasses import replace
 from pathlib import Path

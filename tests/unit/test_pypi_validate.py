@@ -24,7 +24,9 @@ if sys.platform != "linux":  # pragma: no cover - CI platform guard
         allow_module_level=True,
     )
 
-from scripts import pypi_validate
+from tests._internals import PackageInternals
+
+pypi_validate = PackageInternals("scripts.pypi_validate")
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -139,12 +141,12 @@ def _reference_interpreter(  # noqa: PLR0913 - mirrors the manifest entry's own 
     filename: str = "pkg-1.0.0-py3-none-any.whl",
     is_wheel: bool = False,
 ) -> pypi_validate.InstalledInterpreter | None:
-    """`_reference_interpreter` with a not-a-wheel default.
+    """Return the first reference candidate, with a not-a-wheel default.
 
     Keeps plain `requires_python` resolution tests from tripping the
     wheel-tag check.
     """
-    return pypi_validate._reference_interpreter(
+    candidates = pypi_validate._reference_candidates(
         requires_python,
         installed,
         baseline_minor=baseline_minor,
@@ -152,6 +154,7 @@ def _reference_interpreter(  # noqa: PLR0913 - mirrors the manifest entry's own 
         filename=filename,
         is_wheel=is_wheel,
     )
+    return candidates[0] if candidates else None
 
 
 def test_reference_interpreter_picks_the_lowest_satisfying_minor() -> None:
@@ -887,7 +890,7 @@ def test_run_survives_an_unexpected_failure_past_venv_creation(
         message = "scan report exceeded the 64 MiB review limit"
         raise pypi_validate.PypiValidateError(message)
 
-    monkeypatch.setattr(pypi_validate, "_run_scan", _broken_scan)
+    pypi_validate.patch(monkeypatch, "_run_scan", _broken_scan)
 
     work_dir = tmp_path / "work"
     result = _run_main(
@@ -1032,7 +1035,7 @@ def test_run_resolves_a_relative_work_dir_before_processing(
             "interpreter": None,
         }
 
-    monkeypatch.setattr(pypi_validate, "_process_package", _fake_process_package)
+    pypi_validate.patch(monkeypatch, "_process_package", _fake_process_package)
     monkeypatch.chdir(tmp_path)
     result = _run_main(
         [
@@ -1123,7 +1126,7 @@ def test_run_resumes_by_default_and_reprocesses_with_refresh(
         )
         return {**base, "status": "skipped", "reason": "test-stub"}
 
-    monkeypatch.setattr(pypi_validate, "_process_package", _fake_process_package)
+    pypi_validate.patch(monkeypatch, "_process_package", _fake_process_package)
     work_dir = tmp_path / "work"
     base_argv = [
         "run",

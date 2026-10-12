@@ -9,8 +9,9 @@ from typing import cast
 
 import pytest
 
-import pyahead._rooted_reader as rooted_reader_module
-import pyahead._windows_output as windows_output_module
+import pyahead._fs.chain as chain_module
+import pyahead._fs.rooted as rooted_reader_module
+import pyahead._fs.windows as windows_output_module
 import pyahead.config as config_module
 import pyahead.output as output_module
 from pyahead.baseline import load_baseline
@@ -43,8 +44,10 @@ def _fake_stat(mode: int, inode: int, *, device: int = 1) -> os.stat_result:
 
 
 def _isolate_output_os(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Give the writer and the directory chain one fakeable ``os``."""
     isolated = SimpleNamespace(**vars(os))
     monkeypatch.setattr(output_module, "os", isolated)
+    monkeypatch.setattr(chain_module, "os", isolated)
     return isolated
 
 
@@ -173,7 +176,7 @@ def test_posix_pinned_capability_and_flags_are_exercised_portably(
         raising=False,
     )
 
-    directory_flags = output_module._directory_flags()  # noqa: SLF001
+    directory_flags = chain_module.directory_flags()
     assert directory_flags & (directory_bit | no_follow_bit) == (
         directory_bit | no_follow_bit
     )
@@ -219,7 +222,7 @@ def test_posix_pinned_chain_opens_validates_and_closes_with_fakes(
         *,
         dir_fd: int | None = None,
     ) -> int:
-        assert flags == output_module._directory_flags()  # noqa: SLF001
+        assert flags == chain_module.directory_flags()
         opened.append((path, flags, mode, dir_fd))
         return next(descriptors)
 
@@ -246,14 +249,14 @@ def test_posix_pinned_chain_opens_validates_and_closes_with_fakes(
     assert chain.parent_descriptor == expected_parent_descriptor
     assert chain.descriptors == (10, 11, 12)
     assert chain.names == ("reports", "nested")
-    directory_flags = output_module._directory_flags()  # noqa: SLF001
+    directory_flags = chain_module.directory_flags()
     assert opened == [
         (tmp_path, directory_flags, 0o777, None),
         ("reports", directory_flags, 0o777, 10),
         ("nested", directory_flags, 0o777, 11),
     ]
     assert closed == []
-    chain.validate()
+    output_module._validate_chain(chain)  # noqa: SLF001
     chain.close()
     assert closed == [12, 11, 10]
 
@@ -266,11 +269,14 @@ def test_posix_pinned_chain_rejects_rebinding_and_closes_best_effort(
     _isolate_output_os(monkeypatch)
     root_status = tmp_path.lstat()
     child_status = _fake_stat(stat.S_IFDIR | 0o700, 31)
-    chain = output_module._PinnedDirectoryChain(  # noqa: SLF001
+    chain = chain_module.DirectoryChain(
         root=tmp_path,
         descriptors=(20, 21),
         statuses=(root_status, child_status),
         names=("reports",),
+    )
+    monkeypatch.setattr(
+        output_module.os, "fstat", {20: root_status, 21: child_status}.__getitem__
     )
 
     monkeypatch.setattr(
@@ -279,16 +285,16 @@ def test_posix_pinned_chain_rejects_rebinding_and_closes_best_effort(
         lambda *_args, **_kwargs: _fake_stat(stat.S_IFDIR | 0o700, 32),
     )
     with pytest.raises(OutputError, match="output directory changed"):
-        chain.validate()
+        output_module._validate_chain(chain)  # noqa: SLF001
 
-    rebound_root = output_module._PinnedDirectoryChain(  # noqa: SLF001
+    rebound_root = chain_module.DirectoryChain(
         root=tmp_path,
         descriptors=(20,),
         statuses=(_fake_stat(stat.S_IFDIR | 0o700, 99),),
         names=(),
     )
     with pytest.raises(OutputError, match="output directory changed"):
-        rebound_root.validate()
+        output_module._validate_chain(rebound_root)  # noqa: SLF001
 
     closed: list[int] = []
     failing_descriptor = 21
@@ -326,17 +332,30 @@ def test_posix_pinned_open_rejects_changed_root_and_non_directory_parent(
         output_module._open_pinned_directories(tmp_path, Path("reports"))  # noqa: SLF001
     assert closed == [40]
 
+    # A parent that is not a directory is refused before it is opened, and
+    # reported like any other failure to reach the destination.
     descriptors = iter((50, 51))
     closed.clear()
-    statuses = {
-        50: root_status,
-        51: _fake_stat(stat.S_IFREG | 0o600, 51),
-    }
-    monkeypatch.setattr(output_module.os, "fstat", statuses.__getitem__)
+    regular = _fake_stat(stat.S_IFREG | 0o600, 51)
+    monkeypatch.setattr(output_module.os, "fstat", {50: root_status}.__getitem__)
+    monkeypatch.setattr(output_module.os, "stat", lambda *_a, **_k: regular)
 
-    with pytest.raises(OutputError, match="parents must be real directories"):
+    with pytest.raises(OSError, match="parents must be real directories"):
         output_module._open_pinned_directories(tmp_path, Path("reports"))  # noqa: SLF001
-    assert closed == [51, 50]
+    assert closed == [50]
+
+    # A directory that becomes something else between stat and open.
+    descriptors = iter((60, 61))
+    closed.clear()
+    directory = _fake_stat(stat.S_IFDIR | 0o700, 61)
+    monkeypatch.setattr(
+        output_module.os, "fstat", {60: root_status, 61: regular}.__getitem__
+    )
+    monkeypatch.setattr(output_module.os, "stat", lambda *_a, **_k: directory)
+
+    with pytest.raises(OSError, match="parents must be real directories"):
+        output_module._open_pinned_directories(tmp_path, Path("reports"))  # noqa: SLF001
+    assert closed == [61, 60]
 
 
 def test_posix_pinned_temporary_allocation_retries_only_collisions(
@@ -478,7 +497,7 @@ def test_posix_pinned_atomic_orders_validation_replacement_and_cleanup(
     expected = _fake_stat(stat.S_IFREG | 0o600, 81)
     chain = SimpleNamespace(
         parent_descriptor=9,
-        validate=lambda: events.append("validate"),
+        changed_binding=lambda: events.append("validate"),
         close=lambda: events.append("close"),
     )
     monkeypatch.setattr(

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import csv
 import hashlib
 import json
@@ -14,7 +13,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import urlsplit
 
 from pyahead._human_text import SafeArgumentParser, escape_terminal_text
@@ -22,8 +21,6 @@ from pyahead._human_text import SafeArgumentParser, escape_terminal_text
 _CORPUS_SIZE = 100
 _MAX_REPORT_BYTES = 64 * 1024 * 1024
 _ACCEPTED_SCAN_EXITS = frozenset({0, 3})
-_SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
-
 _REPOSITORY_DERIVED_FIELDS = ("match_kind", "path", "subject")
 
 _WORKSHEET_FIELDS = (
@@ -44,6 +41,21 @@ _WORKSHEET_FIELDS = (
     "regression_fixture",
 )
 
+if not __package__:  # run as a file: make the `scripts` package importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts import _common  # noqa: E402
+
+if TYPE_CHECKING:
+    import argparse
+
+_SPREADSHEET_FORMULA_PREFIXES = _common.SPREADSHEET_FORMULA_PREFIXES
+_positive_float = _common.positive_float
+_positive_integer = _common.positive_integer
+_scan_environment = _common.scan_environment
+_sha256_path = _common.sha256_path
+_spreadsheet_safe = _common.spreadsheet_safe
+_write_atomic = _common.write_atomic
+
 
 class CorpusError(RuntimeError):
     """Raised when corpus evidence would be incomplete or untrustworthy."""
@@ -58,30 +70,6 @@ class RepositorySpec:
     checkout: Path
     baseline_python: str
     horizon_python: str
-
-
-def _positive_integer(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as error:
-        message = "value must be an integer"
-        raise argparse.ArgumentTypeError(message) from error
-    if parsed <= 0:
-        message = "value must be greater than zero"
-        raise argparse.ArgumentTypeError(message)
-    return parsed
-
-
-def _positive_float(value: str) -> float:
-    try:
-        parsed = float(value)
-    except ValueError as error:
-        message = "value must be a number"
-        raise argparse.ArgumentTypeError(message) from error
-    if parsed <= 0:
-        message = "value must be greater than zero"
-        raise argparse.ArgumentTypeError(message)
-    return parsed
 
 
 def _repository_url(value: object) -> str:
@@ -282,22 +270,9 @@ def _verify_checkout(
         raise CorpusError(message)
 
 
-def _scan_environment() -> dict[str, str]:
-    environment = os.environ.copy()
-    for name in ("PYTHONHOME", "PYTHONPATH"):
-        environment.pop(name, None)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    return environment
-
-
 def _read_limited(stream: TextIO) -> str:
-    stream.flush()
-    size = stream.tell()
-    if size > _MAX_REPORT_BYTES:
-        message = "corpus scan report exceeded the 64 MiB review limit"
-        raise CorpusError(message)
-    stream.seek(0)
-    return stream.read()
+    message = "corpus scan report exceeded the 64 MiB review limit"
+    return _common.read_limited(stream, _MAX_REPORT_BYTES, CorpusError(message))
 
 
 def _run_scan(spec: RepositorySpec, *, timeout: float) -> tuple[int, float, Any]:
@@ -487,19 +462,6 @@ def _sample_rank(repository: dict[str, Any], finding: dict[str, Any]) -> str:
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
-def _spreadsheet_safe(value: str) -> str:
-    """Neutralize a value a spreadsheet would otherwise evaluate as a formula.
-
-    Repository-derived worksheet columns carry attacker-chosen text: a scanned
-    file may legally be named `=cmd|...` or `-x`. The review worksheet is opened
-    in a spreadsheet, so such a value is quoted with a leading apostrophe rather
-    than left to execute.
-    """
-    if value.startswith(_SPREADSHEET_FORMULA_PREFIXES):
-        return f"'{value}"
-    return value
-
-
 def _worksheet_rows(
     repositories: list[dict[str, Any]],
     *,
@@ -539,26 +501,6 @@ def _worksheet_rows(
         for field in _REPOSITORY_DERIVED_FIELDS:
             rows[-1][field] = _spreadsheet_safe(rows[-1][field])
     return rows
-
-
-def _write_atomic(path: Path, content: str) -> None:
-    destination = path.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".tmp",
-    )
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary_path.replace(destination)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
 
 
 def _render_worksheet(rows: list[dict[str, Any]], *, result_digest: str) -> str:
@@ -611,14 +553,6 @@ def _parser() -> argparse.ArgumentParser:
         help="maximum seconds for each checkout identity check (default: 30)",
     )
     return parser
-
-
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _verify_worksheet_identity(result_path: Path, worksheet_path: Path) -> None:

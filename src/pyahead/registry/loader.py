@@ -6,16 +6,17 @@ import math
 import os
 import stat
 from collections.abc import Iterator, Mapping
-from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path, PurePosixPath
-from typing import IO, Protocol, TypeAlias, cast
+from typing import IO, Any, Protocol, TypeAlias, cast
 
 import yaml
 
+from pyahead._fs.errors import NotAFilePathError, UnsafeEntryError
+from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.model import (
     CoverageDisposition,
     CoverageManifest,
@@ -25,6 +26,10 @@ from pyahead.model import (
 )
 from pyahead.registry.schema import (
     RegistryError,
+    _build_coverage_manifest,
+    _build_manifest,
+    _build_release_metadata,
+    _build_rule,
     parse_coverage_manifest,
     parse_manifest,
     parse_release_metadata,
@@ -48,16 +53,12 @@ CanonicalValue: TypeAlias = (
 )
 
 
-class _UniqueKeySafeLoader(yaml.SafeLoader):
-    """Safe YAML loader reserved for strict registry construction."""
-
-
 class _DuplicateKeyError(yaml.YAMLError):
     """Raised before a YAML mapping can overwrite an earlier key."""
 
 
 def _construct_unique_mapping(
-    loader: _UniqueKeySafeLoader,
+    loader: yaml.SafeLoader,
     node: yaml.nodes.MappingNode,
 ) -> Iterator[dict[object, object]]:
     """Construct one mapping while rejecting recursive duplicate keys."""
@@ -77,9 +78,26 @@ def _construct_unique_mapping(
         mapping[key] = loader.construct_object(value_node, deep=False)
 
 
-_UniqueKeySafeLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_unique_mapping,
+def _unique_key_loader(base: type) -> type[yaml.SafeLoader]:
+    """Return a safe loader on ``base`` that rejects duplicate mapping keys."""
+    loader = cast(
+        "type[yaml.SafeLoader]",
+        type("_UniqueKeySafeLoader", (base,), {"__module__": __name__}),
+    )
+    loader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        _construct_unique_mapping,
+    )
+    return loader
+
+
+# libyaml's parser is several times faster than the pure-Python one on the
+# bundled registry. Both compose the same node graph, which the graph limits
+# below check before anything is constructed, and scalars resolve through the
+# same Python resolver either way. Without libyaml (Pyodide, some wheels) the
+# pure-Python parser is used.
+_UniqueKeySafeLoader = _unique_key_loader(
+    cast("type", getattr(yaml, "CSafeLoader", yaml.SafeLoader))
 )
 
 
@@ -137,17 +155,6 @@ def _validate_file_status(
         raise RegistryError(message)
 
 
-def _validate_opened_file(
-    expected: os.stat_result,
-    opened: os.stat_result,
-    relative_path: PurePosixPath,
-) -> None:
-    _validate_file_status(opened, relative_path)
-    if not os.path.samestat(expected, opened):
-        message = "registry entry changed while it was being opened"
-        raise RegistryError(message)
-
-
 @dataclass(frozen=True)
 class _PackageFiles:
     """Registry files installed as package resources."""
@@ -166,6 +173,13 @@ class _PackageFiles:
             raise
         except (OSError, UnicodeError, ValueError) as error:
             raise RegistryError(_read_error(relative_path)) from error
+
+
+def _still_same_entry(expected: os.stat_result, path: Path) -> bool:
+    try:
+        return os.path.samestat(expected, path.lstat())
+    except OSError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -197,52 +211,32 @@ class _PathFiles:
                 raise RegistryError(message)
         return status
 
-    @staticmethod
-    def _read_descriptor(
-        descriptor: int,
-        relative_path: PurePosixPath,
-    ) -> str:
-        data = bytearray()
-        while len(data) <= MAX_REGISTRY_FILE_BYTES:
-            chunk = os.read(
-                descriptor,
-                min(_READ_CHUNK_BYTES, MAX_REGISTRY_FILE_BYTES + 1 - len(data)),
+    def read_text(self, relative_path: PurePosixPath) -> str:
+        """Read one bounded regular file that no symlink leads to."""
+        candidate = self.root.joinpath(*relative_path.parts)
+        expected = self._checked_status(candidate)
+        _validate_file_status(expected, relative_path)
+        try:
+            data = read_rooted_bytes(
+                self.root, Path(*relative_path.parts), MAX_REGISTRY_FILE_BYTES
             )
-            if not chunk:
-                break
-            data.extend(chunk)
-        if len(data) > MAX_REGISTRY_FILE_BYTES:
+        except RootedReadTooLargeError as error:
             message = (
                 f"registry file {relative_path.as_posix()!r} exceeds the "
                 f"{MAX_REGISTRY_FILE_BYTES}-byte limit"
             )
-            raise RegistryError(message)
-        return _decode_registry_bytes(bytes(data), relative_path)
-
-    def read_text(self, relative_path: PurePosixPath) -> str:
-        """Read one bounded regular file through its verified descriptor."""
-        candidate = self.root.joinpath(*relative_path.parts)
-        descriptor = -1
-        expected_status = self._checked_status(candidate)
-        _validate_file_status(expected_status, relative_path)
-        try:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(self.root)
-            flags = os.O_RDONLY
-            for name in ("O_BINARY", "O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
-                flags |= cast("int", getattr(os, name, 0))
-            descriptor = os.open(candidate, flags)
-            opened_status = os.fstat(descriptor)
-            _validate_opened_file(expected_status, opened_status, relative_path)
-            return self._read_descriptor(descriptor, relative_path)
-        except RegistryError:
-            raise
-        except (OSError, UnicodeError, ValueError) as error:
+            raise RegistryError(message) from error
+        except (UnsafeEntryError, NotAFilePathError) as error:
+            message = "registry entry changed while it was being opened"
+            raise RegistryError(message) from error
+        except (OSError, RuntimeError, ValueError) as error:
             raise RegistryError(_read_error(relative_path)) from error
-        finally:
-            if descriptor >= 0:
-                with suppress(OSError):
-                    os.close(descriptor)
+        # The rooted read refuses links and in-read changes; this catches a
+        # replacement between the checks above and that read.
+        if not _still_same_entry(expected, candidate):
+            message = "registry entry changed while it was being opened"
+            raise RegistryError(message)
+        return _decode_registry_bytes(data, relative_path)
 
 
 def _validate_yaml_graph(node: yaml.nodes.Node, context: str) -> None:
@@ -272,7 +266,11 @@ def _validate_yaml_graph(node: yaml.nodes.Node, context: str) -> None:
 
 
 def _load_mapping(text: str, context: str) -> Mapping[str, object]:
-    loader = _UniqueKeySafeLoader(text)
+    try:
+        loader = _UniqueKeySafeLoader(text)
+    except yaml.YAMLError as error:
+        message = f"{context} is not valid YAML"
+        raise RegistryError(message) from error
     try:
         node = loader.get_single_node()
         if node is None:
@@ -481,8 +479,14 @@ def _validate_coverage(
         raise RegistryError(message)
 
 
-def _read_registry(source: Path | None) -> Registry:
-    """Read and validate a registry from the package data or a given path."""
+def _read_registry(source: Path | None, *, check_schemas: bool) -> Registry:
+    """Read a registry from the package data or a given path.
+
+    With ``check_schemas`` every file is checked against its published JSON
+    Schema before it is built; without, the files are trusted to conform,
+    which only the bundled registry is (the test suite and
+    ``pyahead registry validate`` check it). Semantic checks run either way.
+    """
     if source is None:
         files: _RegistryFiles = _PackageFiles(resources.files("pyahead.data.registry"))
         manifest_path = _MANIFEST_NAME
@@ -492,7 +496,12 @@ def _read_registry(source: Path | None) -> Registry:
     manifest_data = _load_mapping(
         files.read_text(manifest_path), manifest_path.as_posix()
     )
-    manifest = parse_manifest(manifest_data, manifest_path.as_posix())
+    context = manifest_path.as_posix()
+    manifest = (
+        parse_manifest(manifest_data, context)
+        if check_schemas
+        else _build_manifest(cast("dict[str, Any]", manifest_data), context)
+    )
     contents: dict[PurePosixPath, object] = {manifest_path: manifest_data}
     releases: tuple[PythonRelease, ...]
     if manifest.release_path is None:
@@ -503,16 +512,22 @@ def _read_registry(source: Path | None) -> Registry:
             manifest.release_path.as_posix(),
         )
         contents[manifest.release_path] = release_data
-        releases = parse_release_metadata(
-            release_data,
-            manifest.release_path.as_posix(),
+        context = manifest.release_path.as_posix()
+        releases = (
+            parse_release_metadata(release_data, context)
+            if check_schemas
+            else _build_release_metadata(cast("dict[str, Any]", release_data), context)
         )
     identities: dict[str, str] = {}
     rules: list[Rule] = []
     for path in manifest.rule_paths:
         rule_data = _load_mapping(files.read_text(path), path.as_posix())
         contents[path] = rule_data
-        rule = parse_rule(rule_data, path.as_posix())
+        rule = (
+            parse_rule(rule_data, path.as_posix())
+            if check_schemas
+            else _build_rule(cast("dict[str, Any]", rule_data), path.as_posix())
+        )
         _validate_identity(rule, path, identities)
         rules.append(rule)
 
@@ -525,7 +540,13 @@ def _read_registry(source: Path | None) -> Registry:
     for path in manifest.coverage_paths:
         coverage_data = _load_mapping(files.read_text(path), path.as_posix())
         contents[path] = coverage_data
-        coverage.append(parse_coverage_manifest(coverage_data, path.as_posix()))
+        coverage.append(
+            parse_coverage_manifest(coverage_data, path.as_posix())
+            if check_schemas
+            else _build_coverage_manifest(
+                cast("dict[str, Any]", coverage_data), path.as_posix()
+            )
+        )
     _validate_coverage(tuple(coverage), tuple(rules))
 
     return Registry(
@@ -540,7 +561,17 @@ def _read_registry(source: Path | None) -> Registry:
 
 @lru_cache(maxsize=1)
 def _bundled_registry() -> Registry:
-    return _read_registry(None)
+    return _read_registry(None, check_schemas=False)
+
+
+def validate_registry(source: Path | None = None) -> Registry:
+    """Load a registry after checking every file against its JSON Schema.
+
+    ``load_registry`` already does this for an explicit source. For the
+    bundled registry it skips the schema pass, which would cost every scan
+    about as much as reading the registry; this is how to ask for it.
+    """
+    return _read_registry(source, check_schemas=True)
 
 
 def load_registry(source: Path | None = None) -> Registry:
@@ -549,14 +580,14 @@ def load_registry(source: Path | None = None) -> Registry:
     The bundled registry is read once per process and reused. It is immutable
     data inside the installed package, so it cannot change while the process
     runs, and `Registry` is frozen, so callers cannot alter what they share.
-    Reading it costs roughly 0.6 seconds, which is unnoticeable for a single
-    CLI run and dominates everything else wherever the analyser is called more
-    than once in a process — most sharply under WebAssembly, where it was the
-    whole cost of a scan.
+    Reading it costs about 0.3 seconds with libyaml (more without), which is
+    unnoticeable for a single CLI run and dominates everything else wherever
+    the analyser is called more than once in a process — most sharply under
+    WebAssembly, where it was the whole cost of a scan.
 
     An explicit source is never cached. It is a file on disk that can change,
     and a caller who names one is asking for what is there now.
     """
     if source is not None:
-        return _read_registry(source)
+        return _read_registry(source, check_schemas=True)
     return _bundled_registry()

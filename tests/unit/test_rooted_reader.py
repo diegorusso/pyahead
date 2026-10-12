@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-import pyahead._rooted_reader as rooted_reader_module
-import pyahead._windows_output as windows_output_module
-from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
+import pyahead._fs.rooted as rooted_reader_module
+import pyahead._fs.windows as windows_output_module
+from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 
 _MULTI_CHUNK_BYTES = 70_000
 

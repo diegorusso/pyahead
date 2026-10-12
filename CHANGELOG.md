@@ -4,6 +4,59 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
+## Unreleased
+
+### Added
+
+- `UvResolverAdapter(run_process=...)` accepts the function that runs uv
+  (a `ProcessRunner`, now exported from `pyahead.dependencies`), so a
+  library caller or a test can stand in for the bounded, contained default.
+- `pyahead.registry.validate_registry(source=None)` loads a registry after
+  checking every file against its published schema; `pyahead registry
+  validate` uses it.
+- `docs/schema/registry-releases-v1.json` describes `releases.yaml`.
+
+### Changed
+
+- `pyahead.dependencies` is a package of private modules. Every public name
+  imports from `pyahead.dependencies` as before and keeps that `__module__`,
+  but a static type checker now names the defining module in its messages,
+  for example `pyahead.dependencies._report.DependencyReport`.
+- Scans are faster, with byte-identical reports: on the development host
+  (aarch64) 100 real standard-library modules take 22.9 s instead of
+  48.4 s, and start-up plus one file 0.96 s instead of 1.70 s. Registry
+  YAML is parsed with libyaml when PyYAML has it, and the analyser computes
+  qualified names, parents and source positions only for the nodes and
+  files that need them.
+- `--evidence` files are checked against the published
+  `docs/schema/evidence-v1.json` itself (with `jsonschema`, now a runtime
+  dependency) before they are read, instead of by a parallel hand-written
+  parser. Valid evidence is read exactly as before. An invalid file is still
+  rejected, with a message naming the field and the rule it breaks, for
+  example `evidence document.warnings[0].location.path: has an invalid
+  format`; the wording of these messages differs from 0.6.0.
+- A `--registry` directory is checked against the published registry schemas
+  (`docs/schema/registry-*.json`, now including
+  `registry-releases-v1.json` for `releases.yaml`) before its cross-file and
+  timeline rules, instead of by a parallel hand-written parser. The same
+  files are accepted and rejected as before (checked on 98,000 mutated
+  documents against the 0.6.0 parser); error messages name the field and
+  the rule, for example `cpython/CPY0001.yaml.timeline[0].python must be a
+  Python minor such as '3.13'`, and differ in wording from 0.6.0. The
+  bundled registry is checked against the schemas by
+  `pyahead registry validate`, not on every scan.
+
+### Fixed
+
+- One Python file whose dedent matched no outer indentation level (for
+  example `if x:` / `    a = 1` / `  b = 2`) aborted the whole scan with
+  `PYA9000` (exit 4). It is now that file's `PYA1003` parse diagnostic and an
+  incomplete scan (exit 3), and every other file is still analysed.
+- A `--registry` file containing a control character such as `\x07` was an
+  internal error (`PYA9000`, exit 4) when PyYAML ran without libyaml; it is
+  now invalid input naming the file (exit 2), like every other malformed
+  registry YAML.
+
 ## 0.6.0 - 2026-10-11
 
 The repository becomes a GitHub Action that uploads findings to code

@@ -7,19 +7,15 @@ offline against the manifest and wheelhouse this module produces.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
-import os
-import re
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.error import URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
@@ -48,6 +44,20 @@ _MANIFEST_FIELDS = (
     "sha256",
     "version",
 )
+
+if not __package__:  # run as a file: make the `scripts` package importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts import _common  # noqa: E402
+
+if TYPE_CHECKING:
+    import argparse
+
+_normalized_name = _common.normalized_name
+_positive_float = _common.positive_float
+_sha256_path = _common.sha256_path
+_write_atomic_bytes = _common.write_atomic_bytes
+_write_atomic_text = _common.write_atomic
+
 # A ranked project whose current release has neither an sdist nor a wheel any
 # supported interpreter on this host can install (a Windows-only extension,
 # say) cannot be part of a Linux sweep at all. Acquisition records it under
@@ -103,22 +113,6 @@ class PackageEntry:
     sha256: str
     requires_python: str | None
     is_wheel: bool
-
-
-def _positive_float(value: str) -> float:
-    try:
-        parsed = float(value)
-    except ValueError as error:
-        message = "value must be a number"
-        raise argparse.ArgumentTypeError(message) from error
-    if parsed <= 0:
-        message = "value must be greater than zero"
-        raise argparse.ArgumentTypeError(message)
-    return parsed
-
-
-def _normalized_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _https_url(value: object, *, field: str) -> str:
@@ -323,54 +317,6 @@ def _select_release_file(document: object, *, name: str) -> dict[str, Any]:
         "is_wheel": chosen.get("packagetype") == "bdist_wheel",
         "requires_python": requires_python,
     }
-
-
-def _write_atomic_text(path: Path, content: str) -> None:
-    destination = path.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".tmp",
-    )
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary_path.replace(destination)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
-
-
-def _write_atomic_bytes(path: Path, content: bytes) -> None:
-    destination = path.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".tmp",
-    )
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary_path.replace(destination)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
-
-
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _acquire_package(

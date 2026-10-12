@@ -1,4 +1,4 @@
-"""End-to-end CLI tests for M8 dependency compatibility evidence."""
+"""End-to-end CLI tests for dependency compatibility evidence."""
 
 import gzip
 import io

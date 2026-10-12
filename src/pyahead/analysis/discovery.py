@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from pathspec import GitIgnoreSpec, PathSpec
 from pathspec.pattern import Pattern
 
-from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
+from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_SOURCE_ENTRIES = 100_000

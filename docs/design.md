@@ -392,13 +392,14 @@ pyahead/
 │   └── pyahead/
 │       ├── __init__.py
 │       ├── __main__.py
+│       ├── _fs/                     # hardened rooted reads and atomic writes
 │       ├── _human_text.py
-│       ├── _rooted_reader.py
-│       ├── _windows_output.py
+│       ├── _schema_check.py         # checks inputs against published schemas
+│       ├── _toml.py
 │       ├── baseline.py
 │       ├── cli.py
 │       ├── config.py
-│       ├── dependencies.py          # separate dependency report pipeline
+│       ├── dependencies/            # separate dependency report pipeline
 │       ├── evidence.py              # pytest-warning artifact ingestion
 │       ├── model.py
 │       ├── output.py
@@ -409,6 +410,7 @@ pyahead/
 │       ├── analysis/
 │       │   ├── __init__.py
 │       │   ├── engine.py
+│       │   ├── findings.py
 │       │   ├── discovery.py
 │       │   ├── reachability.py
 │       │   ├── suppressions.py
@@ -437,12 +439,13 @@ pyahead/
 │   └── fixtures/
 │       └── rules/
 ├── scripts/
+│   ├── _common.py                   # helpers the scripts share
 │   ├── benchmark.py                 # performance-budget harness
 │   ├── corpus.py                    # Gate C corpus acquisition
 │   ├── install_smoke.py             # wheel/sdist install verification
 │   ├── pypi_corpus.py               # PyPI top-1000 manifest and acquisition
 │   ├── pypi_probe.py                # target-interpreter probe payload
-│   ├── pypi_validate.py             # provision, scan, and adjudicate
+│   ├── pypi_validate/               # provision, scan, and adjudicate
 │   └── pypi_report.py               # aggregate accuracy report and worksheet
 ├── CHANGELOG.md
 ├── LICENSE
@@ -473,11 +476,12 @@ Runtime dependencies should remain small and purposeful:
 | `packaging` | Python versions, specifiers, requirements, and markers. |
 | `PyYAML` | Safe loading of human-maintained registry records. |
 | `pathspec` | Gitignore-compatible file discovery. |
+| `jsonschema` | Checking `--registry` files and `--evidence` artifacts against the published schemas; imported only for those inputs, never by an ordinary scan. |
 
 Development dependencies:
 
 - Hatchling for wheel and sdist builds;
-- `jsonschema` for public schema validation;
+- `types-jsonschema` for checked schema access;
 - `pytest`, `pytest-cov`, and `pytest-xdist`;
 - `ruff` for lint and formatting;
 - `mypy` in strict mode and `types-PyYAML` for checked YAML access.
@@ -2390,11 +2394,13 @@ These do not block M0–M4 unless stated.
    release.~~ **Decided 13 September 2026: Apache-2.0, confirmed by the
    repository owner.** `LICENSE` carries the full Apache License 2.0 text,
    `pyproject.toml` declares `license = "Apache-2.0"` with `license-files`
-   pointing at it, and the OSI classifier matches. The four runtime
-   dependencies distribute compatibly: libcst and PyYAML are MIT, packaging is
-   Apache-2.0 or BSD-2-Clause, and pathspec is MPL-2.0, whose file-level
-   copyleft does not reach PyAhead's own sources because it is installed as a
-   separate distribution rather than incorporated.
+   pointing at it, and the OSI classifier matches. The runtime dependencies
+   distribute compatibly: libcst and PyYAML are MIT, packaging is Apache-2.0 or
+   BSD-2-Clause, and pathspec is MPL-2.0, whose file-level copyleft does not
+   reach PyAhead's own sources because it is installed as a separate
+   distribution rather than incorporated. jsonschema, added after 0.6.0, and
+   what it brings (referencing, rpds-py, attrs, jsonschema-specifications) are
+   all MIT.
 2. **Distribution-name availability:** ~~Verify `pyahead` on PyPI before
    publishing.~~ **Decided 13 September 2026: `pyahead` is available and will be
    registered by the repository owner.** Both `https://pypi.org/pypi/pyahead/json`

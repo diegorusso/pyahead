@@ -19,6 +19,7 @@ from pyahead.model import (
     ReleaseStatus,
 )
 from pyahead.registry import RegistryError, load_registry
+from pyahead.registry import loader as registry_loader
 from pyahead.registry.loader import MAX_REGISTRY_FILE_BYTES
 from pyahead.registry.presentation import render_rule_explanation
 from pyahead.registry.schema import (
@@ -332,6 +333,19 @@ def test_registry_rejects_duplicate_rule_keys_recursively(
         load_registry(registry)
 
 
+@pytest.mark.parametrize("character", ["\x07", "\x7f", "\x1b"])
+def test_registry_rejects_control_characters_as_invalid_yaml(
+    tmp_path: Path,
+    character: str,
+) -> None:
+    """A control character is invalid input, not an internal error."""
+    rule_text = (_BUNDLED_REGISTRY / "cpython/CPY0001.yaml").read_text(encoding="utf-8")
+    registry = _write_registry(tmp_path, rule_text + f'notes: "{character}"\n')
+
+    with pytest.raises(RegistryError, match="not valid YAML"):
+        load_registry(registry)
+
+
 def test_registry_rejects_missing_path(tmp_path: Path) -> None:
     """An absent explicit registry is invalid input."""
     with pytest.raises(RegistryError):
@@ -438,24 +452,24 @@ def test_registry_detects_file_replacement_between_check_and_open(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The opened descriptor must identify the same file that was validated."""
+    """The file read must be the file whose path and type were checked."""
     rule_text = (_BUNDLED_REGISTRY / "cpython/CPY0001.yaml").read_text(encoding="utf-8")
     registry = _write_registry(tmp_path / "root", rule_text)
     rule_path = registry / "cpython/CPY0001.yaml"
     replacement = tmp_path / "replacement.yaml"
     replacement.write_text(rule_text, encoding="utf-8")
-    original_open = os.open
+    original_read = registry_loader.read_rooted_bytes
     replaced = False
 
-    def replace_before_open(path: Path, flags: int) -> int:
+    def replace_before_read(root: Path, path: Path, limit: int) -> bytes:
         nonlocal replaced
-        if Path(path) == rule_path and not replaced:
+        if path.name == rule_path.name and not replaced:
             replaced = True
             rule_path.replace(tmp_path / "original.yaml")
             replacement.replace(rule_path)
-        return original_open(path, flags)
+        return original_read(root, path, limit)
 
-    monkeypatch.setattr(os, "open", replace_before_open)
+    monkeypatch.setattr(registry_loader, "read_rooted_bytes", replace_before_read)
 
     with pytest.raises(RegistryError, match="changed while it was being opened"):
         load_registry(registry)
@@ -482,7 +496,7 @@ def test_registry_rejects_invalid_rule_values(
     original: str,
     replacement: str,
 ) -> None:
-    """M1 validates every rule value it consumes before analysis."""
+    """The loader validates every rule value it consumes before analysis."""
     rule_text = (_BUNDLED_REGISTRY / "cpython/CPY0001.yaml").read_text(encoding="utf-8")
     assert original in rule_text
     registry_dir = _write_registry(
@@ -553,6 +567,9 @@ def test_generated_json_schemas_are_current_and_closed(tmp_path: Path) -> None:
     ).read_text(encoding="utf-8")
     assert generated[1].read_text(encoding="utf-8") == (
         schema_directory / "registry-rule-v1.json"
+    ).read_text(encoding="utf-8")
+    assert (tmp_path / "registry-releases-v1.json").read_text(encoding="utf-8") == (
+        schema_directory / "registry-releases-v1.json"
     ).read_text(encoding="utf-8")
     rule_schema = registry_rule_json_schema()
     assert rule_schema["additionalProperties"] is False
@@ -756,3 +773,44 @@ def test_automation_metadata_is_exposed_without_invoking_tools(
     assert automation.tool is AutomationTool(tool)
     assert automation.rule == "UP999"
     assert f"Automation metadata: {tool} UP999 (not invoked)" in explanation
+
+
+_HOSTILE_YAML = (
+    "a: 1\na: 2\n",
+    "a: &x [1]\nb: *x\n",
+    "a: &x {b: *x}\n",
+    "? [1]\n: 2\n",
+    "a: !!python/object:os.system x\n",
+    "a: [" * 70 + "]" * 70 + "\n",
+    "a: 1\n---\nb: 2\n",
+    "a: '\x07'\n",
+    "\t- a\n",
+    "",
+    "- 1\n",
+    "a: 1.0e+3\nb: 0o17\nc: 2026-10-11\nd: ~\ne: yes\n",
+)
+
+
+def _outcome(loader_base: type, text: str) -> tuple[str, object]:
+    loader = registry_loader._unique_key_loader(loader_base)  # noqa: SLF001
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(registry_loader, "_UniqueKeySafeLoader", loader)
+        try:
+            return ("ok", registry_loader._load_mapping(text, "document"))  # noqa: SLF001
+        except RegistryError as error:
+            return ("error", str(error))
+
+
+@pytest.mark.skipif(not yaml.__with_libyaml__, reason="libyaml is not available")
+@pytest.mark.parametrize("text", _HOSTILE_YAML)
+def test_libyaml_and_pure_parsers_agree_on_hostile_documents(text: str) -> None:
+    """The faster parser accepts and rejects exactly what the pure one does."""
+    assert _outcome(yaml.CSafeLoader, text) == _outcome(yaml.SafeLoader, text)
+
+
+@pytest.mark.skipif(not yaml.__with_libyaml__, reason="libyaml is not available")
+def test_libyaml_and_pure_parsers_agree_on_the_bundled_registry() -> None:
+    """Every bundled document constructs identically under both parsers."""
+    for path in sorted(_BUNDLED_REGISTRY.rglob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        assert _outcome(yaml.CSafeLoader, text) == _outcome(yaml.SafeLoader, text), path

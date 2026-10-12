@@ -267,7 +267,7 @@ class PerFileIgnore:
 
 @dataclass(frozen=True)
 class EffectiveConfiguration:
-    """Resolved M4 scan configuration exposed in every report."""
+    """Resolved scan configuration exposed in every report."""
 
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
@@ -478,12 +478,12 @@ class Rule:
 
     @property
     def on_deprecation(self) -> Impact:
-        """Retain the M1 convenience accessor for deprecation impact."""
+        """Return the impact authored for the rule's deprecation event."""
         return self.impact_for(ChangeEventKind.DEPRECATED)
 
     @property
     def on_removal(self) -> Impact:
-        """Retain the M1 convenience accessor for removal impact."""
+        """Return the impact authored for the rule's removal event."""
         return self.impact_for(ChangeEventKind.REMOVED)
 
     @property
@@ -743,7 +743,7 @@ class ScanReport:
 
     @property
     def gate_failed(self) -> bool:
-        """Evaluate unsuppressed findings against the configured M4 gate."""
+        """Evaluate unsuppressed findings against the configured gate."""
         if self.configuration.fail_on is FailOn.NEVER:
             return False
         thresholds = {

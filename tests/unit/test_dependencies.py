@@ -1,4 +1,4 @@
-"""M8 dependency target, metadata, and resolver boundary tests."""
+"""Dependency target, metadata, and resolver boundary tests."""
 
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ import pytest
 from jsonschema import Draft202012Validator
 from packaging.requirements import Requirement
 
-import pyahead._rooted_reader as rooted_reader_module
-import pyahead._windows_output as windows_output_module
-import pyahead.dependencies as dependency_module
+import pyahead._fs.rooted as rooted_reader_module
+import pyahead._fs.windows as windows_output_module
+from pyahead._fs.errors import EntryChangedError
 from pyahead._human_text import escape_terminal_text
 from pyahead.config import load_project_configuration
 from pyahead.dependencies import (
@@ -49,6 +49,8 @@ from pyahead.dependencies import (
     render_dependency_text,
 )
 from pyahead.model import ConfigurationError, ExitCode
+from tests._dependency_internals import internals as dependency_module
+from tests._dependency_internals import patch_dependency
 
 if TYPE_CHECKING:
     import threading
@@ -401,7 +403,7 @@ def test_direct_requires_dist_urls_stop_before_resolver_execution(
         raise AssertionError(message)
 
     monkeypatch.setattr(dependency_module.shutil, "which", forbidden_process)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", forbidden_process)
+    patch_dependency(monkeypatch, "_run_bounded_process", forbidden_process)
     report = collect_dependency_report(
         _configuration(metadata_paths=(wheel,), resolve=True, network=True),
         root=tmp_path,
@@ -1336,8 +1338,7 @@ def test_resolver_timeout_is_incomplete_not_resolution_failure(
         raise subprocess.TimeoutExpired(cast("list[str]", args[0]), timeout=2.5)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         (),
@@ -1984,13 +1985,12 @@ def test_closed_offline_artifact_absence_is_not_a_constraint_conflict(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     configuration = _configuration(
         metadata_paths=metadata_paths,
         requirements=requirements,
         resolve=True,
     )
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         configuration,
         _target(),
         artifacts,
@@ -2077,8 +2077,7 @@ def test_closed_artifact_absence_rejects_unreviewed_uv_evidence(
         return subprocess.CompletedProcess(command, returncode, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("missing==1.0",),
@@ -2120,8 +2119,7 @@ def test_closed_artifact_absence_rejects_ambiguous_failure_streams(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("missing==1.0",),
@@ -2169,8 +2167,7 @@ def test_closed_artifact_absence_rejects_nonempty_stdout(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("missing==1.0",),
@@ -2205,8 +2202,7 @@ def test_resolver_version_rejects_stderr_contamination(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(requirements=("demo==1.0",), resolve=True, network=True),
         _target(),
         (),
@@ -2243,8 +2239,7 @@ def test_closed_artifact_absence_binds_requested_extras(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("missing[speed]==1.0",),
@@ -2285,8 +2280,7 @@ def test_closed_wrong_abi_evidence_binds_hint_version(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             metadata_paths=(wheel,),
             requirements=("demo==1.0",),
@@ -2374,7 +2368,7 @@ def test_missing_offline_distribution_is_a_complete_report_finding(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     wheel = tmp_path / "other-1.0-py3-none-any.whl"
     _wheel(wheel)
     report = collect_dependency_report(
@@ -2422,7 +2416,7 @@ def test_artifact_failure_closes_only_the_root_named_by_uv(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         _configuration(
             metadata_paths=(other,),
@@ -2529,8 +2523,7 @@ def test_resolver_requires_constraints_and_versioned_solver_evidence(
         return subprocess.CompletedProcess(command, returncode, "", stderr)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             requirements=("demo==1.0", "demo==2.0"),
             resolve=True,
@@ -2574,7 +2567,7 @@ def test_resolver_conflict_does_not_complete_unrelated_evidence(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         _configuration(
             metadata_paths=(other,),
@@ -2631,7 +2624,7 @@ def test_resolver_conflict_closes_only_the_group_named_by_uv(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         _configuration(
             requirements=(
@@ -2698,7 +2691,6 @@ def test_offline_library_range_absence_remains_unverified(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
     wheel = tmp_path / "other-1.0-py3-none-any.whl"
     _wheel(wheel)
     artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
@@ -2711,7 +2703,7 @@ def test_offline_library_range_absence_remains_unverified(
         ),
         project_kind=DependencyProjectKind.LIBRARY,
     )
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         configuration,
         _target(),
         artifacts,
@@ -3231,8 +3223,7 @@ def test_resolver_does_not_promote_broad_failure_text_to_unsatisfiable(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         (),
@@ -3268,8 +3259,7 @@ def test_resolver_success_names_exact_versions_and_matching_metadata(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(metadata_paths=(wheel,), resolve=True),
         _target(),
         artifacts,
@@ -3317,8 +3307,7 @@ def test_resolver_provenance_names_only_the_selected_platform_artifact(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(
             target=_target(tags=("cp312-cp312-manylinux_2_17_x86_64",)),
             metadata_paths=(linux, windows),
@@ -3364,8 +3353,7 @@ def test_online_selection_is_not_attributed_to_same_version_local_metadata(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(metadata_paths=(wheel,), resolve=True, network=True),
         _target(),
         artifacts,
@@ -3598,7 +3586,7 @@ def test_target_model_and_scalar_validators_reject_closed_world_errors(
         dependency_module._parse_requirements(  # noqa: SLF001
             ("demo==1.*",), DependencyProjectKind.APPLICATION
         )
-    monkeypatch.setattr(dependency_module, "_MAX_REQUIREMENTS", 1)
+    patch_dependency(monkeypatch, "_MAX_REQUIREMENTS", 1)
     with pytest.raises(ConfigurationError, match="too many"):
         dependency_module._parse_requirements(  # noqa: SLF001
             ("one>=1", "two>=2"), DependencyProjectKind.LIBRARY
@@ -3831,7 +3819,7 @@ def test_wheel_archive_structure_and_identity_fail_closed(
         oversized,
         [("large-1.0.dist-info/METADATA", _metadata(identity=("large", "1.0")))],
     )
-    monkeypatch.setattr(dependency_module, "_MAX_METADATA_BYTES", 8)
+    patch_dependency(monkeypatch, "_MAX_METADATA_BYTES", 8)
     _artifacts, issues = inspect_dependency_metadata((oversized,), root=tmp_path)
     assert "size limit" in issues[0].message
 
@@ -3849,7 +3837,7 @@ def test_zip_limits_are_checked_before_member_objects_are_created(
             ("demo-1.0/PKG-INFO", _metadata()),
         ],
     )
-    monkeypatch.setattr(dependency_module, "_MAX_ARCHIVE_MEMBERS", 1)
+    patch_dependency(monkeypatch, "_MAX_ARCHIVE_MEMBERS", 1)
 
     def forbidden_zipfile(*_args: object, **_kwargs: object) -> None:
         message = "member objects must not be created before the count preflight"
@@ -3873,7 +3861,7 @@ def test_zip_expanded_size_is_checked_before_decompression(
         archive_path,
         [("demo-1.0/PKG-INFO", _metadata())],
     )
-    monkeypatch.setattr(dependency_module, "_MAX_ARCHIVE_EXPANDED_BYTES", 1)
+    patch_dependency(monkeypatch, "_MAX_ARCHIVE_EXPANDED_BYTES", 1)
 
     def forbidden_zipfile(*_args: object, **_kwargs: object) -> None:
         message = "oversized expanded data must fail before decompression"
@@ -3897,7 +3885,7 @@ def test_zip_directory_size_is_checked_before_member_objects_are_created(
         archive_path,
         [("demo-1.0/PKG-INFO", _metadata())],
     )
-    monkeypatch.setattr(dependency_module, "_MAX_ZIP_CENTRAL_DIRECTORY_BYTES", 1)
+    patch_dependency(monkeypatch, "_MAX_ZIP_CENTRAL_DIRECTORY_BYTES", 1)
 
     def forbidden_zipfile(*_args: object, **_kwargs: object) -> None:
         message = "the central-directory byte cap must precede ZipFile"
@@ -4034,8 +4022,8 @@ def test_wheel_secondary_metadata_read_reuses_zip_preflight(
         checked.append(len(raw))
         original(raw)
 
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_check_zip_archive_limits",
         record_preflight,
     )
@@ -4066,13 +4054,13 @@ def test_tar_limits_are_incremental_and_bound_expanded_data(
         raise AssertionError(message)
 
     monkeypatch.setattr(tarfile.TarFile, "getmembers", forbidden_getmembers)
-    monkeypatch.setattr(dependency_module, "_MAX_ARCHIVE_MEMBERS", 1)
+    patch_dependency(monkeypatch, "_MAX_ARCHIVE_MEMBERS", 1)
     artifacts, issues = inspect_dependency_metadata((archive_path,), root=tmp_path)
     assert artifacts == ()
     assert "too many members" in issues[0].message
 
-    monkeypatch.setattr(dependency_module, "_MAX_ARCHIVE_MEMBERS", 100)
-    monkeypatch.setattr(dependency_module, "_MAX_ARCHIVE_EXPANDED_BYTES", 512)
+    patch_dependency(monkeypatch, "_MAX_ARCHIVE_MEMBERS", 100)
+    patch_dependency(monkeypatch, "_MAX_ARCHIVE_EXPANDED_BYTES", 512)
     artifacts, issues = inspect_dependency_metadata((archive_path,), root=tmp_path)
     assert artifacts == ()
     assert "expanded data" in issues[0].message
@@ -4087,8 +4075,8 @@ def test_tar_expansion_budget_is_shared_across_all_artifacts(
     second = tmp_path / "second-1.0.tar.gz"
     _sdist(first)
     _sdist(second)
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_MAX_TOTAL_ARCHIVE_EXPANDED_BYTES",
         20_000,
     )
@@ -4140,7 +4128,7 @@ def test_tar_declared_and_control_sizes_fail_before_payload_consumption(
     oversized_member.size = 2_048
     member_archive = tmp_path / "member-1.0.tar.gz"
     member_archive.write_bytes(gzip.compress(oversized_member.tobuf() + b"\0" * 1_024))
-    monkeypatch.setattr(dependency_module, "_MAX_ARCHIVE_EXPANDED_BYTES", 1_024)
+    patch_dependency(monkeypatch, "_MAX_ARCHIVE_EXPANDED_BYTES", 1_024)
 
     artifacts, issues = inspect_dependency_metadata((member_archive,), root=tmp_path)
 
@@ -4152,8 +4140,8 @@ def test_tar_declared_and_control_sizes_fail_before_payload_consumption(
     control.size = 65
     control_archive = tmp_path / "control-1.0.tar.gz"
     control_archive.write_bytes(gzip.compress(control.tobuf() + b"\0" * 1_024))
-    monkeypatch.setattr(dependency_module, "_MAX_ARCHIVE_EXPANDED_BYTES", 4_096)
-    monkeypatch.setattr(dependency_module, "_MAX_TAR_CONTROL_BYTES", 64)
+    patch_dependency(monkeypatch, "_MAX_ARCHIVE_EXPANDED_BYTES", 4_096)
+    patch_dependency(monkeypatch, "_MAX_TAR_CONTROL_BYTES", 64)
 
     artifacts, issues = inspect_dependency_metadata((control_archive,), root=tmp_path)
 
@@ -4344,7 +4332,7 @@ def test_metadata_input_paths_and_duplicate_selection_fail_closed(
     with pytest.raises(ConfigurationError, match="duplicate paths"):
         inspect_dependency_metadata((selected, selected), root=tmp_path)
 
-    monkeypatch.setattr(dependency_module, "_MAX_ARTIFACT_BYTES", 1)
+    patch_dependency(monkeypatch, "_MAX_ARTIFACT_BYTES", 1)
     with pytest.raises(ConfigurationError, match="exceeds"):
         inspect_dependency_metadata((selected,), root=tmp_path)
 
@@ -4739,12 +4727,11 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
     assert "unavailable" in result.reason
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(
-        dependency_module,
-        "_run_bounded_process",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", ""),
-    )
-    result = UvResolverAdapter().resolve(
+
+    def unidentified(*_args: object, **_kwargs: object) -> object:
+        return subprocess.CompletedProcess([], 1, "", "")
+
+    result = UvResolverAdapter(run_process=unidentified).resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
     assert result.status is ResolutionStatus.UNVERIFIED
@@ -4753,8 +4740,7 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
     def os_error(*_args: object, **_kwargs: object) -> None:
         raise OSError
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", os_error)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=os_error).resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
     assert result.status is ResolutionStatus.UNVERIFIED
@@ -4765,8 +4751,7 @@ def test_resolver_unavailable_identity_and_execution_failures_are_incomplete(
         reason = "invalid start byte"
         raise UnicodeDecodeError(codec, b"\xff", 0, 1, reason)
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", decoding_error)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=decoding_error).resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
     assert result.status is ResolutionStatus.UNVERIFIED
@@ -4794,8 +4779,7 @@ def test_resolver_malformed_success_output_is_incomplete(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True), _target(), (), root=tmp_path
     )
     assert result.status is ResolutionStatus.UNVERIFIED
@@ -4818,8 +4802,7 @@ def test_resolver_revalidates_artifact_bytes_before_use(
         message = "changed artifacts must fail before resolver execution"
         raise AssertionError(message)
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", forbidden_process)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=forbidden_process).resolve(
         _configuration(metadata_paths=(wheel,), resolve=True),
         _target(),
         artifacts,
@@ -4864,8 +4847,7 @@ def test_resolver_duplicate_filenames_and_online_local_artifacts_are_explicit(
         output.write_text(_pylock(("demo", "1.0", selected.as_uri())), encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         artifacts,
@@ -5446,8 +5428,7 @@ def test_malformed_pylock_file_url_is_unverified_not_an_internal_error(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=fake_run).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         (),
@@ -5469,9 +5450,9 @@ def test_dependency_configuration_rejects_an_input_changed_during_read(
 
     def changed_input(*_args: object) -> bytes:
         message = "input file changed while being read"
-        raise OSError(message)
+        raise EntryChangedError(message)
 
-    monkeypatch.setattr(dependency_module, "read_rooted_bytes", changed_input)
+    patch_dependency(monkeypatch, "read_rooted_bytes", changed_input)
 
     with pytest.raises(ConfigurationError, match="changed while being read"):
         load_dependency_configuration(tmp_path)
@@ -5484,11 +5465,11 @@ def test_dependency_input_and_resolver_resources_are_bounded(
     """Counts, aggregate bytes, child streams, and pylock size all fail closed."""
     project = tmp_path / "pyproject.toml"
     project.write_text(_configuration_toml(), encoding="utf-8")
-    monkeypatch.setattr(dependency_module, "_MAX_CONFIGURATION_BYTES", 1)
+    patch_dependency(monkeypatch, "_MAX_CONFIGURATION_BYTES", 1)
     with pytest.raises(ConfigurationError, match="configuration exceeds"):
         load_dependency_configuration(tmp_path)
 
-    monkeypatch.setattr(dependency_module, "_MAX_CONFIGURATION_BYTES", 2 * 1024 * 1024)
+    patch_dependency(monkeypatch, "_MAX_CONFIGURATION_BYTES", 2 * 1024 * 1024)
     project.write_text("value = " + "[" * 500 + "0" + "]" * 500, encoding="utf-8")
     with pytest.raises(ConfigurationError, match="nesting is too deep"):
         load_dependency_configuration(tmp_path)
@@ -5499,11 +5480,11 @@ def test_dependency_input_and_resolver_resources_are_bounded(
     with pytest.raises(ConfigurationError, match="not a regular file"):
         load_dependency_configuration(tmp_path, config_directory)
 
-    monkeypatch.setattr(dependency_module, "_MAX_METADATA_INPUTS", 0)
+    patch_dependency(monkeypatch, "_MAX_METADATA_INPUTS", 0)
     with pytest.raises(ConfigurationError, match="too many"):
         load_dependency_configuration(tmp_path)
 
-    monkeypatch.setattr(dependency_module, "_MAX_METADATA_INPUTS", 1)
+    patch_dependency(monkeypatch, "_MAX_METADATA_INPUTS", 1)
     project.write_text(
         _configuration_toml().replace(
             'extras = ["speed"]',
@@ -5517,17 +5498,17 @@ def test_dependency_input_and_resolver_resources_are_bounded(
     project.write_text(_configuration_toml(), encoding="utf-8")
     wheel = tmp_path / "demo-1.0-py3-none-any.whl"
     _wheel(wheel)
-    monkeypatch.setattr(dependency_module, "_MAX_METADATA_TOTAL_BYTES", 1)
+    patch_dependency(monkeypatch, "_MAX_METADATA_TOTAL_BYTES", 1)
     with pytest.raises(ConfigurationError, match="aggregate input byte"):
         inspect_dependency_metadata((wheel,), root=tmp_path)
 
     result_path = tmp_path / "pylock.toml"
     result_path.write_text("too large", encoding="utf-8")
-    monkeypatch.setattr(dependency_module, "_MAX_RESOLVER_RESULT_BYTES", 1)
+    patch_dependency(monkeypatch, "_MAX_RESOLVER_RESULT_BYTES", 1)
     with pytest.raises(ValueError, match="size limit"):
         dependency_module._read_resolver_result(result_path)  # noqa: SLF001
 
-    monkeypatch.setattr(dependency_module, "_MAX_RESOLVER_PACKAGES", 0)
+    patch_dependency(monkeypatch, "_MAX_RESOLVER_PACKAGES", 0)
     with pytest.raises(ValueError, match="too many packages"):
         dependency_module._resolved_packages(  # noqa: SLF001
             _pylock(("demo", "1.0", "file:///demo.whl")),
@@ -5550,7 +5531,7 @@ def test_dependency_input_and_resolver_resources_are_bounded(
             wheelhouse=tmp_path,
         )
 
-    monkeypatch.setattr(dependency_module, "_MAX_RESOLVER_STREAM_BYTES", 16)
+    patch_dependency(monkeypatch, "_MAX_RESOLVER_STREAM_BYTES", 16)
     with pytest.raises(RuntimeError):
         dependency_module._run_bounded_process(  # noqa: SLF001
             [
@@ -5610,8 +5591,8 @@ def test_windows_resolver_stays_suspended_until_job_assignment(
         assignment_observed = job is not None
         return job
 
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_create_windows_kill_job",
         delayed_assignment,
     )
@@ -5668,7 +5649,7 @@ def test_interruption_before_containment_cleans_the_suspended_process(
         dependency_module.signal.raise_signal(dependency_module.signal.SIGINT)
         return cast("subprocess.Popen[bytes]", process)
 
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
     monkeypatch.setattr(dependency_module.subprocess, "Popen", fake_popen)
 
     containment = dependency_module._ProcessContainment()  # noqa: SLF001
@@ -5734,15 +5715,15 @@ def test_interruption_during_containment_handoff_closes_the_assigned_job(
             raise KeyboardInterrupt
         return interrupt_return
 
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
     monkeypatch.setattr(dependency_module.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_create_windows_kill_job",
         lambda _process: assigned_job,
     )
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_resume_windows_primary_thread",
         lambda _process_id: True,
     )
@@ -5750,8 +5731,8 @@ def test_interruption_during_containment_handoff_closes_the_assigned_job(
     def close_job(handle: int) -> None:
         closed_jobs.append(handle)
 
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_close_windows_job",
         close_job,
     )
@@ -5827,9 +5808,9 @@ def test_bounded_process_setup_failures_terminate_containment(
             raise KeyboardInterrupt
         return interrupt_after_start
 
-    monkeypatch.setattr(dependency_module, "_start_contained_process", fake_start)
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(monkeypatch, "_start_contained_process", fake_start)
+    patch_dependency(
+        monkeypatch,
         "_ProcessContainment",
         lambda: containment,
     )
@@ -5927,8 +5908,8 @@ def test_windows_job_and_suspended_thread_apis_are_fail_closed(
         pid = process_id
         _handle = process_handle
 
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
-    monkeypatch.setattr(dependency_module, "_windows_kernel32", lambda: kernel)
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "_windows_kernel32", lambda: kernel)
     process = cast("subprocess.Popen[bytes]", FakeProcess())
 
     created_job = dependency_module._create_windows_kill_job(process)  # noqa: SLF001
@@ -6026,7 +6007,7 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
         "your requirements are unsatisfiable.\n"
     )
 
-    def resolve_with(diagnostic: str) -> None:
+    def uv_failing_with(diagnostic: str) -> UvResolverAdapter:
         calls = 0
 
         def fake_run(
@@ -6038,10 +6019,9 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
                 return subprocess.CompletedProcess(command, 0, "uv 0.12.0\n", "")
             return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
-        monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+        return UvResolverAdapter(run_process=fake_run)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    resolve_with(range_diagnostic)
     library = replace(
         _configuration(
             requirements=("demo<1", "demo>=2"),
@@ -6050,7 +6030,9 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
         ),
         project_kind=DependencyProjectKind.LIBRARY,
     )
-    range_result = UvResolverAdapter().resolve(library, _target(), (), root=tmp_path)
+    range_result = uv_failing_with(range_diagnostic).resolve(
+        library, _target(), (), root=tmp_path
+    )
     assert range_result.status is ResolutionStatus.RESOLUTION_FAILED
     assert range_result.complete is True
 
@@ -6060,13 +6042,12 @@ def test_range_conflicts_are_proven_but_solver_only_transitive_text_is_not(
     _wheel(other)
     artifacts, issues = inspect_dependency_metadata((demo, other), root=tmp_path)
     assert issues == ()
-    resolve_with(transitive_diagnostic)
     application = _configuration(
         metadata_paths=(demo, other),
         requirements=("demo==1.0", "other==2.0"),
         resolve=True,
     )
-    transitive_result = UvResolverAdapter().resolve(
+    transitive_result = uv_failing_with(transitive_diagnostic).resolve(
         application, _target(), artifacts, root=tmp_path
     )
     assert transitive_result.status is ResolutionStatus.UNVERIFIED
@@ -6100,7 +6081,7 @@ def test_arbitrary_equality_spelling_retains_a_common_witness(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         replace(
             _configuration(
@@ -6142,7 +6123,7 @@ def test_complete_library_range_conflict_is_a_report_finding(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     configuration = replace(
         _configuration(
             requirements=("demo<1", "demo>=2"),
@@ -6270,7 +6251,7 @@ def test_machine_document_recomputes_unrelated_rows_beside_a_conflict(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         replace(
             _configuration(
@@ -6404,7 +6385,7 @@ def test_machine_document_uses_target_selected_mixed_root_evidence(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         _configuration(
             metadata_paths=(wheel, secondary),
@@ -6450,7 +6431,7 @@ def test_machine_document_rejects_changed_failed_root_version(
         )
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         _configuration(
             metadata_paths=(other,),
@@ -6523,7 +6504,7 @@ def test_machine_document_rejects_changed_conflict_constraints(
         return subprocess.CompletedProcess(command, 1, "", diagnostic)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         replace(
             _configuration(
@@ -6611,7 +6592,7 @@ def test_machine_document_recomputes_disagreeing_artifact_assessments(
         return subprocess.CompletedProcess(command, 1, "", _WRONG_ABI_DIAGNOSTIC)
 
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
+    patch_dependency(monkeypatch, "_run_bounded_process", fake_run)
     report = collect_dependency_report(
         _configuration(
             metadata_paths=(first, second),
@@ -7112,12 +7093,12 @@ def test_direct_dependency_operations_enforce_resource_caps_first(
     assert issues == ()
 
     with monkeypatch.context() as context:
-        context.setattr(dependency_module, "_MAX_METADATA_INPUTS", 0)
+        patch_dependency(context, "_MAX_METADATA_INPUTS", 0)
         with pytest.raises(ConfigurationError, match="too many"):
             assess_dependency_metadata(artifacts, target=_target(), extras=())
 
     with monkeypatch.context() as context:
-        context.setattr(dependency_module, "_MAX_EXTRAS", 0)
+        patch_dependency(context, "_MAX_EXTRAS", 0)
         with pytest.raises(ConfigurationError, match="too many"):
             assess_dependency_metadata(
                 (),
@@ -7126,7 +7107,7 @@ def test_direct_dependency_operations_enforce_resource_caps_first(
             )
 
     with monkeypatch.context() as context:
-        context.setattr(dependency_module, "_MAX_REQUIREMENTS", 0)
+        patch_dependency(context, "_MAX_REQUIREMENTS", 0)
         invalid = replace(
             _configuration(metadata_paths=(wheel,)),
             requirements=("not a requirement",),
@@ -7146,7 +7127,7 @@ def test_marker_evaluation_products_and_aggregate_declarations_are_bounded(
     assert issues == ()
 
     with monkeypatch.context() as context:
-        context.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 1)
+        patch_dependency(context, "_MAX_MARKER_EVALUATIONS", 1)
         configuration = replace(
             _configuration(
                 metadata_paths=(wheel,),
@@ -7158,7 +7139,7 @@ def test_marker_evaluation_products_and_aggregate_declarations_are_bounded(
             collect_dependency_report(configuration, root=tmp_path)
 
     with monkeypatch.context() as context:
-        context.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 2)
+        patch_dependency(context, "_MAX_MARKER_EVALUATIONS", 2)
         configuration = replace(
             _configuration(metadata_paths=(wheel,)),
             extras=("first", "second"),
@@ -7167,7 +7148,7 @@ def test_marker_evaluation_products_and_aggregate_declarations_are_bounded(
             collect_dependency_report(configuration, root=tmp_path)
 
     with monkeypatch.context() as context:
-        context.setattr(dependency_module, "_MAX_METADATA_REQUIREMENTS", 0)
+        patch_dependency(context, "_MAX_METADATA_REQUIREMENTS", 0)
         with pytest.raises(ConfigurationError, match="aggregate Requires-Dist"):
             assess_dependency_metadata(artifacts, target=_target(), extras=())
         with pytest.raises(ConfigurationError, match="aggregate Requires-Dist"):
@@ -7194,7 +7175,7 @@ def test_rejected_containers_still_consume_the_aggregate_requirement_budget(
                 )
             ],
         )
-    monkeypatch.setattr(dependency_module, "_MAX_METADATA_REQUIREMENTS", 1)
+    patch_dependency(monkeypatch, "_MAX_METADATA_REQUIREMENTS", 1)
 
     with pytest.raises(ConfigurationError, match="aggregate Requires-Dist"):
         inspect_dependency_metadata(paths, root=tmp_path)
@@ -7215,7 +7196,7 @@ def test_transitive_extra_fixed_point_shares_the_runtime_marker_budget(
             'child==1.0; extra == "e2"',
         ),
     )
-    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 4)
+    patch_dependency(monkeypatch, "_MAX_MARKER_EVALUATIONS", 4)
 
     with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
         collect_dependency_report(
@@ -7234,7 +7215,7 @@ def test_dependency_correlation_products_share_the_runtime_work_budget(
     """Artifact-by-constraint scans cannot bypass the evaluation work cap."""
     wheel = tmp_path / "demo-1.0-py3-none-any.whl"
     _wheel(wheel)
-    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 3)
+    patch_dependency(monkeypatch, "_MAX_MARKER_EVALUATIONS", 3)
 
     with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
         collect_dependency_report(
@@ -7293,12 +7274,11 @@ def test_direct_resolver_calls_share_the_runtime_work_budget(
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "uv 0.12.6\n", "")
 
-    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 5)
+    patch_dependency(monkeypatch, "_MAX_MARKER_EVALUATIONS", 5)
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
 
     with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
-        UvResolverAdapter().resolve(
+        UvResolverAdapter(run_process=fake_run).resolve(
             _configuration(
                 metadata_paths=(wheel,),
                 requirements=("demo==1.0", "demo==2.0"),
@@ -7333,17 +7313,16 @@ def test_aggregate_requested_extras_share_the_runtime_work_budget(
         message = "requested-extra work must fail before artifact assessment"
         raise AssertionError(message)
 
-    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", 7)
+    patch_dependency(monkeypatch, "_MAX_MARKER_EVALUATIONS", 7)
     monkeypatch.setattr(dependency_module.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", fake_run)
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "assess_dependency_metadata",
         forbidden_assessment,
     )
 
     with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
-        UvResolverAdapter().resolve(
+        UvResolverAdapter(run_process=fake_run).resolve(
             _configuration(
                 metadata_paths=(wheel,),
                 requirements=("demo[e0,e1,e2,e3]==1.0",),
@@ -7367,7 +7346,7 @@ def test_wheel_tag_selection_shares_the_runtime_work_budget(
     artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
     assert issues == ()
     tags = tuple(f"py3-none-manylinux_2_{minor}_x86_64" for minor in range(5, 18))
-    monkeypatch.setattr(dependency_module, "_MAX_MARKER_EVALUATIONS", len(tags))
+    patch_dependency(monkeypatch, "_MAX_MARKER_EVALUATIONS", len(tags))
 
     with pytest.raises(ConfigurationError, match="marker-evaluation budget"):
         assess_dependency_metadata(
@@ -7462,7 +7441,7 @@ def test_core_metadata_provides_extra_count_is_bounded_before_propagation(
     """A large transitive-extra surface cannot amplify marker evaluation."""
     wheel = tmp_path / "demo-1.0-py3-none-any.whl"
     _wheel(wheel, provides_extra=("first", "second"))
-    monkeypatch.setattr(dependency_module, "_MAX_EXTRAS", 1)
+    patch_dependency(monkeypatch, "_MAX_EXTRAS", 1)
 
     artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
 
@@ -7486,8 +7465,7 @@ def test_resolver_executable_inside_the_scanned_root_is_never_run(
         message = "repository-local resolver must not execute"
         raise AssertionError(message)
 
-    monkeypatch.setattr(dependency_module, "_run_bounded_process", forbidden_process)
-    result = UvResolverAdapter().resolve(
+    result = UvResolverAdapter(run_process=forbidden_process).resolve(
         _configuration(resolve=True, network=True),
         _target(),
         (),
@@ -7583,7 +7561,7 @@ def test_windows_resolver_environment_and_kernel_loader_are_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Windows-only resolver state is isolated and loader absence fails closed."""
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
     monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
 
     environment = dependency_module._resolver_environment(tmp_path)  # noqa: SLF001
@@ -7646,11 +7624,11 @@ def test_windows_job_creation_rejects_invalid_or_unassigned_handles(
             self.__dict__["_handle"] = handle
 
     process = cast("subprocess.Popen[bytes]", FakeProcess(80))
-    monkeypatch.setattr(dependency_module, "_windows_kernel32", lambda: kernel)
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("posix"))
+    patch_dependency(monkeypatch, "_windows_kernel32", lambda: kernel)
+    patch_dependency(monkeypatch, "os", _os_with_name("posix"))
     assert dependency_module._create_windows_kill_job(process) is None  # noqa: SLF001
 
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
     assert dependency_module._create_windows_kill_job(process) is None  # noqa: SLF001
     assert "CloseHandle" not in calls
 
@@ -7742,7 +7720,7 @@ def test_windows_thread_discovery_and_resume_fail_closed(
         "Thread32Next",
     ):
         setattr(kernel, name, FakeFunction(name))
-    monkeypatch.setattr(dependency_module, "_windows_kernel32", lambda: kernel)
+    patch_dependency(monkeypatch, "_windows_kernel32", lambda: kernel)
 
     assert dependency_module._windows_process_thread_ids(process_id) == ()  # noqa: SLF001
     assert "Thread32First" not in calls
@@ -7753,15 +7731,15 @@ def test_windows_thread_discovery_and_resume_fail_closed(
     ) == (20,)
     assert calls[-1] == "CloseHandle"
 
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_windows_process_thread_ids",
         lambda _process_id: (),
     )
     assert dependency_module._resume_windows_primary_thread(process_id) is False  # noqa: SLF001
 
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_windows_process_thread_ids",
         lambda _process_id: (20,),
     )
@@ -7803,11 +7781,11 @@ def test_process_containment_is_idempotent(
     def close_failure(_handle: int) -> None:
         raise OSError
 
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
-    monkeypatch.setattr(dependency_module, "_close_windows_job", close_failure)
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "_close_windows_job", close_failure)
     terminated_jobs: list[int] = []
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_terminate_windows_job",
         terminated_jobs.append,
     )
@@ -7826,8 +7804,8 @@ def test_process_containment_is_idempotent(
     def terminate_failure(_handle: int) -> None:
         raise OSError
 
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_terminate_windows_job",
         terminate_failure,
     )
@@ -7843,7 +7821,7 @@ def test_process_containment_is_idempotent(
     def failed_killpg(_process_id: int, _signal: int) -> None:
         raise OSError
 
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("posix"))
+    patch_dependency(monkeypatch, "os", _os_with_name("posix"))
     monkeypatch.setattr(
         dependency_module.os,
         "killpg",
@@ -7860,7 +7838,7 @@ def test_process_containment_retries_after_interrupted_job_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An interrupted Job disposal cannot poison the later cleanup retry."""
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
     process = _FakeCleanupProcess()
     containment = dependency_module._ProcessContainment()  # noqa: SLF001
     containment.attach_process(cast("subprocess.Popen[bytes]", process))
@@ -7877,8 +7855,8 @@ def test_process_containment_retries_after_interrupted_job_cleanup(
             raise KeyboardInterrupt
         return True
 
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_dispose_windows_job",
         interrupted_once,
     )
@@ -7902,9 +7880,9 @@ def test_preownership_cleanup_terminates_and_closes_process_resources(
 ) -> None:
     """Pre-handoff cleanup terminates the Job tree and closes process streams."""
     closed_jobs: list[int] = []
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
+    patch_dependency(
+        monkeypatch,
         "_close_windows_job",
         closed_jobs.append,
     )
@@ -7921,11 +7899,11 @@ def test_preownership_cleanup_terminates_and_closes_process_resources(
     def close_failure(_handle: int) -> None:
         raise OSError
 
-    monkeypatch.setattr(dependency_module, "_close_windows_job", close_failure)
+    patch_dependency(monkeypatch, "_close_windows_job", close_failure)
     terminated_jobs: list[int] = []
     terminated_jobs.clear()
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_terminate_windows_job",
         terminated_jobs.append,
     )
@@ -7944,7 +7922,7 @@ def test_preownership_cleanup_finishes_after_interrupted_job_disposal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Interrupted Job disposal is retried before re-raising the signal."""
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
     process = _FakeCleanupProcess()
     expected_attempts = 2
     attempts = 0
@@ -7956,8 +7934,8 @@ def test_preownership_cleanup_finishes_after_interrupted_job_disposal(
             raise KeyboardInterrupt
         return True
 
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_dispose_windows_job",
         interrupted_disposal,
     )
@@ -7986,7 +7964,7 @@ def test_preownership_cleanup_retries_an_interrupted_root_kill(
             if self.kills == 1:
                 raise KeyboardInterrupt
 
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
     process = InterruptedKillProcess()
     expected_kills = 2
 
@@ -8018,7 +7996,7 @@ def test_preownership_cleanup_retries_an_interrupted_process_group_kill(
 
     fake_os = _os_with_name("posix")
     fake_os.killpg = interrupted_killpg
-    monkeypatch.setattr(dependency_module, "os", fake_os)
+    patch_dependency(monkeypatch, "os", fake_os)
 
     with pytest.raises(KeyboardInterrupt):
         dependency_module._cleanup_uncontained_process(  # noqa: SLF001
@@ -8097,8 +8075,8 @@ def test_failed_process_start_cleans_before_and_after_ownership(
     process = FakeProcess()
     cleanups: list[tuple[object, int | None]] = []
     containment = dependency_module._ProcessContainment()  # noqa: SLF001
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(
+        monkeypatch,
         "_cleanup_uncontained_process",
         lambda candidate, job: cleanups.append((candidate, job)),
     )
@@ -8108,7 +8086,7 @@ def test_failed_process_start_cleans_before_and_after_ownership(
     assert cleanups == [(process, 70)]
 
     closed_jobs: list[int] = []
-    monkeypatch.setattr(dependency_module, "_close_windows_job", closed_jobs.append)
+    patch_dependency(monkeypatch, "_close_windows_job", closed_jobs.append)
     containment.attach_process(cast("subprocess.Popen[bytes]", process))
     dependency_module._cleanup_failed_process_start(  # noqa: SLF001
         cast("subprocess.Popen[bytes]", process), 71, containment
@@ -8153,19 +8131,19 @@ def test_windows_contained_start_rejects_uncontained_or_unresumable_children(
         return cast("int | None", job_result)
 
     closed_jobs: list[int] = []
-    monkeypatch.setattr(dependency_module, "os", _os_with_name("nt"))
+    patch_dependency(monkeypatch, "os", _os_with_name("nt"))
     monkeypatch.setattr(
         dependency_module.subprocess,
         "Popen",
         lambda *_args, **_kwargs: cast("subprocess.Popen[bytes]", process),
     )
-    monkeypatch.setattr(dependency_module, "_create_windows_kill_job", create_job)
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(monkeypatch, "_create_windows_kill_job", create_job)
+    patch_dependency(
+        monkeypatch,
         "_resume_windows_primary_thread",
         lambda _process_id: False,
     )
-    monkeypatch.setattr(dependency_module, "_close_windows_job", closed_jobs.append)
+    patch_dependency(monkeypatch, "_close_windows_job", closed_jobs.append)
 
     with pytest.raises(ValueError, match="unable to contain"):
         dependency_module._start_contained_process(  # noqa: SLF001
@@ -8297,9 +8275,9 @@ def test_bounded_process_requires_both_output_pipes(
         return process
 
     cleaned: list[object] = []
-    monkeypatch.setattr(dependency_module, "_start_contained_process", fake_start)
-    monkeypatch.setattr(
-        dependency_module,
+    patch_dependency(monkeypatch, "_start_contained_process", fake_start)
+    patch_dependency(
+        monkeypatch,
         "_finish_process_readers",
         lambda owned, *_args: not cleaned.append(owned),
     )
@@ -8309,3 +8287,30 @@ def test_bounded_process_requires_both_output_pipes(
             ["resolver"], cwd=tmp_path, env={}, timeout=1
         )
     assert cleaned == [process]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")
+def test_resolver_output_must_be_a_regular_file_in_the_workspace(
+    tmp_path: Path,
+) -> None:
+    """A linked or non-file pylock.toml is refused before it is parsed."""
+    outside = tmp_path / "outside.toml"
+    outside.write_text('lock-version = "1.0"\n', encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    linked = workspace / "pylock.toml"
+    try:
+        linked.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is not permitted")
+    with pytest.raises(ValueError, match="not a regular file"):
+        dependency_module._read_resolver_result(linked)  # noqa: SLF001
+
+    linked.unlink()
+    linked.mkdir()
+    with pytest.raises(ValueError, match="not a regular file"):
+        dependency_module._read_resolver_result(linked)  # noqa: SLF001
+
+    linked.rmdir()
+    with pytest.raises(ValueError, match="unable to read resolver output"):
+        dependency_module._read_resolver_result(linked)  # noqa: SLF001

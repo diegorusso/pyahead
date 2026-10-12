@@ -1,4 +1,4 @@
-"""End-to-end acceptance tests for M3 timelines and reachability."""
+"""End-to-end acceptance tests for timelines and reachability."""
 
 import json
 from pathlib import Path

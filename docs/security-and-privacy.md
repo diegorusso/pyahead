@@ -304,7 +304,7 @@ evidence belong in separately access-controlled Gate C records, not corpus JSON.
 
 ## Repo-internal PyPI validation
 
-`scripts/pypi_validate.py run` is the one tool in this repository that
+`python -m scripts.pypi_validate run` is the one tool in this repository that
 installs and imports arbitrary third-party code, deliberately crossing the
 [default scan boundary](#default-scan-boundary) that every other command
 (including the corpus runner above) upholds. It is a repo-internal precision
@@ -337,9 +337,9 @@ each artifact, and receive exact-commit hosted evidence on supported operating
 systems. Published files are immutable; a faulty artifact is yanked and
 replaced only by a new version.
 
-GitHub Actions use read-only repository contents by default. Release
-publication is not automatic in the M6 workflow and remains an explicit
-maintainer action. Do not place package-index tokens in configuration, command
+GitHub Actions use read-only repository contents by default. Publishing a
+release to PyPI waits for an explicit maintainer approval in the release
+workflow. Do not place package-index tokens in configuration, command
 history, logs, reports, or corpus manifests.
 
 ## Vulnerability reporting

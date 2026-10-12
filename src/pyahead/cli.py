@@ -4,9 +4,9 @@ import os
 import sys
 from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 
 from pyahead import __version__
 from pyahead._human_text import SafeArgumentParser, escape_terminal_text
@@ -15,6 +15,7 @@ from pyahead.analysis.discovery import DiscoveryError
 from pyahead.baseline import render_baseline
 from pyahead.config import resolve_project_root
 from pyahead.dependencies import (
+    DependencyReport,
     collect_dependency_report,
     load_dependency_configuration,
     render_dependency_json,
@@ -29,7 +30,7 @@ from pyahead.model import (
     ScanReport,
 )
 from pyahead.output import OutputError, write_text_atomic
-from pyahead.registry import RegistryError, load_registry
+from pyahead.registry import RegistryError, load_registry, validate_registry
 from pyahead.registry.presentation import (
     render_registry_coverage,
     render_registry_list,
@@ -42,6 +43,8 @@ from pyahead.reporting import (
     render_text,
 )
 from pyahead.versions import InvalidPythonMinorError
+
+_T = TypeVar("_T")
 
 
 def _registry_source_options(parser: ArgumentParser) -> None:
@@ -468,126 +471,140 @@ def _validate_evidence_arguments(arguments: Namespace) -> None:
         raise ConfigurationError(message)
 
 
+@dataclass(frozen=True)
+class _Failed:
+    """A command that ended in an expected or internal error."""
+
+    code: int
+
+
+_SCAN_INPUT_ERRORS: tuple[type[Exception], ...] = (
+    ConfigurationError,
+    DiscoveryError,
+    InvalidPythonMinorError,
+    OutputError,
+    RegistryError,
+)
+
+
+def _guarded(
+    work: Callable[[], _T],
+    invalid_input: tuple[type[Exception], ...],
+) -> _T | _Failed:
+    """Run one command's work, mapping failures to the CLI's exit codes.
+
+    An ``invalid_input`` error is reported as exit 2; anything else is the
+    reserved internal error, exit 4. Output the command writes afterwards
+    stays outside, so a closed pipe is not mistaken for an internal error.
+    """
+    try:
+        return work()
+    except invalid_input as error:
+        _write_error(error)
+        return _Failed(int(ExitCode.INVALID_INPUT))
+    except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
+        sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
+        return _Failed(int(ExitCode.INTERNAL_ERROR))
+
+
+def _check(
+    arguments: Namespace,
+    on_file: Callable[[FileProgress], None] | None,
+) -> ScanReport:
+    _validate_evidence_arguments(arguments)
+    request = replace(_scan_request(arguments), on_file=on_file)
+    report = scan(request)
+    if arguments.evidence:
+        report = merge_evidence(
+            report,
+            arguments.evidence,
+            root=request.root,
+            source_commit=resolve_source_commit(arguments.source_commit),
+        )
+    rendered = _render_check(arguments, report)
+    _write_output(
+        rendered,
+        _root_bounded_output_path(arguments.output, request.root, label="report"),
+        root=request.root,
+    )
+    if arguments.output_format == "text" and arguments.quiet:
+        _write_scan_diagnostics(report)
+    return report
+
+
 def _run_check(
     arguments: Namespace,
     on_file: Callable[[FileProgress], None] | None = None,
 ) -> int:
-    try:
-        _validate_evidence_arguments(arguments)
-        request = replace(_scan_request(arguments), on_file=on_file)
-        report = scan(request)
-        if arguments.evidence:
-            report = merge_evidence(
-                report,
-                arguments.evidence,
-                root=request.root,
-                source_commit=resolve_source_commit(arguments.source_commit),
-            )
-        rendered = _render_check(arguments, report)
-        _write_output(
-            rendered,
-            _root_bounded_output_path(
-                arguments.output,
-                request.root,
-                label="report",
-            ),
-            root=request.root,
-        )
-        if arguments.output_format == "text" and arguments.quiet:
-            _write_scan_diagnostics(report)
-    except (
-        ConfigurationError,
-        DiscoveryError,
-        InvalidPythonMinorError,
-        OutputError,
-        RegistryError,
-    ) as error:
-        _write_error(error)
-        return int(ExitCode.INVALID_INPUT)
-    except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
-        sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
-        return int(ExitCode.INTERNAL_ERROR)
-
+    outcome = _guarded(lambda: _check(arguments, on_file), _SCAN_INPUT_ERRORS)
+    if isinstance(outcome, _Failed):
+        return outcome.code
     if arguments.verbose:
-        _write_verbose_configuration(report)
-    return int(report.exit_code)
+        _write_verbose_configuration(outcome)
+    return int(outcome.exit_code)
+
+
+def _create_baseline(arguments: Namespace) -> ScanReport | int:
+    request = _scan_request(arguments)
+    report = scan(request)
+    _write_scan_diagnostics(report)
+    if report.counts.files_incomplete and not report.configuration.allow_incomplete:
+        sys.stderr.write(
+            "pyahead: error: refusing to create a baseline from an incomplete scan\n"
+        )
+        return int(ExitCode.INCOMPLETE)
+    if report.counts.files_incomplete:
+        sys.stderr.write(
+            "pyahead: warning: source scan is incomplete; baseline contains "
+            "only findings from analyzed files\n"
+        )
+    _write_output(
+        render_baseline(report),
+        _root_bounded_output_path(arguments.output, request.root, label="baseline"),
+        root=request.root,
+    )
+    return report
 
 
 def _run_baseline_create(arguments: Namespace) -> int:
-    try:
-        request = _scan_request(arguments)
-        report = scan(request)
-        _write_scan_diagnostics(report)
-        if report.counts.files_incomplete and not report.configuration.allow_incomplete:
-            sys.stderr.write(
-                "pyahead: error: refusing to create a baseline from an "
-                "incomplete scan\n"
-            )
-            return int(ExitCode.INCOMPLETE)
-        if report.counts.files_incomplete:
-            sys.stderr.write(
-                "pyahead: warning: source scan is incomplete; baseline contains "
-                "only findings from analyzed files\n"
-            )
-        rendered = render_baseline(report)
-        _write_output(
-            rendered,
-            _root_bounded_output_path(
-                arguments.output,
-                request.root,
-                label="baseline",
-            ),
-            root=request.root,
-        )
-    except (
-        ConfigurationError,
-        DiscoveryError,
-        InvalidPythonMinorError,
-        OutputError,
-        RegistryError,
-    ) as error:
-        _write_error(error)
-        return int(ExitCode.INVALID_INPUT)
-    except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
-        sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
-        return int(ExitCode.INTERNAL_ERROR)
+    outcome = _guarded(lambda: _create_baseline(arguments), _SCAN_INPUT_ERRORS)
+    if isinstance(outcome, _Failed):
+        return outcome.code
+    if isinstance(outcome, int):
+        return outcome
     if arguments.verbose:
-        _write_verbose_configuration(report)
+        _write_verbose_configuration(outcome)
     return int(ExitCode.SUCCESS)
 
 
+def _dependency_report(arguments: Namespace) -> DependencyReport:
+    root = resolve_project_root(Path.cwd(), arguments.root)
+    configuration = load_dependency_configuration(
+        root,
+        arguments.config,
+        network_override=arguments.network,
+        resolve_override=arguments.resolve,
+        timeout_override=arguments.timeout_seconds,
+    )
+    report = collect_dependency_report(configuration, root=root)
+    rendered = (
+        render_dependency_json(report)
+        if arguments.output_format == "json"
+        else render_dependency_text(report)
+    )
+    _write_output(
+        rendered,
+        _root_bounded_output_path(arguments.output, root, label="dependency report"),
+        root=root,
+    )
+    return report
+
+
 def _run_dependencies(arguments: Namespace) -> int:
-    try:
-        root = resolve_project_root(Path.cwd(), arguments.root)
-        configuration = load_dependency_configuration(
-            root,
-            arguments.config,
-            network_override=arguments.network,
-            resolve_override=arguments.resolve,
-            timeout_override=arguments.timeout_seconds,
-        )
-        report = collect_dependency_report(configuration, root=root)
-        rendered = (
-            render_dependency_json(report)
-            if arguments.output_format == "json"
-            else render_dependency_text(report)
-        )
-        _write_output(
-            rendered,
-            _root_bounded_output_path(
-                arguments.output,
-                root,
-                label="dependency report",
-            ),
-            root=root,
-        )
-    except (ConfigurationError, OutputError) as error:
-        _write_error(error)
-        return int(ExitCode.INVALID_INPUT)
-    except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
-        sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
-        return int(ExitCode.INTERNAL_ERROR)
-    return int(report.exit_code)
+    outcome = _guarded(
+        lambda: _dependency_report(arguments), (ConfigurationError, OutputError)
+    )
+    return outcome.code if isinstance(outcome, _Failed) else int(outcome.exit_code)
 
 
 def _selected_registry_source(arguments: Namespace) -> Path | None:
@@ -606,49 +623,47 @@ def _render_registry_coverage(registry: Registry) -> str:
     return render_registry_coverage(registry)
 
 
+def _registry_text(arguments: Namespace) -> str:
+    source = _selected_registry_source(arguments)
+    if arguments.registry_command == "validate":
+        registry = validate_registry(source)
+        noun = "rule" if len(registry.rules) == 1 else "rules"
+        return (
+            f"Registry {escape_terminal_text(registry.release)} "
+            f"({escape_terminal_text(registry.revision[:12])}): "
+            f"{len(registry.rules)} {noun} valid.\n"
+        )
+    registry = load_registry(source)
+    if arguments.registry_command == "list":
+        return render_registry_list(registry)
+    return _render_registry_coverage(registry)
+
+
 def _run_registry(arguments: Namespace) -> int:
-    try:
-        registry = load_registry(_selected_registry_source(arguments))
-        if arguments.registry_command == "validate":
-            noun = "rule" if len(registry.rules) == 1 else "rules"
-            rendered = (
-                f"Registry {escape_terminal_text(registry.release)} "
-                f"({escape_terminal_text(registry.revision[:12])}): "
-                f"{len(registry.rules)} {noun} valid.\n"
-            )
-        elif arguments.registry_command == "list":
-            rendered = render_registry_list(registry)
-        elif arguments.registry_command == "coverage":
-            rendered = _render_registry_coverage(registry)
-        else:
-            return int(ExitCode.INTERNAL_ERROR)
-    except RegistryError as error:
-        _write_error(error)
-        return int(ExitCode.INVALID_INPUT)
-    except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
-        sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
+    if arguments.registry_command not in {"validate", "list", "coverage"}:
         return int(ExitCode.INTERNAL_ERROR)
-    sys.stdout.write(rendered)
+    outcome = _guarded(lambda: _registry_text(arguments), (RegistryError,))
+    if isinstance(outcome, _Failed):
+        return outcome.code
+    sys.stdout.write(outcome)
     return int(ExitCode.SUCCESS)
 
 
+def _explanation(arguments: Namespace) -> str | None:
+    registry = load_registry(arguments.registry)
+    rule = registry.find_rule(arguments.rule_id)
+    return None if rule is None else render_rule_explanation(registry, rule)
+
+
 def _run_explain(arguments: Namespace) -> int:
-    try:
-        registry = load_registry(arguments.registry)
-        rule = registry.find_rule(arguments.rule_id)
-        if rule is not None:
-            rendered = render_rule_explanation(registry, rule)
-    except RegistryError as error:
-        _write_error(error)
-        return int(ExitCode.INVALID_INPUT)
-    except Exception:  # noqa: BLE001 - the CLI contract reserves exit code 4.
-        sys.stderr.write("pyahead: PYA9000: unexpected internal error\n")
-        return int(ExitCode.INTERNAL_ERROR)
-    if rule is None:
+    outcome = _guarded(lambda: _explanation(arguments), (RegistryError,))
+    if isinstance(outcome, _Failed):
+        return outcome.code
+    if outcome is None:
         rule_id = escape_terminal_text(arguments.rule_id)
         sys.stderr.write(f"pyahead: error: unknown registry rule ID {rule_id!r}\n")
         return int(ExitCode.INVALID_INPUT)
-    sys.stdout.write(rendered)
+    sys.stdout.write(outcome)
     return int(ExitCode.SUCCESS)
 
 

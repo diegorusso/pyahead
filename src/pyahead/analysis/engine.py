@@ -1,11 +1,9 @@
 """End-to-end static-analysis pipeline."""
 
-import hashlib
 import io
 import tokenize
-from collections import defaultdict
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Collection, Iterator, Mapping
+from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
 
 import libcst as cst
@@ -17,16 +15,16 @@ from libcst.metadata import (
     FunctionScope,
     GlobalScope,
     MetadataWrapper,
-    ParentNodeProvider,
     PositionProvider,
-    QualifiedNameProvider,
+    QualifiedName,
     QualifiedNameSource,
     ScopeProvider,
 )
 from libcst.metadata.scope_provider import Scope
 
 from pyahead import __version__
-from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
+from pyahead._fs.errors import UnsafeEntryError
+from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.analysis.discovery import (
     DiscoveredFile,
     DiscoveryError,
@@ -37,6 +35,12 @@ from pyahead.analysis.discovery import (
     discover_python_files,
     dynamic_path_module_paths,
     project_module_paths,
+)
+from pyahead.analysis.findings import (
+    FindingContext,
+    ImportPathMutation,
+    build_findings,
+    dynamic_path_adjustments,
 )
 from pyahead.analysis.matchers import MatcherIndex, build_matcher_index
 from pyahead.analysis.matchers.base import IndexedMatcher
@@ -66,27 +70,26 @@ from pyahead.analysis.reachability import (
     SYS_VERSION_INFO,
     BranchReachability,
     LexicalReachability,
+    ReachabilityTracker,
     branch_reachability,
     import_fallback_versions,
 )
 from pyahead.analysis.suppressions import (
     InlineSuppressionIndex,
-    PerFileSuppressionIndex,
     bind_inline_suppressions,
     collect_inline_suppressions,
     index_inline_suppressions,
     resolve_per_file_ignores,
-    suppression_for_finding,
 )
 from pyahead.baseline import load_baseline
 from pyahead.config import (
     ConfigurationOverrides,
+    ResolvedConfiguration,
     _load_project_configuration_snapshot,
     _resolve_snapshot_configuration,
 )
 from pyahead.model import (
     AnalysisInference,
-    BaselineStatus,
     BuiltinPatternMatcher,
     CallShapeMatcher,
     ChangeEventKind,
@@ -94,12 +97,10 @@ from pyahead.model import (
     Diagnostic,
     DiagnosticCategory,
     Finding,
-    Impact,
     LiteralDynamicImportMatcher,
     MatchConfidence,
     ModuleImportMatcher,
     PerFileIgnore,
-    Policy,
     QualifiedCallMatcher,
     QualifiedReferenceMatcher,
     ReferenceContext,
@@ -110,11 +111,9 @@ from pyahead.model import (
     SourcePosition,
     SourceRegion,
     StaticMatch,
-    SubjectKind,
     UsageContext,
 )
 from pyahead.registry import load_registry
-from pyahead.timeline import derive_state_ranges
 from pyahead.versions import PythonMinor
 
 MAX_PARSE_NESTING = 200
@@ -178,22 +177,19 @@ class _FileAnalysisContext:
 
 
 @dataclass(frozen=True)
-class _FindingContext:
-    registry: Registry
-    policy: Policy
-    minimum_confidence: MatchConfidence
-    show_unscheduled: bool
-    inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex]
-    per_file_ignores: PerFileSuppressionIndex
-    baseline_fingerprints: frozenset[str]
+class _FileAnalysis:
+    """What one file contributed: matches only when it was fully analysed."""
 
+    suppressions: InlineSuppressionIndex
+    diagnostics: tuple[Diagnostic, ...] = ()
+    matches: tuple[StaticMatch, ...] = ()
+    inferences: tuple[AnalysisInference, ...] = ()
+    path_mutations: tuple[ImportPathMutation, ...] = ()
 
-@dataclass(frozen=True)
-class _ImportPathMutation:
-    """An exact import-derived mutation of Python's module search path."""
-
-    operation: str
-    location: SourceLocation
+    @property
+    def incomplete(self) -> bool:
+        """Whether any diagnostic left this file unanalysed."""
+        return any(diagnostic.incomplete for diagnostic in self.diagnostics)
 
 
 def _scope_name(scope: Scope | None) -> str:
@@ -229,25 +225,29 @@ def _location(
 
 
 class _MatcherVisitor(cst.CSTVisitor):
-    """Run all indexed M2 matchers in one metadata-aware traversal."""
+    """Run all indexed matchers in one metadata-aware traversal."""
 
+    # PositionProvider is not declared: it generates the code for the whole
+    # module, and most files never record anything that needs a location.
+    # _position resolves it through the wrapper the first time one does.
     METADATA_DEPENDENCIES = (
         ExpressionContextProvider,
-        ParentNodeProvider,
-        PositionProvider,
-        QualifiedNameProvider,
         ScopeProvider,
     )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - one traversal's complete context.
         self,
         path: DiscoveredFile,
         matcher_index: MatcherIndex,
         project_modules: dict[str, tuple[PurePosixPath, ...]],
         target_versions: frozenset[PythonMinor],
         source_roots: tuple[str, ...],
+        *,
+        wrapper: MetadataWrapper | None = None,
     ) -> None:
         """Configure one coordinated read-only traversal."""
+        self._wrapper = wrapper
+        self._positions: Mapping[cst.CSTNode, CodeRange] | None = None
         self._path = path
         self._index = matcher_index
         self._project_modules = project_modules
@@ -259,34 +259,89 @@ class _MatcherVisitor(cst.CSTVisitor):
             if path.relative_path.suffix == ".pyi"
             else frozenset({UsageContext.RUNTIME, UsageContext.TYPING})
         )
-        self._reachability_stack = [
+        self._tracker = ReachabilityTracker(
             LexicalReachability(
                 versions=target_versions,
                 usage_contexts=initial_contexts,
             )
-        ]
-        self._suite_reachability: dict[int, LexicalReachability] = {}
-        self._elif_reachability: dict[int, LexicalReachability] = {}
-        self._pushed_suites: set[int] = set()
-        self._pushed_ifs: set[int] = set()
-        # Handler suites narrowed by a recognised import fallback, and how many
-        # of them enclose the current node, so a match can say what narrowed it.
-        self._fallback_suites: set[int] = set()
-        self._fallback_depth = 0
+        )
+        # The nodes enclosing the one being visited, outermost first, and each
+        # one's position in that list: every parent the visitor asks for is
+        # on it or is the current node, so LibCST's ParentNodeProvider (a
+        # whole-module map) is not needed.
+        self._ancestors: list[cst.CSTNode] = []
+        self._ancestor_positions: dict[int, int] = {}
+        self._parents: dict[int, cst.CSTNode] | None = None
         self.matches: list[StaticMatch] = []
         self.inferences: list[AnalysisInference] = []
-        self.path_mutations: list[_ImportPathMutation] = []
+        self.path_mutations: list[ImportPathMutation] = []
+
+    def on_visit(self, node: cst.CSTNode) -> bool:
+        """Track ``node`` as the innermost ancestor while it is visited."""
+        self._ancestor_positions[id(node)] = len(self._ancestors)
+        self._ancestors.append(node)
+        return super().on_visit(node)
+
+    def on_leave(self, original_node: cst.CSTNode) -> None:
+        """Stop tracking ``original_node`` once its subtree is done."""
+        super().on_leave(original_node)
+        self._ancestors.pop()
+        del self._ancestor_positions[id(original_node)]
+
+    def _parent(self, node: cst.CSTNode) -> cst.CSTNode | None:
+        """Return the node whose children include ``node``, as LibCST would."""
+        position = self._ancestor_positions.get(id(node))
+        if position is not None and self._ancestors[position] is node:
+            return self._ancestors[position - 1] if position else None
+        if self._ancestors and any(
+            child is node for child in self._ancestors[-1].children
+        ):
+            return self._ancestors[-1]
+        return self._full_parent_map().get(id(node))
+
+    def _full_parent_map(self) -> dict[int, cst.CSTNode]:
+        """Map every node to its parent, built once if a lookup ever needs it."""
+        if self._parents is None:
+            self._parents = {}
+            pending = list(self._ancestors[:1])
+            while pending:
+                parent = pending.pop()
+                for child in parent.children:
+                    self._parents[id(child)] = parent
+                    pending.append(child)
+        return self._parents
+
+    def _position(self, node: cst.CSTNode) -> CodeRange:
+        """Return where ``node`` is, resolving positions on first use."""
+        if self._positions is None:
+            if self._wrapper is None:
+                message = "positions need the metadata wrapper being visited"
+                raise RuntimeError(message)
+            self._positions = self._wrapper.resolve(PositionProvider)
+        return self._positions[node]
 
     @property
     def _reachability(self) -> LexicalReachability:
-        return self._reachability_stack[-1]
+        return self._tracker.current
+
+    def _qualified_names(self, node: cst.CSTNode) -> Collection[QualifiedName]:
+        """Return the names LibCST's QualifiedNameProvider would give ``node``.
+
+        The provider walks the whole module to attach a lazy value to every
+        node, but only candidate nodes are ever asked; resolving through the
+        node's scope on demand gives the same collection without that walk.
+        """
+        scope = self.get_metadata(ScopeProvider, node, None)
+        if scope is None:
+            return set()
+        return scope.get_qualified_names_for(node)
 
     def _matches_guard_name(
         self,
         node: cst.BaseExpression,
         qualified_name: str,
     ) -> bool:
-        names = self.get_metadata(QualifiedNameProvider, node, set())
+        names = self._qualified_names(node)
         resolution = resolve_qualified_name(names, qualified_name)
         if resolution.confidence is not MatchConfidence.HIGH:
             return False
@@ -300,7 +355,7 @@ class _MatcherVisitor(cst.CSTVisitor):
     def _record_patch_guard_inference(self, node: cst.BaseExpression) -> None:
         location = _location(
             self._path,
-            self.get_metadata(PositionProvider, node),
+            self._position(node),
         )
         if location in self._guard_inference_keys:
             return
@@ -346,11 +401,9 @@ class _MatcherVisitor(cst.CSTVisitor):
         reference never runs, and this rule errs toward reporting it.
         """
         current: cst.CSTNode = node
-        while (
-            parent := self.get_metadata(ParentNodeProvider, current, None)
-        ) is not None:
+        while (parent := self._parent(current)) is not None:
             if isinstance(parent, cst.Annotation):
-                owner = self.get_metadata(ParentNodeProvider, parent, None)
+                owner = self._parent(parent)
                 return isinstance(owner, cst.AnnAssign) and isinstance(
                     self.get_metadata(ScopeProvider, owner, None), FunctionScope
                 )
@@ -359,37 +412,12 @@ class _MatcherVisitor(cst.CSTVisitor):
 
     def visit_If(self, node: cst.If) -> None:  # noqa: N802
         """Assign conservative lexical states to ``if``/``elif`` branches."""
-        incoming = self._elif_reachability.get(id(node))
-        if incoming is not None:
-            self._reachability_stack.append(incoming)
-            self._pushed_ifs.add(id(node))
-        branches = self._branches(node)
-        self._suite_reachability[id(node.body)] = branches.if_true
-        if isinstance(node.orelse, cst.Else):
-            self._suite_reachability[id(node.orelse.body)] = branches.if_false
-        elif isinstance(node.orelse, cst.If):
-            self._elif_reachability[id(node.orelse)] = branches.if_false
+        self._tracker.enter_if(node)
+        self._tracker.assign_if(node, self._branches(node))
 
     def leave_If(self, original_node: cst.If) -> None:  # noqa: N802
         """Restore the state active before an ``elif`` node."""
-        if id(original_node) in self._pushed_ifs:
-            self._pushed_ifs.remove(id(original_node))
-            self._reachability_stack.pop()
-
-    def _enter_suite(self, node: cst.BaseSuite) -> None:
-        branch = self._suite_reachability.get(id(node))
-        if branch is not None:
-            self._reachability_stack.append(branch)
-            self._pushed_suites.add(id(node))
-            if id(node) in self._fallback_suites:
-                self._fallback_depth += 1
-
-    def _leave_suite(self, node: cst.BaseSuite) -> None:
-        if id(node) in self._pushed_suites:
-            self._pushed_suites.remove(id(node))
-            self._reachability_stack.pop()
-            if id(node) in self._fallback_suites:
-                self._fallback_depth -= 1
+        self._tracker.leave(original_node)
 
     def _catches_only_import_errors(
         self,
@@ -435,33 +463,32 @@ class _MatcherVisitor(cst.CSTVisitor):
         )
         for handler in node.handlers:
             if self._catches_only_import_errors(handler.type):
-                self._suite_reachability[id(handler.body)] = unreachable_free
-                self._fallback_suites.add(id(handler.body))
+                self._tracker.assign_import_fallback(handler.body, unreachable_free)
 
     def visit_IndentedBlock(self, node: cst.IndentedBlock) -> None:  # noqa: N802
         """Enter a multi-line branch suite."""
-        self._enter_suite(node)
+        self._tracker.enter(node)
 
     def leave_IndentedBlock(  # noqa: N802
         self,
         original_node: cst.IndentedBlock,
     ) -> None:
         """Leave a multi-line branch suite."""
-        self._leave_suite(original_node)
+        self._tracker.leave(original_node)
 
     def visit_SimpleStatementSuite(  # noqa: N802
         self,
         node: cst.SimpleStatementSuite,
     ) -> None:
         """Enter a one-line branch suite."""
-        self._enter_suite(node)
+        self._tracker.enter(node)
 
     def leave_SimpleStatementSuite(  # noqa: N802
         self,
         original_node: cst.SimpleStatementSuite,
     ) -> None:
         """Leave a one-line branch suite."""
-        self._leave_suite(original_node)
+        self._tracker.leave(original_node)
 
     def _record_match(  # noqa: PLR0913 - one override per independent match input.
         self,
@@ -474,14 +501,14 @@ class _MatcherVisitor(cst.CSTVisitor):
         usage_contexts: frozenset[UsageContext] | None = None,
     ) -> None:
         reachability = self._reachability
-        if self._fallback_depth and not any(
+        if self._tracker.in_import_fallback and not any(
             key == "reachability_guard" for key, _ in evidence
         ):
             evidence = (*evidence, ("reachability_guard", "import-fallback"))
         # Empty lexical states still count toward syntactic fingerprint ordinals.
         location = _location(
             self._path,
-            self.get_metadata(PositionProvider, node),
+            self._position(node),
         )
         scope = self.get_metadata(ScopeProvider, node)
         self.matches.append(
@@ -554,9 +581,7 @@ class _MatcherVisitor(cst.CSTVisitor):
     ) -> tuple[frozenset[PythonMinor], bool]:
         """Exclude versions where short-circuit ``hasattr`` prevents access."""
         current = node
-        while (
-            parent := self.get_metadata(ParentNodeProvider, current, None)
-        ) is not None:
+        while (parent := self._parent(current)) is not None:
             if (
                 isinstance(parent, cst.BooleanOperation)
                 and isinstance(parent.operator, cst.And)
@@ -584,37 +609,53 @@ class _MatcherVisitor(cst.CSTVisitor):
             current = parent
         return self._reachability.versions, False
 
+    def _record_competing_module(
+        self,
+        location: SourceLocation,
+        subject: str,
+        candidates: tuple[PurePosixPath, ...],
+        evidence: dict[str, str | tuple[str, ...]],
+    ) -> None:
+        """Say that ``subject`` was not classified because a project module competes."""
+        self.inferences.append(
+            AnalysisInference(
+                code="PYA2001",
+                kind="module-resolution",
+                message=(
+                    f"did not classify {subject} because a competing project "
+                    "module exists"
+                ),
+                location=location,
+                evidence=tuple(
+                    sorted(
+                        {
+                            **evidence,
+                            "candidate_paths": tuple(
+                                path.as_posix() for path in candidates
+                            ),
+                            "resolution": "competing-project-module",
+                            "source_roots": self._source_roots,
+                        }.items()
+                    )
+                ),
+            )
+        )
+
     def _record_import_inference(
         self,
         node: cst.Import | cst.ImportFrom,
         imported: ImportedModule,
         candidates: tuple[PurePosixPath, ...],
     ) -> None:
-        location = _location(
-            self._path,
-            self.get_metadata(PositionProvider, node),
-        )
-        self.inferences.append(
-            AnalysisInference(
-                code="PYA2001",
-                kind="module-resolution",
-                message=(
-                    f"did not classify import of {imported.module!r} as standard "
-                    "library because a competing project module exists"
-                ),
-                location=location,
-                evidence=(
-                    ("bound_names", imported.bound_names),
-                    (
-                        "candidate_paths",
-                        tuple(path.as_posix() for path in candidates),
-                    ),
-                    ("imported_module", imported.module),
-                    ("resolution", "competing-project-module"),
-                    ("source_roots", self._source_roots),
-                    ("syntax", imported.syntax),
-                ),
-            )
+        self._record_competing_module(
+            _location(self._path, self._position(node)),
+            f"import of {imported.module!r} as standard library",
+            candidates,
+            {
+                "bound_names": imported.bound_names,
+                "imported_module": imported.module,
+                "syntax": imported.syntax,
+            },
         )
 
     def _record_qualified_inference(
@@ -623,10 +664,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         qualified_name: str,
         candidates: tuple[PurePosixPath, ...],
     ) -> None:
-        location = _location(
-            self._path,
-            self.get_metadata(PositionProvider, node),
-        )
+        location = _location(self._path, self._position(node))
         key = (
             location.region.start.line,
             location.region.start.column,
@@ -635,25 +673,11 @@ class _MatcherVisitor(cst.CSTVisitor):
         if key in self._inference_keys:
             return
         self._inference_keys.add(key)
-        self.inferences.append(
-            AnalysisInference(
-                code="PYA2001",
-                kind="module-resolution",
-                message=(
-                    f"did not classify reference to {qualified_name!r} because a "
-                    "competing project module exists"
-                ),
-                location=location,
-                evidence=(
-                    (
-                        "candidate_paths",
-                        tuple(path.as_posix() for path in candidates),
-                    ),
-                    ("qualified_name", qualified_name),
-                    ("resolution", "competing-project-module"),
-                    ("source_roots", self._source_roots),
-                ),
-            )
+        self._record_competing_module(
+            location,
+            f"reference to {qualified_name!r}",
+            candidates,
+            {"qualified_name": qualified_name},
         )
 
     def _record_dynamic_import_inference(
@@ -663,30 +687,11 @@ class _MatcherVisitor(cst.CSTVisitor):
         dynamic_function: str,
         candidates: tuple[PurePosixPath, ...],
     ) -> None:
-        location = _location(
-            self._path,
-            self.get_metadata(PositionProvider, node),
-        )
-        self.inferences.append(
-            AnalysisInference(
-                code="PYA2001",
-                kind="module-resolution",
-                message=(
-                    f"did not classify dynamic import of {module!r} as standard "
-                    "library because a competing project module exists"
-                ),
-                location=location,
-                evidence=(
-                    (
-                        "candidate_paths",
-                        tuple(path.as_posix() for path in candidates),
-                    ),
-                    ("dynamic_function", dynamic_function),
-                    ("imported_module", module),
-                    ("resolution", "competing-project-module"),
-                    ("source_roots", self._source_roots),
-                ),
-            )
+        self._record_competing_module(
+            _location(self._path, self._position(node)),
+            f"dynamic import of {module!r} as standard library",
+            candidates,
+            {"dynamic_function": dynamic_function, "imported_module": module},
         )
 
     def _record_import(
@@ -741,7 +746,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         *,
         source: QualifiedNameSource = QualifiedNameSource.IMPORT,
     ) -> QualifiedResolution:
-        names = self.get_metadata(QualifiedNameProvider, node, set())
+        names = self._qualified_names(node)
         return resolve_qualified_name(names, qualified_name, source=source)
 
     def _resolution_sources(
@@ -750,7 +755,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         qualified_name: str,
         sources: frozenset[QualifiedNameSource],
     ) -> QualifiedResolution:
-        names = self.get_metadata(QualifiedNameProvider, node, set())
+        names = self._qualified_names(node)
         return resolve_qualified_name_sources(names, qualified_name, sources)
 
     def _indexed_bindings(
@@ -762,8 +767,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         if (syntax_terminal := terminal_name(node)) is not None:
             terminals.add(syntax_terminal)
         terminals.update(
-            name.name.rpartition(".")[2]
-            for name in self.get_metadata(QualifiedNameProvider, node, set())
+            name.name.rpartition(".")[2] for name in self._qualified_names(node)
         )
         bindings = {
             (binding.rule.id, repr(binding.matcher)): binding
@@ -806,7 +810,7 @@ class _MatcherVisitor(cst.CSTVisitor):
             return
         reference_context = classify_reference_context(
             node,
-            lambda child: self.get_metadata(ParentNodeProvider, child, None),
+            self._parent,
         )
         deferred_annotation = (
             reference_context is ReferenceContext.ANNOTATION
@@ -980,11 +984,11 @@ class _MatcherVisitor(cst.CSTVisitor):
             resolution = self._resolution(node.func, f"sys.path.{operation}")
             if resolution.confidence is MatchConfidence.HIGH:
                 self.path_mutations.append(
-                    _ImportPathMutation(
+                    ImportPathMutation(
                         operation=operation,
                         location=_location(
                             self._path,
-                            self.get_metadata(PositionProvider, node),
+                            self._position(node),
                         ),
                     )
                 )
@@ -1034,93 +1038,67 @@ def _nesting_diagnostic(
     )
 
 
-def _parse_nesting_diagnostic(
+_RISKY_OPERATORS = frozenset(
+    {"~", "**", "*", "/", "//", "%", "+", "-", "<<", ">>", "&", "^", "|"}
+)
+_LINE_TOKENS = frozenset(
+    {tokenize.NEWLINE, tokenize.NL, tokenize.DEDENT, tokenize.INDENT}
+)
+
+
+@dataclass
+class _TokenNesting:
+    """Delimiter depth and the longest run of operators seen so far."""
+
+    depth: int = 0
+    operators: int = 0
+    operators_exceeded: bool = False
+
+    def feed(self, token: tokenize.TokenInfo) -> bool:
+        """Count one token; return whether delimiter depth passed its limit."""
+        if token.type in _LINE_TOKENS or token.type != tokenize.OP:
+            if token.type in _LINE_TOKENS:
+                self.operators = 0
+            return False
+        if token.string in _RISKY_OPERATORS:
+            self.operators += 1
+            self.operators_exceeded |= self.operators > MAX_CST_DEPTH
+            return False
+        self.operators = 0
+        if token.string in {"(", "[", "{"}:
+            self.depth += 1
+        elif token.string in {")", "]", "}"} and self.depth:
+            self.depth -= 1
+        return self.depth > MAX_PARSE_NESTING
+
+
+def _token_nesting_diagnostic(
     source: str,
     relative_path: PurePosixPath,
 ) -> Diagnostic | None:
-    """Reject pathological delimiter depth before entering LibCST's C stack."""
-    depth = 0
+    """Reject pathological nesting before entering LibCST's C stack.
 
-    try:
-        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-        for token in tokens:
-            if token.type != tokenize.OP:
-                continue
-            if token.string in {"(", "[", "{"}:
-                depth += 1
-                if depth > MAX_PARSE_NESTING:
-                    return _nesting_diagnostic(
-                        relative_path,
-                        "delimiter",
-                        MAX_PARSE_NESTING,
-                    )
-            elif token.string in {")", "]", "}"} and depth:
-                depth -= 1
-    except tokenize.TokenError:
-        if depth >= MAX_PARSE_NESTING:
-            return _nesting_diagnostic(
-                relative_path,
-                "delimiter",
-                MAX_PARSE_NESTING,
-            )
-        return None
-    except IndentationError:
-        # LibCST produces the user-facing syntax diagnostic for malformed tokens.
-        return None
-    return None
-
-
-def _operator_nesting_diagnostic(
-    source: str,
-    relative_path: PurePosixPath,
-) -> Diagnostic | None:
-    """Reject pathological non-delimiter nesting in a single token stream."""
-    risky_operators = {
-        "~",
-        "**",
-        "*",
-        "/",
-        "//",
-        "%",
-        "+",
-        "-",
-        "<<",
-        ">>",
-        "&",
-        "^",
-        "|",
-    }
-    nesting = 0
+    One token stream bounds two shapes. Delimiter depth counts open
+    brackets; past its limit, or at it when the stream ends inside them, the
+    file is rejected, and this takes precedence over the operator bound.
+    Operator nesting counts consecutive binary or unary operators between
+    brackets and line breaks, which LibCST would otherwise parse into an
+    equally deep tree. Malformed tokens are left for LibCST to report.
+    """
+    nesting = _TokenNesting()
+    delimiter = _nesting_diagnostic(relative_path, "delimiter", MAX_PARSE_NESTING)
     try:
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
-            if token.type in {
-                tokenize.NEWLINE,
-                tokenize.NL,
-                tokenize.DEDENT,
-                tokenize.INDENT,
-            }:
-                nesting = 0
-                continue
-            if token.type != tokenize.OP:
-                continue
-            if token.string in {"(", "[", "{"}:
-                nesting = 0
-                continue
-            if token.string in {")", "]", "}"}:
-                nesting = 0
-                continue
-            if token.string in risky_operators:
-                nesting += 1
-                if nesting > MAX_CST_DEPTH:
-                    return _nesting_diagnostic(
-                        relative_path,
-                        "concrete syntax tree",
-                        MAX_CST_DEPTH,
-                    )
-            else:
-                nesting = 0
+            if nesting.feed(token):
+                return delimiter
     except tokenize.TokenError:
-        return None
+        if nesting.depth >= MAX_PARSE_NESTING:
+            return delimiter
+    except IndentationError:
+        # LibCST produces the user-facing syntax diagnostic for malformed tokens.
+        pass
+    if nesting.operators_exceeded:
+        return _nesting_diagnostic(relative_path, "concrete syntax tree", MAX_CST_DEPTH)
     return None
 
 
@@ -1138,8 +1116,30 @@ def _cst_nesting_diagnostic(
                 "concrete syntax tree",
                 MAX_CST_DEPTH,
             )
-        stack.extend((child, depth + 1) for child in node.children)
+        stack.extend((child, depth + 1) for child in _child_nodes(node))
     return None
+
+
+_NODE_FIELDS: dict[type[cst.CSTNode], tuple[str, ...]] = {}
+
+
+def _child_nodes(node: cst.CSTNode) -> Iterator[cst.CSTNode]:
+    """Yield the nodes ``node.children`` would, read straight from its fields.
+
+    ``children`` runs a visitor on every call, which tripled the cost of this
+    walk. Every CST node is a dataclass whose children are its node-valued
+    fields and the nodes inside its sequence fields; only the order differs,
+    and depth does not depend on order.
+    """
+    names = _NODE_FIELDS.get(type(node))
+    if names is None:
+        names = _NODE_FIELDS[type(node)] = tuple(item.name for item in fields(node))
+    for name in names:
+        value = getattr(node, name)
+        if isinstance(value, cst.CSTNode):
+            yield value
+        elif isinstance(value, (tuple, list)):
+            yield from (item for item in value if isinstance(item, cst.CSTNode))
 
 
 def _parse_module(
@@ -1147,13 +1147,9 @@ def _parse_module(
     relative_path: PurePosixPath,
 ) -> tuple[cst.Module | None, Diagnostic | None]:
     """Parse one module after enforcing both parser depth boundaries."""
-    nesting_diagnostic = _parse_nesting_diagnostic(source, relative_path)
+    nesting_diagnostic = _token_nesting_diagnostic(source, relative_path)
     if nesting_diagnostic is not None:
         return None, nesting_diagnostic
-
-    operator_diagnostic = _operator_nesting_diagnostic(source, relative_path)
-    if operator_diagnostic is not None:
-        return None, operator_diagnostic
 
     try:
         module = cst.parse_module(source)
@@ -1190,23 +1186,20 @@ def _parse_module(
     return module, _cst_nesting_diagnostic(module, relative_path)
 
 
-def _parse_file_with_context(
+def _analyse_file(
     path: DiscoveredFile,
     context: _FileAnalysisContext,
-) -> tuple[
-    tuple[StaticMatch, ...],
-    tuple[AnalysisInference, ...],
-    tuple[_ImportPathMutation, ...],
-    InlineSuppressionIndex,
-    tuple[Diagnostic, ...],
-]:
+) -> _FileAnalysis:
     source, read_diagnostic = _read_source(
         context.root,
         path,
         context.max_file_size_bytes,
     )
     if read_diagnostic is not None:
-        return (), (), (), index_inline_suppressions(()), (read_diagnostic,)
+        return _FileAnalysis(
+            suppressions=index_inline_suppressions(()),
+            diagnostics=(read_diagnostic,),
+        )
     if source is None:  # pragma: no cover - guarded by the diagnostic result.
         msg = "source text is absent without a read diagnostic"
         raise RuntimeError(msg)
@@ -1218,28 +1211,25 @@ def _parse_file_with_context(
     )
     module, parse_diagnostic = _parse_module(source, path.relative_path)
     if parse_diagnostic is not None:
-        return (
-            (),
-            (),
-            (),
-            index_inline_suppressions(inline_directives),
-            (
-                *suppression_diagnostics,
-                parse_diagnostic,
-            ),
+        return _FileAnalysis(
+            suppressions=index_inline_suppressions(inline_directives),
+            diagnostics=(*suppression_diagnostics, parse_diagnostic),
         )
     if module is None:  # pragma: no cover - guarded by the diagnostic result.
         msg = "parsed module is absent without a parse diagnostic"
         raise RuntimeError(msg)
 
+    # The module was just parsed and is never modified, so every node is
+    # already unique; the defensive deep copy would only double the work.
+    wrapper = MetadataWrapper(module, unsafe_skip_copy=True)
     visitor = _MatcherVisitor(
         path,
         context.matcher_index,
         context.project_modules,
         context.target_versions,
         context.source_roots,
+        wrapper=wrapper,
     )
-    wrapper = MetadataWrapper(module)
     inline_suppressions = index_inline_suppressions(inline_directives)
     try:
         inline_suppressions = index_inline_suppressions(
@@ -1264,74 +1254,17 @@ def _parse_file_with_context(
                 location=_initial_location(path.relative_path),
                 incomplete=True,
             )
-        return (
-            (),
-            (),
-            (),
-            inline_suppressions,
-            (*suppression_diagnostics, diagnostic),
+        return _FileAnalysis(
+            suppressions=inline_suppressions,
+            diagnostics=(*suppression_diagnostics, diagnostic),
         )
-    return (
-        tuple(visitor.matches),
-        tuple(visitor.inferences),
-        tuple(visitor.path_mutations),
-        inline_suppressions,
-        suppression_diagnostics,
+    return _FileAnalysis(
+        suppressions=inline_suppressions,
+        diagnostics=suppression_diagnostics,
+        matches=tuple(visitor.matches),
+        inferences=tuple(visitor.inferences),
+        path_mutations=tuple(visitor.path_mutations),
     )
-
-
-def _registry_from_matcher_index(index: MatcherIndex) -> Registry:
-    bindings = (
-        *(binding for values in index.module_imports.values() for binding in values),
-        *(
-            binding
-            for values in index.qualified_references.values()
-            for binding in values
-        ),
-        *(binding for values in index.qualified_calls.values() for binding in values),
-        *(binding for values in index.call_shapes.values() for binding in values),
-        *(
-            binding
-            for values in index.literal_dynamic_imports.values()
-            for binding in values
-        ),
-        *(binding for values in index.builtin_patterns.values() for binding in values),
-    )
-    rules = {binding.rule.id: binding.rule for binding in bindings}
-    return Registry(
-        release="test",
-        revision="test",
-        retired_ids=(),
-        rules=tuple(rules[rule_id] for rule_id in sorted(rules)),
-    )
-
-
-def _parse_file(
-    path: DiscoveredFile,
-    matcher_index: MatcherIndex,
-    project_modules: dict[str, tuple[PurePosixPath, ...]],
-    target_versions: frozenset[PythonMinor],
-) -> tuple[
-    tuple[StaticMatch, ...],
-    tuple[AnalysisInference, ...],
-    Diagnostic | None,
-]:
-    """Retain the M2 focused matcher-test adapter."""
-    matches, inferences, _mutations, _suppressions, diagnostics = (
-        _parse_file_with_context(
-            path,
-            _FileAnalysisContext(
-                root=path.absolute_path.parents[len(path.relative_path.parts) - 1],
-                matcher_index=matcher_index,
-                project_modules=project_modules,
-                target_versions=target_versions,
-                source_roots=(".", "src"),
-                max_file_size_bytes=2 * 1024 * 1024,
-                registry=_registry_from_matcher_index(matcher_index),
-            ),
-        )
-    )
-    return matches, inferences, diagnostics[0] if diagnostics else None
 
 
 def _initial_location(relative_path: PurePosixPath) -> SourceLocation:
@@ -1376,25 +1309,19 @@ def _read_source(
             DiagnosticCategory.DISCOVERY,
             f"source file exceeds the {max_file_size_bytes}-byte analysis limit",
         )
-    except OSError as error:
-        detail = str(error)
-        unsafe_entry = any(
-            marker in detail
-            for marker in ("changed while", "real directories", "regular file")
-        )
+    except UnsafeEntryError:
         return _read_failure(
             path,
-            "PYA1004" if unsafe_entry else "PYA1002",
-            (
-                DiagnosticCategory.DISCOVERY
-                if unsafe_entry
-                else DiagnosticCategory.ENCODING
-            ),
-            (
-                "source entry is not a stable regular file beneath real directories"
-                if unsafe_entry
-                else f"unable to read Python source ({type(error).__name__})"
-            ),
+            "PYA1004",
+            DiagnosticCategory.DISCOVERY,
+            "source entry is not a stable regular file beneath real directories",
+        )
+    except OSError as error:
+        return _read_failure(
+            path,
+            "PYA1002",
+            DiagnosticCategory.ENCODING,
+            f"unable to read Python source ({type(error).__name__})",
         )
 
     try:
@@ -1410,306 +1337,6 @@ def _read_source(
             DiagnosticCategory.ENCODING,
             f"unable to read Python source ({type(error).__name__})",
         )
-
-
-def _fingerprint(match: StaticMatch, occurrence_ordinal: int) -> str:
-    material = "\0".join(
-        (
-            "pyahead-fingerprint-v1",
-            match.rule_id,
-            match.location.path.as_posix(),
-            match.enclosing_scope,
-            match.subject,
-            str(occurrence_ordinal),
-        )
-    )
-    return hashlib.sha256(material.encode()).hexdigest()
-
-
-_MATCH_KIND_PRIORITY = {
-    "module-import": 0,
-    "qualified-reference": 1,
-    "qualified-call": 2,
-    "literal-dynamic-import": 2,
-    "builtin-pattern": 2,
-    "call-shape": 3,
-}
-_CONFIDENCE_PRIORITY = {
-    MatchConfidence.LOW: 0,
-    MatchConfidence.MEDIUM: 1,
-    MatchConfidence.HIGH: 2,
-}
-
-
-def _deduplicate_matches(matches: list[StaticMatch]) -> tuple[StaticMatch, ...]:
-    """Merge matchers that identify the same rule, region, and subject."""
-    deduplicated: dict[tuple[str, SourceLocation, str], StaticMatch] = {}
-    for match in sorted(
-        matches,
-        key=lambda item: (
-            item.location.path.as_posix(),
-            item.location.region.start,
-            item.rule_id,
-            item.matcher_kind,
-        ),
-    ):
-        key = (match.rule_id, match.location, match.subject)
-        existing = deduplicated.get(key)
-        if existing is None:
-            deduplicated[key] = match
-            continue
-        existing_strength = (
-            _CONFIDENCE_PRIORITY[existing.confidence],
-            _MATCH_KIND_PRIORITY[existing.matcher_kind],
-        )
-        incoming_strength = (
-            _CONFIDENCE_PRIORITY[match.confidence],
-            _MATCH_KIND_PRIORITY[match.matcher_kind],
-        )
-        primary, secondary = (
-            (match, existing)
-            if incoming_strength > existing_strength
-            else (existing, match)
-        )
-        evidence = list(primary.evidence)
-        evidence_keys = {name for name, _value in evidence}
-        evidence.extend(
-            (name, value)
-            for name, value in secondary.evidence
-            if name not in evidence_keys
-        )
-        deduplicated[key] = StaticMatch(
-            rule_id=primary.rule_id,
-            matcher_kind=primary.matcher_kind,
-            location=primary.location,
-            enclosing_scope=primary.enclosing_scope,
-            subject=primary.subject,
-            confidence=primary.confidence,
-            reachable_versions=(
-                primary.reachable_versions | secondary.reachable_versions
-            ),
-            usage_contexts=primary.usage_contexts | secondary.usage_contexts,
-            evidence=tuple(evidence),
-        )
-    return tuple(deduplicated.values())
-
-
-def _replace_evidence(
-    evidence: tuple[tuple[str, str | tuple[str, ...]], ...],
-    **updates: str | tuple[str, ...],
-) -> tuple[tuple[str, str | tuple[str, ...]], ...]:
-    """Replace named evidence while retaining deterministic key order."""
-    values = dict(evidence)
-    values.update(updates)
-    return tuple(sorted(values.items()))
-
-
-def _dynamic_path_adjustments(
-    matches: list[StaticMatch],
-    registry: Registry,
-    dynamic_modules: dict[str, tuple[PurePosixPath, ...]],
-    mutations: list[_ImportPathMutation],
-) -> tuple[list[StaticMatch], tuple[AnalysisInference, ...]]:
-    """Prevent dynamic repository paths from fabricating an exact origin."""
-    if not mutations:
-        return matches, ()
-    rules = {rule.id: rule for rule in registry.rules}
-    operations = tuple(sorted({mutation.operation for mutation in mutations}))
-    mutation_locations = tuple(
-        sorted(
-            {
-                (
-                    f"{mutation.location.path.as_posix()}:"
-                    f"{mutation.location.region.start.line}:"
-                    f"{mutation.location.region.start.column}"
-                )
-                for mutation in mutations
-            }
-        )
-    )
-    adjusted: list[StaticMatch] = []
-    inferences: dict[tuple[SourceLocation, str], AnalysisInference] = {}
-    for match in matches:
-        match_evidence = dict(match.evidence)
-        if not ({"imported_module", "qualified_names"} & match_evidence.keys()):
-            adjusted.append(match)
-            continue
-        module = match.subject.partition(".")[0]
-        candidates = dynamic_modules.get(module, ())
-        rule = rules[match.rule_id]
-        has_insert = "insert" in operations
-        removals = tuple(
-            event.python
-            for event in rule.events
-            if event.kind is ChangeEventKind.REMOVED
-        )
-        append_after_removal = (
-            "append" in operations
-            and rule.subject_kind is SubjectKind.MODULE
-            and bool(removals)
-        )
-        if not candidates or not (has_insert or append_after_removal):
-            adjusted.append(match)
-            continue
-
-        candidate_paths = tuple(path.as_posix() for path in candidates)
-        resolution = (
-            "dynamic-sys-path-ambiguity"
-            if has_insert
-            else "stdlib-before-appended-project-module"
-        )
-        reachable_versions = match.reachable_versions
-        confidence = match.confidence
-        if has_insert:
-            confidence = MatchConfidence.MEDIUM
-        else:
-            removal = min(removals)
-            reachable_versions = frozenset(
-                version for version in reachable_versions if version < removal
-            )
-        adjusted.append(
-            replace(
-                match,
-                confidence=confidence,
-                reachable_versions=reachable_versions,
-                evidence=_replace_evidence(
-                    match.evidence,
-                    candidate_paths=candidate_paths,
-                    resolution=resolution,
-                    sys_path_mutations=mutation_locations,
-                    sys_path_operations=operations,
-                ),
-            )
-        )
-        key = (match.location, module)
-        inferences[key] = AnalysisInference(
-            code="PYA2001",
-            kind="module-resolution",
-            message=(
-                f"treated import origin for {module!r} as uncertain because "
-                "the repository mutates sys.path and contains a matching "
-                "nested module"
-            ),
-            location=match.location,
-            evidence=(
-                ("candidate_paths", candidate_paths),
-                ("imported_module", module),
-                ("resolution", resolution),
-                ("sys_path_mutations", mutation_locations),
-                ("sys_path_operations", operations),
-            ),
-        )
-    return adjusted, tuple(inferences[key] for key in sorted(inferences))
-
-
-def _findings(
-    matches: list[StaticMatch],
-    context: _FindingContext,
-) -> tuple[Finding, ...]:
-    registry = context.registry
-    policy = context.policy
-    rules = {rule.id: rule for rule in registry.rules}
-    ordinals: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
-    findings: list[Finding] = []
-    for match in sorted(
-        _deduplicate_matches(matches),
-        key=lambda item: (
-            item.location.path.as_posix(),
-            item.location.region.start,
-            item.rule_id,
-        ),
-    ):
-        ordinal_key = (
-            match.location.path.as_posix(),
-            match.rule_id,
-            match.enclosing_scope,
-            match.subject,
-        )
-        occurrence_ordinal = ordinals[ordinal_key]
-        ordinals[ordinal_key] += 1
-        # Fingerprint identity is established before finding-emission filters.
-        fingerprint = _fingerprint(match, occurrence_ordinal)
-        if (
-            _CONFIDENCE_PRIORITY[match.confidence]
-            < _CONFIDENCE_PRIORITY[context.minimum_confidence]
-        ):
-            continue
-        rule = rules[match.rule_id]
-        usage_contexts = frozenset(rule.contexts).intersection(match.usage_contexts)
-        if not usage_contexts:
-            continue
-        states = derive_state_ranges(rule, match.reachable_versions)
-        if not states:
-            continue
-        removal_unscheduled = rule.removal_unscheduled
-        deprecation_only = all(
-            event.kind is ChangeEventKind.DEPRECATED for event in rule.events
-        )
-        if removal_unscheduled and deprecation_only and not context.show_unscheduled:
-            continue
-        impact = max(
-            (Impact(state.state.value) for state in states),
-            key=lambda value: {
-                Impact.INFORMATIONAL: 0,
-                Impact.DEPRECATED: 1,
-                Impact.RISK: 2,
-                Impact.BREAKING: 3,
-            }[value],
-        )
-        action_version = min(
-            state.from_python for state in states if state.state.value == impact.value
-        )
-        finding = Finding(
-            fingerprint=fingerprint,
-            rule_id=rule.id,
-            title=rule.title,
-            location=match.location,
-            enclosing_scope=match.enclosing_scope,
-            subject=match.subject,
-            match_kind=match.matcher_kind,
-            match_confidence=match.confidence,
-            match_evidence=match.evidence,
-            usage_contexts=tuple(
-                sorted(usage_contexts, key=lambda context: context.value)
-            ),
-            reachable_versions=tuple(sorted(match.reachable_versions)),
-            states=states,
-            impact=impact,
-            action_version=action_version,
-            events=tuple(
-                event for event in rule.events if event.python <= policy.horizon_python
-            ),
-            remediation=rule.remediation,
-            sources=rule.sources,
-            registry_revision=registry.revision,
-            removal_unscheduled=removal_unscheduled,
-        )
-        findings.append(
-            replace(
-                finding,
-                suppression=suppression_for_finding(
-                    finding,
-                    context.inline_suppressions.get(finding.location.path),
-                    context.per_file_ignores,
-                ),
-                baseline_status=(
-                    BaselineStatus.EXISTING
-                    if finding.fingerprint in context.baseline_fingerprints
-                    else BaselineStatus.NEW
-                ),
-            )
-        )
-    return tuple(
-        sorted(
-            findings,
-            key=lambda finding: (
-                finding.action_version,
-                finding.impact,
-                finding.rule_id,
-                finding.location,
-            ),
-        )
-    )
 
 
 def _discovery_issue_diagnostic(issue: DiscoveryIssue) -> Diagnostic:
@@ -1737,6 +1364,42 @@ def _report_file_progress(request: ScanRequest, progress: FileProgress) -> None:
         request.on_file(progress)
 
 
+def _overrides(request: ScanRequest) -> ConfigurationOverrides:
+    """Every configuration override is a ScanRequest field of the same name."""
+    return ConfigurationOverrides(
+        **{
+            field.name: getattr(request, field.name)
+            for field in fields(ConfigurationOverrides)
+        }
+    )
+
+
+def _scan_report(  # noqa: PLR0913 - one report assembly point.
+    registry: Registry,
+    resolved: ResolvedConfiguration,
+    counts: ScanCounts,
+    diagnostics: tuple[Diagnostic, ...],
+    *,
+    findings: tuple[Finding, ...] = (),
+    inferences: tuple[AnalysisInference, ...] = (),
+) -> ScanReport:
+    """Assemble a report; only counts, findings and notes differ between exits."""
+    return ScanReport(
+        schema_version=1,
+        tool_version=__version__,
+        registry_release=registry.release,
+        registry_revision=registry.revision,
+        policy=resolved.policy,
+        root_label=".",
+        counts=counts,
+        findings=findings,
+        diagnostics=diagnostics,
+        inferences=inferences,
+        configuration=resolved.scan,
+        policy_provenance=resolved.policy_provenance,
+    )
+
+
 def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordinator.
     """Scan Python source without importing, executing, or networking."""
     if request.fail_new_only and request.baseline_file is None:
@@ -1756,22 +1419,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         root,
         registry,
         project_snapshot,
-        ConfigurationOverrides(
-            baseline_python=request.baseline_python,
-            horizon_python=request.horizon_python,
-            include=request.include,
-            exclude=request.exclude,
-            source_roots=request.source_roots,
-            respect_gitignore=request.respect_gitignore,
-            minimum_confidence=request.minimum_confidence,
-            fail_on=request.fail_on,
-            show_unscheduled=request.show_unscheduled,
-            max_file_size_bytes=request.max_file_size_bytes,
-            per_file_ignores=request.per_file_ignores,
-            fail_new_only=request.fail_new_only,
-            show_suppressed=request.show_suppressed,
-            allow_incomplete=request.allow_incomplete,
-        ),
+        _overrides(request),
     )
     policy = resolved.policy
     baseline = (
@@ -1794,6 +1442,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         max_file_size_bytes=resolved.scan.max_file_size_bytes,
         allow_explicit_built_in_roots=True,
     )
+
     try:
         if resolved.source_roots_inferred:
             module_discovery = _discover_configured(root, (), module_options)
@@ -1807,20 +1456,11 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
             module_discovery = DiscoveryResult(files=(), issues=())
         discovery = _discover_configured(root, request.paths, discovery_options)
     except DiscoveryIncompleteError as error:
-        return ScanReport(
-            schema_version=1,
-            tool_version=__version__,
-            registry_release=registry.release,
-            registry_revision=registry.revision,
-            policy=policy,
-            root_label=".",
-            counts=ScanCounts(
-                files_discovered=0,
-                files_analyzed=0,
-                files_incomplete=1,
-            ),
-            findings=(),
-            diagnostics=(
+        return _scan_report(
+            registry,
+            resolved,
+            ScanCounts(files_discovered=0, files_analyzed=0, files_incomplete=1),
+            (
                 *suppression_diagnostics,
                 Diagnostic(
                     code="PYA1001",
@@ -1829,9 +1469,6 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
                     incomplete=True,
                 ),
             ),
-            inferences=(),
-            configuration=resolved.scan,
-            policy_provenance=resolved.policy_provenance,
         )
     source_limit_issues = tuple(
         issue
@@ -1843,30 +1480,21 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
             (issue.relative_path, issue.code, issue.message): issue
             for issue in (*discovery.issues, *source_limit_issues)
         }
-        limit_diagnostics = (
-            *suppression_diagnostics,
-            *(
-                _discovery_issue_diagnostic(reported_issues[key])
-                for key in sorted(reported_issues)
-            ),
-        )
-        return ScanReport(
-            schema_version=1,
-            tool_version=__version__,
-            registry_release=registry.release,
-            registry_revision=registry.revision,
-            policy=policy,
-            root_label=".",
-            counts=ScanCounts(
+        return _scan_report(
+            registry,
+            resolved,
+            ScanCounts(
                 files_discovered=discovery.files_discovered,
                 files_analyzed=0,
                 files_incomplete=len(reported_issues),
             ),
-            findings=(),
-            diagnostics=limit_diagnostics,
-            inferences=(),
-            configuration=resolved.scan,
-            policy_provenance=resolved.policy_provenance,
+            (
+                *suppression_diagnostics,
+                *(
+                    _discovery_issue_diagnostic(reported_issues[key])
+                    for key in sorted(reported_issues)
+                ),
+            ),
         )
     project_modules = project_module_paths(
         module_discovery.files,
@@ -1887,7 +1515,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
 
     matches: list[StaticMatch] = []
     inferences: list[AnalysisInference] = []
-    path_mutations: list[_ImportPathMutation] = []
+    path_mutations: list[ImportPathMutation] = []
     inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex] = {}
     diagnostics = [
         *suppression_diagnostics,
@@ -1896,37 +1524,27 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
     incomplete_files = len(discovery.issues)
     analyzed = 0
     for index, path in enumerate(discovery.files, start=1):
-        (
-            file_matches,
-            file_inferences,
-            file_path_mutations,
-            file_suppressions,
-            file_diagnostics,
-        ) = _parse_file_with_context(
-            path,
-            file_context,
-        )
-        inline_suppressions[path.relative_path] = file_suppressions
-        diagnostics.extend(file_diagnostics)
-        file_incomplete = any(diagnostic.incomplete for diagnostic in file_diagnostics)
+        analysis = _analyse_file(path, file_context)
+        inline_suppressions[path.relative_path] = analysis.suppressions
+        diagnostics.extend(analysis.diagnostics)
         _report_file_progress(
             request,
             FileProgress(
                 path=path.relative_path,
                 index=index,
                 total=len(discovery.files),
-                incomplete=file_incomplete,
+                incomplete=analysis.incomplete,
             ),
         )
-        if file_incomplete:
+        if analysis.incomplete:
             incomplete_files += 1
             continue
         analyzed += 1
-        matches.extend(file_matches)
-        inferences.extend(file_inferences)
-        path_mutations.extend(file_path_mutations)
+        matches.extend(analysis.matches)
+        inferences.extend(analysis.inferences)
+        path_mutations.extend(analysis.path_mutations)
 
-    matches, path_inferences = _dynamic_path_adjustments(
+    matches, path_inferences = dynamic_path_adjustments(
         matches,
         registry,
         dynamic_modules,
@@ -1934,9 +1552,9 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
     )
     inferences.extend(path_inferences)
 
-    findings = _findings(
+    findings = build_findings(
         matches,
-        _FindingContext(
+        FindingContext(
             registry=registry,
             policy=policy,
             minimum_confidence=resolved.scan.minimum_confidence,
@@ -1948,14 +1566,10 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
             ),
         ),
     )
-    return ScanReport(
-        schema_version=1,
-        tool_version=__version__,
-        registry_release=registry.release,
-        registry_revision=registry.revision,
-        policy=policy,
-        root_label=".",
-        counts=ScanCounts(
+    return _scan_report(
+        registry,
+        resolved,
+        ScanCounts(
             files_discovered=discovery.files_discovered,
             files_analyzed=analyzed,
             files_incomplete=incomplete_files,
@@ -1985,6 +1599,4 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
                 ),
             )
         ),
-        configuration=resolved.scan,
-        policy_provenance=resolved.policy_provenance,
     )

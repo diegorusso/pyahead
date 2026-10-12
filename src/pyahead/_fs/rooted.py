@@ -5,10 +5,17 @@ from __future__ import annotations
 import os
 import stat
 from contextlib import ExitStack
-from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
-from pyahead._windows_output import read_windows_rooted_file
+from pyahead._fs.chain import ChainFailure, DirectoryChain, open_directory_chain
+from pyahead._fs.errors import (
+    EntryChangedError,
+    NotAFilePathError,
+    NotRealDirectoryError,
+    NotRegularFileError,
+)
+from pyahead._fs.windows import read_windows_rooted_file
 
 _READ_CHUNK_BYTES = 64 * 1024
 
@@ -29,7 +36,7 @@ def repository_relative_path(root: Path, path: Path) -> Path:
         raise ValueError(message) from error
     if relative == Path() or not relative.name or ".." in relative.parts:
         message = "input must name a file beneath the trusted root"
-        raise ValueError(message)
+        raise NotAFilePathError(message)
     return relative
 
 
@@ -44,13 +51,6 @@ def supports_rooted_descriptor_reads() -> bool:
     )
 
 
-def _directory_flags() -> int:
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
-        flags |= getattr(os, name, 0)
-    return flags
-
-
 def _file_flags() -> int:
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
@@ -58,90 +58,59 @@ def _file_flags() -> int:
     return flags
 
 
-def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
-    return os.path.samestat(left, right)
-
-
 def _same_stable_file(left: os.stat_result, right: os.stat_result) -> bool:
     """Compare identity and mutation-sensitive regular-file attributes."""
-    return _same_file(left, right) and all(
+    return os.path.samestat(left, right) and all(
         getattr(left, field) == getattr(right, field)
         for field in ("st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
     )
 
 
-@dataclass(frozen=True)
-class _RootedReadChain:
-    root: Path
-    descriptors: tuple[int, ...]
-    statuses: tuple[os.stat_result, ...]
-    names: tuple[str, ...]
-
-    def validate(
-        self,
-        leaf_name: str,
-        leaf_status: os.stat_result,
-        leaf_descriptor: int,
-    ) -> None:
-        """Reject path bindings or file content changed during the read."""
-        current_root = self.root.lstat()
-        opened_root = os.fstat(self.descriptors[0])
-        if not stat.S_ISDIR(current_root.st_mode) or not (
-            _same_file(current_root, self.statuses[0])
-            and _same_file(opened_root, self.statuses[0])
-        ):
-            message = "input root changed while being read"
-            raise OSError(message)
-        for index, name in enumerate(self.names, start=1):
-            current = os.stat(
-                name,
-                dir_fd=self.descriptors[index - 1],
-                follow_symlinks=False,
-            )
-            opened = os.fstat(self.descriptors[index])
-            if not stat.S_ISDIR(current.st_mode) or not (
-                _same_file(current, self.statuses[index])
-                and _same_file(opened, self.statuses[index])
-            ):
-                message = "input parent changed while being read"
-                raise OSError(message)
-        current_leaf = os.stat(
-            leaf_name,
-            dir_fd=self.descriptors[-1],
-            follow_symlinks=False,
-        )
-        opened_leaf = os.fstat(leaf_descriptor)
-        if not stat.S_ISREG(current_leaf.st_mode) or not (
-            _same_stable_file(current_leaf, leaf_status)
-            and _same_stable_file(opened_leaf, leaf_status)
-        ):
-            message = "input file changed while being read"
-            raise OSError(message)
+_OPEN_FAILURES: dict[ChainFailure, tuple[type[OSError], str]] = {
+    "root-changed": (EntryChangedError, "input root changed while being opened"),
+    "parent-not-directory": (
+        NotRealDirectoryError,
+        "input parents must be real directories",
+    ),
+    "parent-changed": (EntryChangedError, "input parent changed while being opened"),
+}
 
 
-def _open_relative_directory(
-    name: str,
-    parent_descriptor: int,
-) -> tuple[int, os.stat_result]:
-    expected = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-    if not stat.S_ISDIR(expected.st_mode):
-        message = "input parents must be real directories"
-        raise OSError(message)
-    descriptor = os.open(name, _directory_flags(), dir_fd=parent_descriptor)
-    try:
-        opened = os.fstat(descriptor)
-    except BaseException:
-        os.close(descriptor)
-        raise
-    if not stat.S_ISDIR(opened.st_mode) or not _same_file(expected, opened):
-        os.close(descriptor)
-        message = "input parent changed while being opened"
-        raise OSError(message)
-    return descriptor, opened
+def _fail_open(reason: ChainFailure) -> NoReturn:
+    error, message = _OPEN_FAILURES[reason]
+    raise error(message)
+
+
+def _validate_read(
+    chain: DirectoryChain,
+    leaf_name: str,
+    leaf_status: os.stat_result,
+    leaf_descriptor: int,
+) -> None:
+    """Reject path bindings or file content changed during the read."""
+    changed = chain.changed_binding()
+    if changed == 0:
+        message = "input root changed while being read"
+        raise EntryChangedError(message)
+    if changed is not None:
+        message = "input parent changed while being read"
+        raise EntryChangedError(message)
+    current_leaf = os.stat(
+        leaf_name,
+        dir_fd=chain.parent_descriptor,
+        follow_symlinks=False,
+    )
+    opened_leaf = os.fstat(leaf_descriptor)
+    if not stat.S_ISREG(current_leaf.st_mode) or not (
+        _same_stable_file(current_leaf, leaf_status)
+        and _same_stable_file(opened_leaf, leaf_status)
+    ):
+        message = "input file changed while being read"
+        raise EntryChangedError(message)
 
 
 def _read_validated_leaf(
-    chain: _RootedReadChain,
+    chain: DirectoryChain,
     leaf_name: str,
     leaf_status: os.stat_result,
     descriptor: int,
@@ -158,7 +127,7 @@ def _read_validated_leaf(
         data.extend(chunk)
     oversized = len(data) > limit
     try:
-        chain.validate(leaf_name, leaf_status, descriptor)
+        _validate_read(chain, leaf_name, leaf_status, descriptor)
     except OSError:
         if not oversized:
             raise
@@ -172,60 +141,31 @@ def _read_posix_rooted_file(root: Path, relative: Path, limit: int) -> bytes:
     if not supports_rooted_descriptor_reads():
         message = "secure root-bounded input APIs are unavailable"
         raise OSError(message)
+    chain = open_directory_chain(root, relative.parent.parts, _fail_open)
     with ExitStack() as cleanup:
-        descriptors: list[int] = []
-        statuses: list[os.stat_result] = []
-        names: list[str] = []
-        expected_root = root.lstat()
-        root_descriptor = os.open(root, _directory_flags())
-        cleanup.callback(os.close, root_descriptor)
-        descriptors.append(root_descriptor)
-        opened_root = os.fstat(root_descriptor)
-        if not stat.S_ISDIR(opened_root.st_mode) or not _same_file(
-            expected_root, opened_root
-        ):
-            message = "input root changed while being opened"
-            raise OSError(message)
-        statuses.append(opened_root)
-        for name in relative.parent.parts:
-            descriptor, opened = _open_relative_directory(name, descriptors[-1])
-            cleanup.callback(os.close, descriptor)
-            descriptors.append(descriptor)
-            statuses.append(opened)
-            names.append(name)
-
+        cleanup.callback(chain.close)
         expected_leaf = os.stat(
             relative.name,
-            dir_fd=descriptors[-1],
+            dir_fd=chain.parent_descriptor,
             follow_symlinks=False,
         )
         if not stat.S_ISREG(expected_leaf.st_mode):
             message = "input must be a real regular file"
-            raise OSError(message)
+            raise NotRegularFileError(message)
         descriptor = os.open(
             relative.name,
             _file_flags(),
-            dir_fd=descriptors[-1],
+            dir_fd=chain.parent_descriptor,
         )
         cleanup.callback(os.close, descriptor)
         opened_leaf = os.fstat(descriptor)
-        if not stat.S_ISREG(opened_leaf.st_mode) or not _same_file(
+        if not stat.S_ISREG(opened_leaf.st_mode) or not os.path.samestat(
             expected_leaf, opened_leaf
         ):
             message = "input file changed while being opened"
-            raise OSError(message)
-
+            raise EntryChangedError(message)
         return _read_validated_leaf(
-            _RootedReadChain(
-                root=root,
-                descriptors=tuple(descriptors),
-                statuses=tuple(statuses),
-                names=tuple(names),
-            ),
-            relative.name,
-            opened_leaf,
-            descriptor,
-            limit,
+            chain, relative.name, opened_leaf, descriptor, limit
         )
 
 

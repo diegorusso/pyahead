@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-import pyahead._rooted_reader as rooted_reader_module
+import pyahead._fs.rooted as rooted_reader_module
 import pyahead.analysis.discovery as discovery_module
 from pyahead.analysis.discovery import (
     MAX_SOURCE_BYTES,

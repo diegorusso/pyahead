@@ -8,7 +8,9 @@ import pytest
 from pyahead.analysis.reachability import (
     SYS_VERSION_INFO,
     TYPING_TYPE_CHECKING,
+    BranchReachability,
     LexicalReachability,
+    ReachabilityTracker,
     TruthValue,
     branch_reachability,
     evaluate_guard,
@@ -457,3 +459,57 @@ def test_import_fallback_versions_follow_the_known_import_table(
     active = _versions("3.8", "3.9", "3.10", "3.11", "3.12")
 
     assert import_fallback_versions(node, active) == expected
+
+
+def test_tracker_applies_branch_states_only_inside_their_suites() -> None:
+    """An ``if``/``elif``/``else`` chain and an import fallback push and pop."""
+
+    def state(*minors: str) -> LexicalReachability:
+        return LexicalReachability(
+            versions=frozenset(PythonMinor.parse(minor) for minor in minors),
+            usage_contexts=frozenset({UsageContext.RUNTIME}),
+        )
+
+    module = cst.parse_module("if a:\n    x\nelif b:\n    y\nelse:\n    z\n")
+    first = module.body[0]
+    assert isinstance(first, cst.If)
+    second = first.orelse
+    assert isinstance(second, cst.If)
+    assert isinstance(second.orelse, cst.Else)
+    tracker = ReachabilityTracker(state("3.11", "3.12", "3.13"))
+
+    tracker.enter_if(first)
+    tracker.assign_if(
+        first,
+        BranchReachability(
+            state("3.11"), state("3.12", "3.13"), unsupported_patch=False
+        ),
+    )
+    tracker.enter(first.body)
+    assert tracker.current == state("3.11")
+    tracker.leave(first.body)
+    tracker.enter_if(second)
+    assert tracker.current == state("3.12", "3.13")
+    tracker.assign_if(
+        second,
+        BranchReachability(state("3.12"), state("3.13"), unsupported_patch=False),
+    )
+    tracker.enter(second.orelse.body)
+    assert tracker.current == state("3.13")
+    tracker.leave(second.orelse.body)
+    tracker.leave(second)
+    tracker.leave(first)
+    assert tracker.current == state("3.11", "3.12", "3.13")
+    assert not tracker.in_import_fallback
+
+    handler = cst.parse_module("try:\n    import a\nexcept ImportError:\n    b\n").body[
+        0
+    ]
+    assert isinstance(handler, cst.Try)
+    body = handler.handlers[0].body
+    tracker.assign_import_fallback(body, state("3.11"))
+    tracker.enter(body)
+    assert tracker.in_import_fallback
+    assert tracker.current == state("3.11")
+    tracker.leave(body)
+    assert not tracker.in_import_fallback

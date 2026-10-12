@@ -248,6 +248,7 @@ def test_registry_validation_and_unknown_rule_escape_dynamic_text(
         rules=(),
     )
     monkeypatch.setattr(cli_module, "load_registry", lambda _source: registry)
+    monkeypatch.setattr(cli_module, "validate_registry", lambda _source: registry)
 
     result = cli_module._run_registry(  # noqa: SLF001
         cli_module.Namespace(

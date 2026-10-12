@@ -1,4 +1,4 @@
-"""M8.5f packaging and public typing contract tests.
+"""Packaging and public typing contract tests.
 
 The wheel and sdist are built through the locked Hatchling API rather than a
 `uv build` subprocess so the check stays offline and host-independent.
@@ -103,6 +103,7 @@ def test_sdist_ships_every_published_schema(distributions: _Distributions) -> No
         "evidence-v1.json",
         "registry-coverage-v1.json",
         "registry-index-v1.json",
+        "registry-releases-v1.json",
         "registry-rule-v1.json",
         "report-v1.json",
     } <= schemas
@@ -150,6 +151,6 @@ def test_installed_wheel_consumer_passes_strict_mypy(
 
 
 def test_documented_compatibility_exports_remain_importable() -> None:
-    """M8.5f keeps the named compatibility accessors until a separate decision."""
+    """Named compatibility exports stay until a separate public-API decision."""
     assert callable(project_module_names)
     assert render_evidence_schema().endswith("\n")

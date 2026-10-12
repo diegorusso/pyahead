@@ -32,7 +32,9 @@ if sys.platform != "linux":  # pragma: no cover - CI platform guard
         allow_module_level=True,
     )
 
-from scripts import pypi_validate
+from tests._internals import PackageInternals
+
+pypi_validate = PackageInternals("scripts.pypi_validate")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CORPUS_SIZE = 1000
@@ -145,7 +147,7 @@ def _reference_minor() -> int | None:
     installed = pypi_validate._installed_interpreters(
         uv, timeout=_SUBPROCESS_TIMEOUT_SECONDS
     )
-    reference = pypi_validate._reference_interpreter(
+    candidates = pypi_validate._reference_candidates(
         None,
         installed,
         baseline_minor=11,
@@ -153,7 +155,7 @@ def _reference_minor() -> int | None:
         filename="",
         is_wheel=False,
     )
-    return reference.minor if reference is not None else None
+    return candidates[0].minor if candidates else None
 
 
 # --- driving the three scripts as real subprocesses --------------------------

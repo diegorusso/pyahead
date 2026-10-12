@@ -1,4 +1,4 @@
-"""Integration tests for M2 registry inspection commands."""
+"""Integration tests for registry inspection commands."""
 
 import json
 from pathlib import Path
@@ -67,7 +67,7 @@ def test_literal_dynamic_import_cannot_cross_default_high_confidence_boundary(
     capsys: pytest.CaptureFixture[str],
     source: str,
 ) -> None:
-    """Literal and ambiguous dynamic evidence stays below the M2 boundary."""
+    """Literal and ambiguous dynamic evidence is not a static match."""
     (tmp_path / "source.py").write_text(source, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 

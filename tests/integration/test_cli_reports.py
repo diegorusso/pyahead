@@ -1,4 +1,4 @@
-"""End-to-end tests for M1 CLI reports and exit codes."""
+"""End-to-end tests for CLI reports and exit codes."""
 
 import json
 import os

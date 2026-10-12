@@ -8,6 +8,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
+from pyahead._fs.errors import NotRealDirectoryError, NotRegularFileError
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -476,7 +478,7 @@ def _open_directory_chain(
 def _require_real_directory(api: _WindowsAPI, handle: int) -> None:
     if not _is_real_directory(api, handle):
         message = "path parents must be real directories"
-        raise OSError(message)
+        raise NotRealDirectoryError(message)
 
 
 def _create_temporary_handle(
@@ -669,7 +671,7 @@ def read_windows_rooted_file(root: Path, relative_path: Path, limit: int) -> byt
         )
         if not _is_real_file(api, handle):
             message = "input must be a real regular file"
-            raise OSError(message)
+            raise NotRegularFileError(message)
         return _read_windows_handle(api, handle, limit)
     finally:
         if handle is not None:

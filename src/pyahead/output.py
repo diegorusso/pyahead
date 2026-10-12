@@ -4,11 +4,12 @@ import os
 import secrets
 import stat
 import tempfile
-from contextlib import ExitStack, suppress
-from dataclasses import dataclass
+from contextlib import suppress
 from pathlib import Path
+from typing import NoReturn
 
-from pyahead._windows_output import write_windows_atomic
+from pyahead._fs.chain import ChainFailure, DirectoryChain, open_directory_chain
+from pyahead._fs.windows import write_windows_atomic
 
 
 class OutputError(OSError):
@@ -20,13 +21,6 @@ _TEMPORARY_ATTEMPTS = 128
 
 def _same_entry(left: os.stat_result, right: os.stat_result) -> bool:
     return os.path.samestat(left, right)
-
-
-def _directory_flags() -> int:
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
-        flags |= getattr(os, name, 0)
-    return flags
 
 
 def _temporary_flags() -> int:
@@ -55,91 +49,31 @@ def _require_pinned_directories() -> None:
         raise OutputError(message)
 
 
-@dataclass(frozen=True)
-class _PinnedDirectoryChain:
-    """Open directory descriptors and the bindings used to reach each one."""
-
-    root: Path
-    descriptors: tuple[int, ...]
-    statuses: tuple[os.stat_result, ...]
-    names: tuple[str, ...]
-
-    @property
-    def parent_descriptor(self) -> int:
-        return self.descriptors[-1]
-
-    def validate(self) -> None:
-        """Require every path binding to still reference its pinned directory."""
-        root_status = self.root.lstat()
-        if not stat.S_ISDIR(root_status.st_mode) or not _same_entry(
-            root_status,
-            self.statuses[0],
-        ):
-            message = "output directory changed while it was being used"
-            raise OutputError(message)
-        for index, name in enumerate(self.names, start=1):
-            current = os.stat(
-                name,
-                dir_fd=self.descriptors[index - 1],
-                follow_symlinks=False,
-            )
-            if not stat.S_ISDIR(current.st_mode) or not _same_entry(
-                current,
-                self.statuses[index],
-            ):
-                message = "output directory changed while it was being used"
-                raise OutputError(message)
-
-    def close(self) -> None:
-        for descriptor in reversed(self.descriptors):
-            with suppress(OSError):
-                os.close(descriptor)
+def _fail_open(reason: ChainFailure) -> NoReturn:
+    if reason == "root-changed":
+        message = "output root changed while it was being opened"
+        raise OutputError(message)
+    # A parent that is a link or not a directory reports like any other
+    # failure to reach the destination (the caller wraps plain OSErrors).
+    message = "output parents must be real directories"
+    raise OSError(message)
 
 
-def _open_pinned_directories(
-    root: Path,
-    relative_parent: Path,
-) -> _PinnedDirectoryChain:
-    with ExitStack() as cleanup:
-        descriptors: list[int] = []
-        statuses: list[os.stat_result] = []
-        names: list[str] = []
-        expected_root = root.lstat()
-        root_descriptor = os.open(root, _directory_flags())
-        cleanup.callback(os.close, root_descriptor)
-        descriptors.append(root_descriptor)
-        opened_root = os.fstat(root_descriptor)
-        if not stat.S_ISDIR(opened_root.st_mode) or not _same_entry(
-            expected_root,
-            opened_root,
-        ):
-            message = "output root changed while it was being opened"
-            raise OutputError(message)
-        statuses.append(opened_root)
+def _validate_chain(chain: DirectoryChain) -> None:
+    """Require every path binding to still reference its pinned directory."""
+    if chain.changed_binding() is not None:
+        message = "output directory changed while it was being used"
+        raise OutputError(message)
 
-        for name in relative_parent.parts:
-            descriptor = os.open(
-                name,
-                _directory_flags(),
-                dir_fd=descriptors[-1],
-            )
-            cleanup.callback(os.close, descriptor)
-            descriptors.append(descriptor)
-            opened = os.fstat(descriptor)
-            if not stat.S_ISDIR(opened.st_mode):
-                message = "output parents must be real directories"
-                raise OutputError(message)
-            statuses.append(opened)
-            names.append(name)
-        chain = _PinnedDirectoryChain(
-            root=root,
-            descriptors=tuple(descriptors),
-            statuses=tuple(statuses),
-            names=tuple(names),
-        )
-        chain.validate()
-        cleanup.pop_all()
-        return chain
+
+def _open_pinned_directories(root: Path, relative_parent: Path) -> DirectoryChain:
+    chain = open_directory_chain(root, relative_parent.parts, _fail_open)
+    try:
+        _validate_chain(chain)
+    except BaseException:
+        chain.close()
+        raise
+    return chain
 
 
 def _temporary_name(destination_name: str) -> str:
@@ -218,13 +152,13 @@ def _write_pinned_atomic(
     temporary_name: str | None = None
     temporary_status: os.stat_result | None = None
     try:
-        chain.validate()
+        _validate_chain(chain)
         descriptor, temporary_name, temporary_status = _create_temporary_at(
             chain.parent_descriptor,
             relative_path.name,
         )
         _write_descriptor(descriptor, content)
-        chain.validate()
+        _validate_chain(chain)
         _validate_temporary_at(
             chain.parent_descriptor,
             temporary_name,
@@ -237,7 +171,7 @@ def _write_pinned_atomic(
             dst_dir_fd=chain.parent_descriptor,
         )
         temporary_name = None
-        chain.validate()
+        _validate_chain(chain)
     finally:
         if temporary_name is not None and temporary_status is not None:
             _unlink_temporary_at(

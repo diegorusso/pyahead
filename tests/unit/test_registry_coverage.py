@@ -1,4 +1,4 @@
-"""Executable contracts for the curated M5 CPython registry."""
+"""Executable contracts for the curated CPython registry."""
 
 import hashlib
 import json
@@ -858,7 +858,7 @@ def test_nturl2path_literal_dynamic_import_is_medium_confidence(
 def test_locale_getdefaultlocale_has_no_python_315_breaking_finding(
     tmp_path: Path,
 ) -> None:
-    """The explicitly undeprecated API must not retain its retired M5 rule."""
+    """The explicitly undeprecated API must not retain its retired rule."""
     source = tmp_path / "source.py"
     source.write_text(
         "from locale import getdefaultlocale\n\nvalue = getdefaultlocale()\n",

@@ -207,7 +207,7 @@ def test_open_key_spaces_are_specifically_documented() -> None:
 
 
 def test_every_representative_and_golden_report_validates(tmp_path: Path) -> None:
-    """Ordinary, empty, incomplete, suppressed, and M7 reports stay covered."""
+    """Ordinary, empty, incomplete, suppressed, and evidence reports stay covered."""
     validator = Draft202012Validator(report_json_schema())
 
     for document in _representative_documents(tmp_path):

@@ -1,10 +1,11 @@
-"""Tests for strict M4 project configuration and policy inference."""
+"""Tests for strict project configuration and policy inference."""
 
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import pyahead._toml as toml_module
 import pyahead.config as config_module
 from pyahead.analysis import ScanRequest, scan
 from pyahead.config import (
@@ -103,7 +104,7 @@ def test_default_pyproject_snapshot_is_parsed_once_and_reused_for_inference(
         encoding="utf-8",
     )
     (tmp_path / "clean.py").write_text("import pathlib\n", encoding="utf-8")
-    original_loads = config_module.tomllib.loads
+    original_loads = toml_module.tomllib.loads
     parse_count = 0
 
     def replace_after_parse(source: str) -> dict[str, object]:
@@ -120,7 +121,7 @@ def test_default_pyproject_snapshot_is_parsed_once_and_reused_for_inference(
             )
         return document
 
-    monkeypatch.setattr(config_module.tomllib, "loads", replace_after_parse)
+    monkeypatch.setattr(toml_module.tomllib, "loads", replace_after_parse)
 
     report = scan(ScanRequest(root=tmp_path, horizon_python="3.13"))
 

@@ -508,3 +508,75 @@ def import_fallback_versions(
             return frozenset()
         known = {version for version in known if version >= since}
     return frozenset(known)
+
+
+class ReachabilityTracker:
+    """The lexical reachability in force at each point of one traversal.
+
+    Guard evaluation decides what holds inside an ``if`` branch or an
+    ``except`` handler; this records those decisions against the suites they
+    govern and applies them while a visitor is inside each suite. An
+    ``elif`` takes the false state of the ``if`` before it.
+    """
+
+    def __init__(self, initial: LexicalReachability) -> None:
+        """Start a traversal with the state at the top of the module."""
+        self._stack = [initial]
+        self._suites: dict[int, LexicalReachability] = {}
+        self._elifs: dict[int, LexicalReachability] = {}
+        self._pushed: set[int] = set()
+        # Handler suites narrowed by a recognised import fallback, and how many
+        # of them enclose the current node, so a match can say what narrowed it.
+        self._fallback_suites: set[int] = set()
+        self._fallback_depth = 0
+
+    @property
+    def current(self) -> LexicalReachability:
+        """The state at the node being visited."""
+        return self._stack[-1]
+
+    @property
+    def in_import_fallback(self) -> bool:
+        """Whether an enclosing handler was narrowed as an import fallback."""
+        return self._fallback_depth > 0
+
+    def enter_if(self, node: cst.If) -> None:
+        """Apply an ``elif``'s incoming state before its test is evaluated."""
+        incoming = self._elifs.get(id(node))
+        if incoming is not None:
+            self._stack.append(incoming)
+            self._pushed.add(id(node))
+
+    def assign_if(self, node: cst.If, branches: BranchReachability) -> None:
+        """Record the branch states of an evaluated ``if`` test."""
+        self._suites[id(node.body)] = branches.if_true
+        if isinstance(node.orelse, cst.Else):
+            self._suites[id(node.orelse.body)] = branches.if_false
+        elif isinstance(node.orelse, cst.If):
+            self._elifs[id(node.orelse)] = branches.if_false
+
+    def assign_import_fallback(
+        self,
+        handler: cst.BaseSuite,
+        state: LexicalReachability,
+    ) -> None:
+        """Record the narrowed state of an ``except ImportError`` handler."""
+        self._suites[id(handler)] = state
+        self._fallback_suites.add(id(handler))
+
+    def enter(self, node: cst.CSTNode) -> None:
+        """Apply the state recorded for a suite as the visitor enters it."""
+        state = self._suites.get(id(node))
+        if state is not None:
+            self._stack.append(state)
+            self._pushed.add(id(node))
+            if id(node) in self._fallback_suites:
+                self._fallback_depth += 1
+
+    def leave(self, node: cst.CSTNode) -> None:
+        """Restore the enclosing state as the visitor leaves a suite or ``elif``."""
+        if id(node) in self._pushed:
+            self._pushed.remove(id(node))
+            self._stack.pop()
+            if id(node) in self._fallback_suites:
+                self._fallback_depth -= 1

@@ -1,1 +1,1 @@
-"""Integration tests for public M1 behaviour."""
+"""Integration tests for public behaviour."""
