@@ -86,9 +86,18 @@ status and its exact set of findings; only these verdicts moved:
 
 ## Not adjudicable
 
-- `import-error` (79): CPython-tagged wheels that cannot be installed under
-  the interpreter an earlier-version probe needs, plus the 4 Windows-only
-  rows above.
+- `import-error` (79, in 32 packages): every package installed; the module
+  holding the finding cannot be imported without something the harness
+  does not install. Most need an optional dependency
+  (`urllib3.contrib.pyopenssl` and pip's vendored copy of it, 14 rows;
+  `grpc._simple_stubs`, 8; `pyspark.mllib` and `pyspark.pandas`, 8;
+  Cython's IPython magic; `cattrs.preconf.ujson`; a Django integration);
+  others are Windows-only (`click._winconsole` and typer's copy, and the 4
+  asyncio rows above) or test helpers and setup scripts shipped in wheels
+  (`pyarrow.tests`, `srsly.tests`, `jupyterlab_server.test_utils`). The
+  earlier records described this bucket as CPython-tagged wheels that
+  cannot be installed under an earlier interpreter; on this run's shards
+  that is not what it holds.
 - `module-not-importable` (27): subjects absent or unobservable at the
   reference interpreter.
 - `binding-not-visible` (13, in `cffi`, `ruamel-yaml`, `python-discovery`,
