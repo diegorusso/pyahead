@@ -63,7 +63,7 @@ set:
 - `not-adjudicable:<reason>` — adjudication could not reach a verdict, for
   one of a closed set of reasons: `install-failed`, `module-not-importable`,
   `import-error`, `import-timeout`, `binding-not-visible`, `no-signature`,
-  `probe-timeout`, `probe-crashed`, `no-interpreter`.
+  `probe-timeout`, `probe-crashed`, `no-interpreter`, `platform-conditional`.
 
 ## Metric definitions
 
@@ -90,22 +90,36 @@ agreement nor a disagreement.
   used for this validation (only 3.11–3.15 are installable via `uv`), so any
   finding whose action version exceeds 3.15 is recorded as
   `not-adjudicable:no-interpreter` rather than skipped silently.
-- **Aliased from-imports of a module-level subject are unadjudicable.** For
-  `from A import B as C`, the finding's evidence records only the bound name
-  `C`, not the original attribute `B`; there is no way to recover `B` from
-  static evidence alone. Naming `S` as `A.C` (a nonexistent attribute)
-  resolves to "absent" rather than a false identity match, so the finding is
-  recorded as `not-adjudicable:module-not-importable` wherever the registry
-  still expects `S` present (next bullet) instead of wrongly confirmed or
-  refuted - a coverage loss for this narrow evidence gap, not a precision
-  defect. Where the registry expects `S` gone, a live binding is refuted as
-  for any other absent subject. Unaliased `from A import B` is unaffected:
-  `B` is both the bound name and the real attribute.
+- **A from-import is probed as its source says, not as its evidence
+  abbreviates it.** A finding's evidence records only the names a
+  `from A import ...` binds, so before probing, the harness reads the
+  statement at the finding's location in the installed source
+  (`scripts/pypi_validate/_import_sites.py`) and takes three facts from it:
+  - `from A import B as C` is probed as `C` against `A.B`, the attribute it
+    really names; `A.C` may exist and be something else (`crypt` imports its
+    C helper as `crypt._crypt`).
+  - The probed binding is the first one the module does not rebind in the
+    same scope: after `from lib2to3.main import main, warn` and a local
+    `def main`, `warn` still shows whether the import ran.
+  - An import under a platform test (`os.name`, `sys.platform`,
+    `platform.system()`) does not run on this Linux host, so an identity
+    mismatch there is `not-adjudicable:platform-conditional` rather than a
+    refutation; the import is right where that platform runs it.
+  - An import inside `try:` with a handler that catches an import failure
+    (`ImportError`, `ModuleNotFoundError`, `Exception` or bare) runs where
+    its module is gone, fails as the finding predicts, and leaves the
+    fallback's value bound. The other-minor cross-check below therefore does
+    not refute such a site where `S` is absent; only a version-gated branch
+    that never ran is refuted that way.
+
+  Where the statement cannot be read (a syntax error, a star import, no
+  `from` statement at that location) the static evidence is probed as
+  before.
 - **A subject that is not observable at the reference interpreter is
   unadjudicable, not refuted.** C1 can only compare a live binding against
   `S` where `S` exists. When the probe finds `S` absent at an interpreter
   where the registry still expects it present, that absence is an
-  observability gap - the aliased from-import above, a platform-only
+  observability gap - a platform-only
   attribute (`asyncio.WindowsSelectorEventLoopPolicy` on Linux), an
   attribute only set at runtime (`sys.last_type` after an unhandled
   exception) - and the finding is `not-adjudicable:module-not-importable`.

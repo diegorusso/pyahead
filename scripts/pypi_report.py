@@ -85,6 +85,7 @@ _NOT_ADJUDICABLE_REASONS = frozenset(
         "probe-timeout",
         "probe-crashed",
         "no-interpreter",
+        "platform-conditional",
     }
 )
 

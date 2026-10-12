@@ -21,6 +21,7 @@ from scripts.pypi_validate._adjudication import (
     _run_bare_probe_batch,
     _run_binding_probe_batch,
 )
+from scripts.pypi_validate._import_sites import import_sites
 from scripts.pypi_validate._interpreters import _reference_candidates
 from scripts.pypi_validate._model import _VENV_TIMEOUT_SECONDS, PypiValidateError
 from scripts.pypi_validate._provision import (
@@ -313,6 +314,7 @@ def _process_package(  # noqa: C901 - one early return per closed shard status.
             available_binding_minors=frozenset(binding_venvs),
             run_binding_probes=_run_binding_probes,
             run_subject_probes=_run_subject_probes,
+            import_sites=import_sites(findings, site_packages),
         )
         adjudication = _adjudication_summary(
             findings, interpreters_used=interpreters_used

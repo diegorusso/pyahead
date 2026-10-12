@@ -11,6 +11,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -2363,3 +2364,121 @@ def test_probe_result_binding_fields_mirror_the_slot_walk_failure(
         "error": error,
     }
     assert pypi_validate._probe_result_binding_fields_well_typed(item) is expected
+
+
+def _crypt_from_import_finding() -> dict[str, Any]:
+    return _mapped_finding_fixture(
+        fingerprint="f1",
+        evidence={
+            "bound_names": ["_crypt"],
+            "syntax": "from-import",
+            "imported_module": "crypt",
+        },
+        interpreters_needed=[12, 13],
+    )
+
+
+def test_an_import_site_chooses_the_probed_name_and_subject() -> None:
+    """An alias is probed as itself against the attribute it really names."""
+    sent: list[dict[str, Any]] = []
+    runners = _make_run_probes(
+        binding_results={"f1": _binding_result(identity_match=True)},
+        subject_status_by_minor={12: "present", 13: "absent"},
+    )
+
+    def recording_binding_probes(
+        minor: int, probes: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        sent.extend(probes)
+        return runners.run_binding_probes(minor, probes)
+
+    findings, _ = pypi_validate._adjudicate(
+        [_crypt_from_import_finding()],
+        installed=_installed(12, 13),
+        reference_minor=13,
+        available_binding_minors=frozenset({12, 13}),
+        run_binding_probes=recording_binding_probes,
+        run_subject_probes=runners.run_subject_probes,
+        import_sites={
+            "f1": pypi_validate.ImportSite(
+                "crypt", "_crypt", platform_conditional=False
+            )
+        },
+    )
+
+    assert {probe["head"] for probe in sent} == {"_crypt"}
+    assert {tuple(probe["subject"]["attribute_path"]) for probe in sent} == {("crypt",)}
+    assert findings[0]["adjudication_status"] == "confirmed"
+
+
+def test_a_platform_conditional_mismatch_is_not_a_refutation() -> None:
+    """An import the probe host skipped is unadjudicable, not refuted."""
+    runners = _make_run_probes(
+        binding_results={"f1": _binding_result(identity_match=False)},
+    )
+    sites = {
+        "f1": pypi_validate.ImportSite("crypt", "_crypt", platform_conditional=True)
+    }
+    findings, _ = pypi_validate._adjudicate(
+        [_crypt_from_import_finding()],
+        installed=_installed(12, 13),
+        reference_minor=13,
+        available_binding_minors=frozenset({12, 13}),
+        run_binding_probes=runners.run_binding_probes,
+        run_subject_probes=runners.run_subject_probes,
+        import_sites=sites,
+    )
+    assert findings[0]["adjudication_status"] == "not-adjudicable:platform-conditional"
+
+    unconditional = {
+        "f1": pypi_validate.ImportSite("crypt", "_crypt", platform_conditional=False)
+    }
+    findings, _ = pypi_validate._adjudicate(
+        [_crypt_from_import_finding()],
+        installed=_installed(12, 13),
+        reference_minor=13,
+        available_binding_minors=frozenset({12, 13}),
+        run_binding_probes=runners.run_binding_probes,
+        run_subject_probes=runners.run_subject_probes,
+        import_sites=unconditional,
+    )
+    assert findings[0]["adjudication_status"] == "refuted-binding"
+
+
+_CRYPT_REMOVED = 13
+
+
+def test_an_import_error_fallback_failing_where_predicted_is_not_refuted() -> None:
+    """`try: from crypt import ... except ImportError:` coming true at 3.13."""
+
+    def run_binding_probes(
+        minor: int, probes: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        # 3.12 binds the real crypt.crypt; 3.13 binds the fallback's None.
+        gone = {
+            "status": "resolved",
+            "identity_match": False,
+            "subject_status": "absent",
+        }
+        result = (
+            gone if minor == _CRYPT_REMOVED else _binding_result(identity_match=True)
+        )
+        return {probe["id"]: result for probe in probes}
+
+    runners = _make_run_probes(
+        binding_results={}, subject_status_by_minor={12: "present", 13: "absent"}
+    )
+    site = pypi_validate.ImportSite(
+        "crypt", "_crypt", platform_conditional=False, import_error_fallback=True
+    )
+    for fallback, expected in ((True, "confirmed"), (False, "refuted-binding")):
+        findings, _ = pypi_validate._adjudicate(
+            [_crypt_from_import_finding()],
+            installed=_installed(12, 13),
+            reference_minor=12,
+            available_binding_minors=frozenset({12, 13}),
+            run_binding_probes=run_binding_probes,
+            run_subject_probes=runners.run_subject_probes,
+            import_sites={"f1": replace(site, import_error_fallback=fallback)},
+        )
+        assert findings[0]["adjudication_status"] == expected

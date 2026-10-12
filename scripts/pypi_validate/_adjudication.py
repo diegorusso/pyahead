@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
+    from scripts.pypi_validate._import_sites import ImportSite
+
 
 from scripts.pypi_validate._interpreters import _action_version_minor
 from scripts.pypi_validate._isolation import (
@@ -108,11 +110,9 @@ def _module_import_subject(
     `B` to the attribute itself, so `S` is `A.B`, not `A`. Evidence only
     records the *bound* name, which for `from A import B as C` is `C`, not
     `B` - there is no way to recover the pre-alias attribute from static
-    evidence alone. An aliased from-import therefore names a nonexistent
-    attribute on `A` here, which correctly resolves to "absent" (not a false
-    identity match) and yields `not-adjudicable:module-not-importable`
-    rather than a wrong verdict - see the "aliased from-import" limitation
-    in docs/pypi-validation.md.
+    evidence alone. This is the fallback for a statement the harness could
+    not read: where it can, `_import_sites` names the real attribute and
+    `_site_subject_and_target` is used instead.
     """
     if evidence.get("syntax") != "from-import":
         return SubjectDescriptor(imported_module, ())
@@ -458,12 +458,29 @@ def _extra_binding_refutation(
     return None
 
 
-def _run_binding_phase(
+def _site_subject_and_target(
+    finding: dict[str, Any], site: ImportSite
+) -> tuple[SubjectDescriptor, BindingTarget]:
+    """Probe the binding the statement really makes, as read from source."""
+    imported_module = _finding_evidence(finding)["imported_module"]
+    subject = SubjectDescriptor(imported_module, (site.attribute,))
+    target = BindingTarget(
+        finding["module"],
+        _enclosing_scope_path(finding.get("enclosing_scope")),
+        site.bound_name,
+        (),
+        subject,
+    )
+    return subject, target
+
+
+def _run_binding_phase(  # noqa: C901 - one verdict path per binding outcome.
     pending: list[dict[str, Any]],
     *,
     run_binding_probes: _ProbeRunner,
     reference_minor: int,
     available_minors: frozenset[int],
+    sites: Mapping[str, ImportSite],
 ) -> tuple[list[dict[str, Any]], dict[str, SubjectDescriptor]]:
     """Run C1 binding probes; assign a verdict in place for every non-holding one.
 
@@ -479,8 +496,14 @@ def _run_binding_phase(
     subject_by_fingerprint: dict[str, SubjectDescriptor] = {}
     probes_by_minor: dict[int, list[dict[str, Any]]] = {}
     for finding in pending:
-        subject = _subject_descriptor(finding)
-        target = _binding_target(finding, subject) if subject is not None else None
+        site = sites.get(finding["fingerprint"])
+        subject: SubjectDescriptor | None
+        target: BindingTarget | None
+        if site is not None:
+            subject, target = _site_subject_and_target(finding, site)
+        else:
+            subject = _subject_descriptor(finding)
+            target = _binding_target(finding, subject) if subject is not None else None
         if subject is None or target is None:
             finding["adjudication_status"] = "not-adjudicable:module-not-importable"
             continue
@@ -526,8 +549,23 @@ def _run_binding_phase(
                 available_minors=available_minors,
                 results_by_minor=results_by_minor,
             )
-            if extra_evidence is not None:
+            site = sites.get(fingerprint)
+            failed_as_predicted = (
+                site is not None
+                and site.import_error_fallback
+                and extra_evidence is not None
+                and extra_evidence.get("subject_status") == "absent"
+            )
+            if extra_evidence is not None and not failed_as_predicted:
                 verdict, evidence = "refuted-binding", extra_evidence
+        site = sites.get(fingerprint)
+        if (
+            verdict == "refuted-binding"
+            and site is not None
+            and site.platform_conditional
+        ):
+            # The probe host's platform skipped the import; another runs it.
+            verdict = "not-adjudicable:platform-conditional"
         finding["adjudication_evidence"] = {"binding": evidence}
         if verdict is not None:
             finding["adjudication_status"] = verdict
@@ -675,6 +713,7 @@ def _adjudicate(  # noqa: PLR0913 - one input per independent adjudication conce
     available_binding_minors: frozenset[int],
     run_binding_probes: _ProbeRunner,
     run_subject_probes: _ProbeRunner,
+    import_sites: Mapping[str, ImportSite] | None = None,
 ) -> tuple[list[dict[str, Any]], frozenset[int]]:
     """Adjudicate every `pending` finding against a real CPython interpreter.
 
@@ -695,6 +734,7 @@ def _adjudicate(  # noqa: PLR0913 - one input per independent adjudication conce
         run_binding_probes=run_binding_probes,
         reference_minor=reference_minor,
         available_minors=available_binding_minors,
+        sites=import_sites or {},
     )
 
     timeline_pending: list[dict[str, Any]] = []
