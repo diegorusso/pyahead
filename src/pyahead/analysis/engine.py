@@ -1,11 +1,9 @@
 """End-to-end static-analysis pipeline."""
 
-import hashlib
 import io
 import tokenize
-from collections import defaultdict
 from collections.abc import Callable, Collection, Iterator, Mapping
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
 
 import libcst as cst
@@ -37,6 +35,12 @@ from pyahead.analysis.discovery import (
     discover_python_files,
     dynamic_path_module_paths,
     project_module_paths,
+)
+from pyahead.analysis.findings import (
+    FindingContext,
+    ImportPathMutation,
+    build_findings,
+    dynamic_path_adjustments,
 )
 from pyahead.analysis.matchers import MatcherIndex, build_matcher_index
 from pyahead.analysis.matchers.base import IndexedMatcher
@@ -72,12 +76,10 @@ from pyahead.analysis.reachability import (
 )
 from pyahead.analysis.suppressions import (
     InlineSuppressionIndex,
-    PerFileSuppressionIndex,
     bind_inline_suppressions,
     collect_inline_suppressions,
     index_inline_suppressions,
     resolve_per_file_ignores,
-    suppression_for_finding,
 )
 from pyahead.baseline import load_baseline
 from pyahead.config import (
@@ -88,7 +90,6 @@ from pyahead.config import (
 )
 from pyahead.model import (
     AnalysisInference,
-    BaselineStatus,
     BuiltinPatternMatcher,
     CallShapeMatcher,
     ChangeEventKind,
@@ -96,12 +97,10 @@ from pyahead.model import (
     Diagnostic,
     DiagnosticCategory,
     Finding,
-    Impact,
     LiteralDynamicImportMatcher,
     MatchConfidence,
     ModuleImportMatcher,
     PerFileIgnore,
-    Policy,
     QualifiedCallMatcher,
     QualifiedReferenceMatcher,
     ReferenceContext,
@@ -112,11 +111,9 @@ from pyahead.model import (
     SourcePosition,
     SourceRegion,
     StaticMatch,
-    SubjectKind,
     UsageContext,
 )
 from pyahead.registry import load_registry
-from pyahead.timeline import derive_state_ranges
 from pyahead.versions import PythonMinor
 
 MAX_PARSE_NESTING = 200
@@ -180,25 +177,6 @@ class _FileAnalysisContext:
 
 
 @dataclass(frozen=True)
-class _FindingContext:
-    registry: Registry
-    policy: Policy
-    minimum_confidence: MatchConfidence
-    show_unscheduled: bool
-    inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex]
-    per_file_ignores: PerFileSuppressionIndex
-    baseline_fingerprints: frozenset[str]
-
-
-@dataclass(frozen=True)
-class _ImportPathMutation:
-    """An exact import-derived mutation of Python's module search path."""
-
-    operation: str
-    location: SourceLocation
-
-
-@dataclass(frozen=True)
 class _FileAnalysis:
     """What one file contributed: matches only when it was fully analysed."""
 
@@ -206,7 +184,7 @@ class _FileAnalysis:
     diagnostics: tuple[Diagnostic, ...] = ()
     matches: tuple[StaticMatch, ...] = ()
     inferences: tuple[AnalysisInference, ...] = ()
-    path_mutations: tuple[_ImportPathMutation, ...] = ()
+    path_mutations: tuple[ImportPathMutation, ...] = ()
 
     @property
     def incomplete(self) -> bool:
@@ -296,7 +274,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         self._parents: dict[int, cst.CSTNode] | None = None
         self.matches: list[StaticMatch] = []
         self.inferences: list[AnalysisInference] = []
-        self.path_mutations: list[_ImportPathMutation] = []
+        self.path_mutations: list[ImportPathMutation] = []
 
     def on_visit(self, node: cst.CSTNode) -> bool:
         """Track ``node`` as the innermost ancestor while it is visited."""
@@ -1006,7 +984,7 @@ class _MatcherVisitor(cst.CSTVisitor):
             resolution = self._resolution(node.func, f"sys.path.{operation}")
             if resolution.confidence is MatchConfidence.HIGH:
                 self.path_mutations.append(
-                    _ImportPathMutation(
+                    ImportPathMutation(
                         operation=operation,
                         location=_location(
                             self._path,
@@ -1361,306 +1339,6 @@ def _read_source(
         )
 
 
-def _fingerprint(match: StaticMatch, occurrence_ordinal: int) -> str:
-    material = "\0".join(
-        (
-            "pyahead-fingerprint-v1",
-            match.rule_id,
-            match.location.path.as_posix(),
-            match.enclosing_scope,
-            match.subject,
-            str(occurrence_ordinal),
-        )
-    )
-    return hashlib.sha256(material.encode()).hexdigest()
-
-
-_MATCH_KIND_PRIORITY = {
-    "module-import": 0,
-    "qualified-reference": 1,
-    "qualified-call": 2,
-    "literal-dynamic-import": 2,
-    "builtin-pattern": 2,
-    "call-shape": 3,
-}
-_CONFIDENCE_PRIORITY = {
-    MatchConfidence.LOW: 0,
-    MatchConfidence.MEDIUM: 1,
-    MatchConfidence.HIGH: 2,
-}
-
-
-def _deduplicate_matches(matches: list[StaticMatch]) -> tuple[StaticMatch, ...]:
-    """Merge matchers that identify the same rule, region, and subject."""
-    deduplicated: dict[tuple[str, SourceLocation, str], StaticMatch] = {}
-    for match in sorted(
-        matches,
-        key=lambda item: (
-            item.location.path.as_posix(),
-            item.location.region.start,
-            item.rule_id,
-            item.matcher_kind,
-        ),
-    ):
-        key = (match.rule_id, match.location, match.subject)
-        existing = deduplicated.get(key)
-        if existing is None:
-            deduplicated[key] = match
-            continue
-        existing_strength = (
-            _CONFIDENCE_PRIORITY[existing.confidence],
-            _MATCH_KIND_PRIORITY[existing.matcher_kind],
-        )
-        incoming_strength = (
-            _CONFIDENCE_PRIORITY[match.confidence],
-            _MATCH_KIND_PRIORITY[match.matcher_kind],
-        )
-        primary, secondary = (
-            (match, existing)
-            if incoming_strength > existing_strength
-            else (existing, match)
-        )
-        evidence = list(primary.evidence)
-        evidence_keys = {name for name, _value in evidence}
-        evidence.extend(
-            (name, value)
-            for name, value in secondary.evidence
-            if name not in evidence_keys
-        )
-        deduplicated[key] = StaticMatch(
-            rule_id=primary.rule_id,
-            matcher_kind=primary.matcher_kind,
-            location=primary.location,
-            enclosing_scope=primary.enclosing_scope,
-            subject=primary.subject,
-            confidence=primary.confidence,
-            reachable_versions=(
-                primary.reachable_versions | secondary.reachable_versions
-            ),
-            usage_contexts=primary.usage_contexts | secondary.usage_contexts,
-            evidence=tuple(evidence),
-        )
-    return tuple(deduplicated.values())
-
-
-def _replace_evidence(
-    evidence: tuple[tuple[str, str | tuple[str, ...]], ...],
-    **updates: str | tuple[str, ...],
-) -> tuple[tuple[str, str | tuple[str, ...]], ...]:
-    """Replace named evidence while retaining deterministic key order."""
-    values = dict(evidence)
-    values.update(updates)
-    return tuple(sorted(values.items()))
-
-
-def _dynamic_path_adjustments(
-    matches: list[StaticMatch],
-    registry: Registry,
-    dynamic_modules: dict[str, tuple[PurePosixPath, ...]],
-    mutations: list[_ImportPathMutation],
-) -> tuple[list[StaticMatch], tuple[AnalysisInference, ...]]:
-    """Prevent dynamic repository paths from fabricating an exact origin."""
-    if not mutations:
-        return matches, ()
-    rules = {rule.id: rule for rule in registry.rules}
-    operations = tuple(sorted({mutation.operation for mutation in mutations}))
-    mutation_locations = tuple(
-        sorted(
-            {
-                (
-                    f"{mutation.location.path.as_posix()}:"
-                    f"{mutation.location.region.start.line}:"
-                    f"{mutation.location.region.start.column}"
-                )
-                for mutation in mutations
-            }
-        )
-    )
-    adjusted: list[StaticMatch] = []
-    inferences: dict[tuple[SourceLocation, str], AnalysisInference] = {}
-    for match in matches:
-        match_evidence = dict(match.evidence)
-        if not ({"imported_module", "qualified_names"} & match_evidence.keys()):
-            adjusted.append(match)
-            continue
-        module = match.subject.partition(".")[0]
-        candidates = dynamic_modules.get(module, ())
-        rule = rules[match.rule_id]
-        has_insert = "insert" in operations
-        removals = tuple(
-            event.python
-            for event in rule.events
-            if event.kind is ChangeEventKind.REMOVED
-        )
-        append_after_removal = (
-            "append" in operations
-            and rule.subject_kind is SubjectKind.MODULE
-            and bool(removals)
-        )
-        if not candidates or not (has_insert or append_after_removal):
-            adjusted.append(match)
-            continue
-
-        candidate_paths = tuple(path.as_posix() for path in candidates)
-        resolution = (
-            "dynamic-sys-path-ambiguity"
-            if has_insert
-            else "stdlib-before-appended-project-module"
-        )
-        reachable_versions = match.reachable_versions
-        confidence = match.confidence
-        if has_insert:
-            confidence = MatchConfidence.MEDIUM
-        else:
-            removal = min(removals)
-            reachable_versions = frozenset(
-                version for version in reachable_versions if version < removal
-            )
-        adjusted.append(
-            replace(
-                match,
-                confidence=confidence,
-                reachable_versions=reachable_versions,
-                evidence=_replace_evidence(
-                    match.evidence,
-                    candidate_paths=candidate_paths,
-                    resolution=resolution,
-                    sys_path_mutations=mutation_locations,
-                    sys_path_operations=operations,
-                ),
-            )
-        )
-        key = (match.location, module)
-        inferences[key] = AnalysisInference(
-            code="PYA2001",
-            kind="module-resolution",
-            message=(
-                f"treated import origin for {module!r} as uncertain because "
-                "the repository mutates sys.path and contains a matching "
-                "nested module"
-            ),
-            location=match.location,
-            evidence=(
-                ("candidate_paths", candidate_paths),
-                ("imported_module", module),
-                ("resolution", resolution),
-                ("sys_path_mutations", mutation_locations),
-                ("sys_path_operations", operations),
-            ),
-        )
-    return adjusted, tuple(inferences[key] for key in sorted(inferences))
-
-
-def _findings(
-    matches: list[StaticMatch],
-    context: _FindingContext,
-) -> tuple[Finding, ...]:
-    registry = context.registry
-    policy = context.policy
-    rules = {rule.id: rule for rule in registry.rules}
-    ordinals: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
-    findings: list[Finding] = []
-    for match in sorted(
-        _deduplicate_matches(matches),
-        key=lambda item: (
-            item.location.path.as_posix(),
-            item.location.region.start,
-            item.rule_id,
-        ),
-    ):
-        ordinal_key = (
-            match.location.path.as_posix(),
-            match.rule_id,
-            match.enclosing_scope,
-            match.subject,
-        )
-        occurrence_ordinal = ordinals[ordinal_key]
-        ordinals[ordinal_key] += 1
-        # Fingerprint identity is established before finding-emission filters.
-        fingerprint = _fingerprint(match, occurrence_ordinal)
-        if (
-            _CONFIDENCE_PRIORITY[match.confidence]
-            < _CONFIDENCE_PRIORITY[context.minimum_confidence]
-        ):
-            continue
-        rule = rules[match.rule_id]
-        usage_contexts = frozenset(rule.contexts).intersection(match.usage_contexts)
-        if not usage_contexts:
-            continue
-        states = derive_state_ranges(rule, match.reachable_versions)
-        if not states:
-            continue
-        removal_unscheduled = rule.removal_unscheduled
-        deprecation_only = all(
-            event.kind is ChangeEventKind.DEPRECATED for event in rule.events
-        )
-        if removal_unscheduled and deprecation_only and not context.show_unscheduled:
-            continue
-        impact = max(
-            (Impact(state.state.value) for state in states),
-            key=lambda value: {
-                Impact.INFORMATIONAL: 0,
-                Impact.DEPRECATED: 1,
-                Impact.RISK: 2,
-                Impact.BREAKING: 3,
-            }[value],
-        )
-        action_version = min(
-            state.from_python for state in states if state.state.value == impact.value
-        )
-        finding = Finding(
-            fingerprint=fingerprint,
-            rule_id=rule.id,
-            title=rule.title,
-            location=match.location,
-            enclosing_scope=match.enclosing_scope,
-            subject=match.subject,
-            match_kind=match.matcher_kind,
-            match_confidence=match.confidence,
-            match_evidence=match.evidence,
-            usage_contexts=tuple(
-                sorted(usage_contexts, key=lambda context: context.value)
-            ),
-            reachable_versions=tuple(sorted(match.reachable_versions)),
-            states=states,
-            impact=impact,
-            action_version=action_version,
-            events=tuple(
-                event for event in rule.events if event.python <= policy.horizon_python
-            ),
-            remediation=rule.remediation,
-            sources=rule.sources,
-            registry_revision=registry.revision,
-            removal_unscheduled=removal_unscheduled,
-        )
-        findings.append(
-            replace(
-                finding,
-                suppression=suppression_for_finding(
-                    finding,
-                    context.inline_suppressions.get(finding.location.path),
-                    context.per_file_ignores,
-                ),
-                baseline_status=(
-                    BaselineStatus.EXISTING
-                    if finding.fingerprint in context.baseline_fingerprints
-                    else BaselineStatus.NEW
-                ),
-            )
-        )
-    return tuple(
-        sorted(
-            findings,
-            key=lambda finding: (
-                finding.action_version,
-                finding.impact,
-                finding.rule_id,
-                finding.location,
-            ),
-        )
-    )
-
-
 def _discovery_issue_diagnostic(issue: DiscoveryIssue) -> Diagnostic:
     return Diagnostic(
         code=issue.code,
@@ -1837,7 +1515,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
 
     matches: list[StaticMatch] = []
     inferences: list[AnalysisInference] = []
-    path_mutations: list[_ImportPathMutation] = []
+    path_mutations: list[ImportPathMutation] = []
     inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex] = {}
     diagnostics = [
         *suppression_diagnostics,
@@ -1866,7 +1544,7 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         inferences.extend(analysis.inferences)
         path_mutations.extend(analysis.path_mutations)
 
-    matches, path_inferences = _dynamic_path_adjustments(
+    matches, path_inferences = dynamic_path_adjustments(
         matches,
         registry,
         dynamic_modules,
@@ -1874,9 +1552,9 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
     )
     inferences.extend(path_inferences)
 
-    findings = _findings(
+    findings = build_findings(
         matches,
-        _FindingContext(
+        FindingContext(
             registry=registry,
             policy=policy,
             minimum_confidence=resolved.scan.minimum_confidence,
