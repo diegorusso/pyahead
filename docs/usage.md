@@ -693,6 +693,9 @@ The public alpha deliberately does not:
 - infer general Python types or arbitrary dynamic imports and reflection;
 - understand user-defined version helpers, patch-level guards, or general
   interprocedural control flow;
+- tell that a `try` block always fails on Python 3 before reaching an import,
+  as in a Python 2 compatibility block that starts with `unicode = unicode`;
+  such an import is still reported (one row in the PyPI top-1000 record);
 - evaluate arbitrary `sys.path` expressions or prove that a path-mutating
   helper executes;
 - analyze C extensions or cover every CPython and third-party compatibility
