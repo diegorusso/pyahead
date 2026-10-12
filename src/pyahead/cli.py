@@ -30,8 +30,7 @@ from pyahead.model import (
     ScanReport,
 )
 from pyahead.output import OutputError, write_text_atomic
-from pyahead.registry import RegistryError, load_registry
-from pyahead.registry.loader import validate_registry
+from pyahead.registry import RegistryError, load_registry, validate_registry
 from pyahead.registry.presentation import (
     render_registry_coverage,
     render_registry_list,

@@ -32,6 +32,9 @@ from pyahead.dependencies._model import (
     ResolverResult,
     TransitiveRequirementEvidence,
 )
+from pyahead.dependencies._process import (
+    ProcessRunner,
+)
 from pyahead.dependencies._report import (
     DependencyReport,
     ResolverAdapter,
@@ -57,6 +60,7 @@ __all__ = [
     "MetadataArtifact",
     "MetadataIssue",
     "MetadataKind",
+    "ProcessRunner",
     "RequiresPythonStatus",
     "ResolutionStatus",
     "ResolvedPackage",
