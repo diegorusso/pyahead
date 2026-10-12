@@ -327,6 +327,25 @@ def _warning(document: dict[str, object]) -> WarningEvidence:
     )
 
 
+def _check_completeness_claim(value: object) -> None:
+    """Reject complete evidence that admits dropped warnings, in plain words.
+
+    The schema encodes this rule as a oneOf over the run object, whose
+    failure would only say that warnings_dropped must equal 0.
+    """
+    run = value.get("run") if isinstance(value, dict) else None
+    if (
+        isinstance(run, dict)
+        and run.get("warnings_complete") is True
+        and type(run.get("warnings_dropped")) is int
+        and run["warnings_dropped"] != 0
+    ):
+        _raise_error(
+            "evidence document.run",
+            "warnings_complete may be true only when warnings_dropped is zero",
+        )
+
+
 def parse_evidence_document(value: object) -> EvidenceDocument:
     """Validate one closed-world evidence schema version 1 document.
 
@@ -334,16 +353,10 @@ def parse_evidence_document(value: object) -> EvidenceDocument:
     rules; what is left here is building the model and lowercasing the
     commit.
     """
+    _check_completeness_claim(value)
     problem = schema_problem(evidence_json_schema(), value, "evidence document")
     if problem is not None:
-        location, message = problem
-        if location == "evidence document.run.warnings_dropped" and (
-            message == "must equal 0"
-        ):
-            # Only the run's oneOf can demand zero: say which rule it is.
-            location = "evidence document.run"
-            message = "warnings_complete may be true only when warnings_dropped is zero"
-        _raise_error(location, message)
+        _raise_error(*problem)
     document = cast("dict[str, dict[str, object]]", value)
     provider, source = document["provider"], document["source"]
     environment, run = document["environment"], document["run"]
