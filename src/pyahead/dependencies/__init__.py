@@ -79,7 +79,8 @@ __all__ = [
 ]
 
 # The public names keep the module they had before the package was split, so
-# reprs, pickles and type-checker messages read as they did.
+# reprs and pickles read as they did. Static type checkers still name the
+# private module that defines each one.
 for _name in __all__:
     globals()[_name].__module__ = __name__
 del _name

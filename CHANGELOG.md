@@ -18,6 +18,10 @@ stabilizing.
 
 ### Changed
 
+- `pyahead.dependencies` is a package of private modules. Every public name
+  imports from `pyahead.dependencies` as before and keeps that `__module__`,
+  but a static type checker now names the defining module in its messages,
+  for example `pyahead.dependencies._report.DependencyReport`.
 - Scans are faster, with byte-identical reports: on the development host
   (aarch64) 100 real standard-library modules take 22.9 s instead of
   48.4 s, and start-up plus one file 0.96 s instead of 1.70 s. Registry
