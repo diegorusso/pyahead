@@ -10,10 +10,13 @@ harness's.
 
 ## Decision
 
-- Prepared by an agent on 12 October 2026. **Approval pending.** Under the
-  repository's gate convention an agent may prepare and verify this evidence
-  but cannot approve it; the repository owner decides.
-- Proposed decision: accept as the current precision record. Adjudication
+- Prepared by an agent on 12 October 2026. **Approved 12 October 2026 by
+  Diego Russo, repository owner and product decision-maker**, on the strength
+  of this record and a summary of it. Under the repository's gate convention
+  an agent may prepare and verify this evidence but cannot approve it.
+- Decision: accept as the current precision record, and stop raising
+  coverage here: the remaining import errors need optional dependencies,
+  Windows, or test-only modules, which the harness does not install. Adjudication
   coverage rises from 84.03% to 91.74%; every row that moved was
   `binding-not-visible`, none moved to a refutation, and no other row of
   the 1453 changed.
@@ -44,7 +47,7 @@ first 12 October record documents; unchanged.
 
 Limitations restated: recall is not measured; the probe host is Linux only.
 
-Reviewed by: (pending)
+Reviewed by: Diego Russo, 2026-10-12
 ```
 
 ## What changed, and what it did
