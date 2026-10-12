@@ -32,7 +32,9 @@ if sys.platform != "linux":  # pragma: no cover - CI platform guard
         allow_module_level=True,
     )
 
-from scripts import pypi_validate
+from tests._internals import PackageInternals
+
+pypi_validate = PackageInternals("scripts.pypi_validate")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CORPUS_SIZE = 1000

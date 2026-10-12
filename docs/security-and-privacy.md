@@ -304,7 +304,7 @@ evidence belong in separately access-controlled Gate C records, not corpus JSON.
 
 ## Repo-internal PyPI validation
 
-`scripts/pypi_validate.py run` is the one tool in this repository that
+`python -m scripts.pypi_validate run` is the one tool in this repository that
 installs and imports arbitrary third-party code, deliberately crossing the
 [default scan boundary](#default-scan-boundary) that every other command
 (including the corpus runner above) upholds. It is a repo-internal precision

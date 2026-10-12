@@ -13,7 +13,7 @@ on macOS setting it makes CPython fail to allocate, so every probe returns
 `probe-crashed`. The `tests/unit/test_pypi_probe.py`,
 `tests/unit/test_pypi_validate.py`, and
 `tests/integration/test_pypi_validation.py` modules skip at import on other
-platforms, before `scripts/pypi_validate.py` can import the POSIX-only
+platforms, before `scripts/pypi_validate` can import the POSIX-only
 `resource` module. Every other command in this repository remains
 cross-platform.
 
@@ -212,7 +212,7 @@ This harness installs and imports arbitrary third-party code from the PyPI
 top-1000. That crosses PyAhead's own "never execute target code, never touch
 the network" boundary described in `docs/security-and-privacy.md`, so:
 
-- `pypi_validate.py run` requires an explicit `--execute-third-party-code`
+- `pypi_validate run` requires an explicit `--execute-third-party-code`
   flag and refuses to run without it;
 - probes and installs run under `bwrap --unshare-net --unshare-pid
   --die-with-parent`, with a private `/tmp`, `/run`, and `/proc` (a fresh
@@ -249,7 +249,7 @@ the network" boundary described in `docs/security-and-privacy.md`, so:
   wheelhouse could resolve to a different, unverified file;
 - no probe result is ever trusted to be well-formed: both `pypi_probe.py`
   (validating what an isolated single-probe child wrote) and
-  `pypi_validate.py` (validating a whole batch process's own output) parse
+  `pypi_validate` (validating a whole batch process's own output) parse
   every result against a closed per-kind schema - not just that `status` is
   in that kind's vocabulary, but that the result carries exactly that kind's
   field set with no fields missing, no extras, and every value correctly
@@ -313,7 +313,7 @@ committed, matching `docs/corpus-review.md`.
 
 ## Shard/resume operation
 
-`pypi_validate.py run` is the offline runner: it provisions interpreters and
+`pypi_validate run` is the offline runner: it provisions interpreters and
 one venv per `(package, interpreter)` actually needed (the scan reference,
 plus any other minor a finding needs whose interpreter is installed), scans
 each package with `pyahead check`, probes every high-confidence finding,
@@ -417,7 +417,7 @@ For every `refuted-binding` row in the worksheet:
    existing pattern of a synthetic project plus an assertion that the rule
    no longer fires (or no longer fires at high confidence).
 3. Fix the matcher or registry rule that produced the false positive.
-4. Re-run only the affected package(s) with `pypi_validate.py run --refresh
+4. Re-run only the affected package(s) with `pypi_validate run --refresh
    --limit` (or a targeted `--shard`) to confirm the fixture and the fix
    agree, without re-running the full sweep.
 

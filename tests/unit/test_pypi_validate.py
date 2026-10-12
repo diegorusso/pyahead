@@ -24,7 +24,9 @@ if sys.platform != "linux":  # pragma: no cover - CI platform guard
         allow_module_level=True,
     )
 
-from scripts import pypi_validate
+from tests._internals import PackageInternals
+
+pypi_validate = PackageInternals("scripts.pypi_validate")
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -888,7 +890,7 @@ def test_run_survives_an_unexpected_failure_past_venv_creation(
         message = "scan report exceeded the 64 MiB review limit"
         raise pypi_validate.PypiValidateError(message)
 
-    monkeypatch.setattr(pypi_validate, "_run_scan", _broken_scan)
+    pypi_validate.patch(monkeypatch, "_run_scan", _broken_scan)
 
     work_dir = tmp_path / "work"
     result = _run_main(
@@ -1033,7 +1035,7 @@ def test_run_resolves_a_relative_work_dir_before_processing(
             "interpreter": None,
         }
 
-    monkeypatch.setattr(pypi_validate, "_process_package", _fake_process_package)
+    pypi_validate.patch(monkeypatch, "_process_package", _fake_process_package)
     monkeypatch.chdir(tmp_path)
     result = _run_main(
         [
@@ -1124,7 +1126,7 @@ def test_run_resumes_by_default_and_reprocesses_with_refresh(
         )
         return {**base, "status": "skipped", "reason": "test-stub"}
 
-    monkeypatch.setattr(pypi_validate, "_process_package", _fake_process_package)
+    pypi_validate.patch(monkeypatch, "_process_package", _fake_process_package)
     work_dir = tmp_path / "work"
     base_argv = [
         "run",

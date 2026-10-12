@@ -443,7 +443,7 @@ pyahead/
 │   ├── install_smoke.py             # wheel/sdist install verification
 │   ├── pypi_corpus.py               # PyPI top-1000 manifest and acquisition
 │   ├── pypi_probe.py                # target-interpreter probe payload
-│   ├── pypi_validate.py             # provision, scan, and adjudicate
+│   ├── pypi_validate/               # provision, scan, and adjudicate
 │   └── pypi_report.py               # aggregate accuracy report and worksheet
 ├── CHANGELOG.md
 ├── LICENSE
