@@ -62,6 +62,8 @@ _EXPANDED_TAG_COUNT = 300
 _RESOLVER_PROCESS_COUNT = 2
 _SHA256_HEX_LENGTH = 64
 _TIMEOUT_SECONDS = 2.5
+# A real uv process: its first start on a cold CI runner can exceed 2.5 s.
+_REAL_UV_TIMEOUT_SECONDS = 60.0
 _PROCESS_TREE_DETECTION_SECONDS = 1.7
 _PROCESS_TREE_BOUND_SECONDS = 3.0
 _UNSATISFIABLE_DIAGNOSTIC = (
@@ -1358,10 +1360,13 @@ def test_real_offline_adapter_accepts_an_empty_active_solution(tmp_path: Path) -
     _wheel(wheel)
     artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
     assert issues == ()
-    configuration = _configuration(
-        metadata_paths=(wheel,),
-        requirements=('demo==1.0; python_version < "3"',),
-        resolve=True,
+    configuration = replace(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=('demo==1.0; python_version < "3"',),
+            resolve=True,
+        ),
+        timeout_seconds=_REAL_UV_TIMEOUT_SECONDS,
     )
 
     result = UvResolverAdapter().resolve(
@@ -1386,10 +1391,13 @@ def test_real_offline_adapter_binds_pep440_equivalent_version_spellings(
     artifacts, issues = inspect_dependency_metadata((wheel,), root=tmp_path)
     assert issues == ()
     assert artifacts[0].version == "1.0.0"
-    configuration = _configuration(
-        metadata_paths=(wheel,),
-        requirements=("demo==1.0",),
-        resolve=True,
+    configuration = replace(
+        _configuration(
+            metadata_paths=(wheel,),
+            requirements=("demo==1.0",),
+            resolve=True,
+        ),
+        timeout_seconds=_REAL_UV_TIMEOUT_SECONDS,
     )
 
     result = UvResolverAdapter().resolve(
