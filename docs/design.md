@@ -436,6 +436,7 @@ pyahead/
 │   └── fixtures/
 │       └── rules/
 ├── scripts/
+│   ├── _common.py                   # helpers the scripts share
 │   ├── benchmark.py                 # performance-budget harness
 │   ├── corpus.py                    # Gate C corpus acquisition
 │   ├── install_smoke.py             # wheel/sdist install verification

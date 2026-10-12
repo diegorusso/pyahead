@@ -10,7 +10,6 @@ packages must already be installed locally, and installation always uses
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib
 import json
 import os
@@ -34,6 +33,11 @@ from pyahead._human_text import SafeArgumentParser, escape_terminal_text
 from pyahead.registry import load_registry
 from pyahead.versions import InvalidPythonMinorError, PythonMinor
 from scripts import pypi_corpus
+from scripts._common import normalized_name as _normalized_name
+from scripts._common import positive_float as _positive_float
+from scripts._common import positive_integer as _positive_integer
+from scripts._common import sha256_path as _sha256_path
+from scripts._common import write_atomic as _write_atomic
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -163,34 +167,6 @@ class RunOptions:
 
 def _tail(text: str) -> str:
     return text[-_STDERR_TAIL_BYTES:]
-
-
-def _normalized_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _positive_float(value: str) -> float:
-    try:
-        parsed = float(value)
-    except ValueError as error:
-        message = "value must be a number"
-        raise argparse.ArgumentTypeError(message) from error
-    if parsed <= 0:
-        message = "value must be greater than zero"
-        raise argparse.ArgumentTypeError(message)
-    return parsed
-
-
-def _positive_integer(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as error:
-        message = "value must be an integer"
-        raise argparse.ArgumentTypeError(message) from error
-    if parsed <= 0:
-        message = "value must be greater than zero"
-        raise argparse.ArgumentTypeError(message)
-    return parsed
 
 
 def _shard_spec(value: str) -> tuple[int, int]:
@@ -1785,26 +1761,6 @@ def _run_binding_probe_batch(
 # --- per-package orchestration -------------------------------------------
 
 
-def _write_atomic(path: Path, content: str) -> None:
-    destination = path.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".tmp",
-    )
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary_path.replace(destination)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
-
-
 def _package_base(entry: PackageEntry, *, manifest_sha256: str) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -2113,14 +2069,6 @@ def _process_package(  # noqa: C901 - one early return per closed shard status.
 
 
 # --- CLI -------------------------------------------------------------------
-
-
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _parser() -> argparse.ArgumentParser:

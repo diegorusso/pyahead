@@ -8,12 +8,9 @@ record plus an identity-bound disagreement worksheet for triage.
 
 from __future__ import annotations
 
-import argparse
 import csv
 import hashlib
 import json
-import os
-import re
 import sys
 import tempfile
 from pathlib import Path
@@ -21,11 +18,19 @@ from typing import TYPE_CHECKING, Any
 
 from pyahead._human_text import SafeArgumentParser, escape_terminal_text
 from scripts import pypi_corpus
+from scripts._common import (
+    SPREADSHEET_FORMULA_PREFIXES as _SPREADSHEET_FORMULA_PREFIXES,
+)
+from scripts._common import normalized_name as _normalized_name
+from scripts._common import positive_integer as _positive_integer
+from scripts._common import sha256_path as _sha256_path
+from scripts._common import spreadsheet_safe as _spreadsheet_safe
+from scripts._common import write_atomic as _write_atomic
 
 if TYPE_CHECKING:
-    from scripts.pypi_corpus import PackageEntry
+    import argparse
 
-_SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
+    from scripts.pypi_corpus import PackageEntry
 
 _PACKAGE_DERIVED_FIELDS = (
     "package_name",
@@ -86,30 +91,6 @@ _NOT_ADJUDICABLE_REASONS = frozenset(
 
 class PypiReportError(RuntimeError):
     """Raised when a PyPI validation report would be incomplete or untrustworthy."""
-
-
-def _positive_integer(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as error:
-        message = "value must be an integer"
-        raise argparse.ArgumentTypeError(message) from error
-    if parsed <= 0:
-        message = "value must be greater than zero"
-        raise argparse.ArgumentTypeError(message)
-    return parsed
-
-
-def _normalized_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 # --- shard loading and completeness verification ----------------------------
@@ -284,19 +265,6 @@ def _build_record(
 # --- disagreement worksheet ---------------------------------------------------
 
 
-def _spreadsheet_safe(value: str) -> str:
-    """Neutralize a value a spreadsheet would otherwise evaluate as a formula.
-
-    Package-derived worksheet columns carry attacker-chosen text: a scanned
-    file may legally be named `=cmd|...` or a PyPI project may be registered
-    as `-x`. The review worksheet is opened in a spreadsheet, so such a value
-    is quoted with a leading apostrophe rather than left to execute.
-    """
-    if value.startswith(_SPREADSHEET_FORMULA_PREFIXES):
-        return f"'{value}"
-    return value
-
-
 def _sample_rank(package: dict[str, Any], finding: dict[str, Any]) -> str:
     identity = "\0".join(
         (
@@ -360,26 +328,6 @@ def _worksheet_rows(
     rows = [*always_included, *sample_candidates[:sample_size]]
     rows.sort(key=lambda row: str(row["sample_rank"]))
     return rows
-
-
-def _write_atomic(path: Path, content: str) -> None:
-    destination = path.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".tmp",
-    )
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary_path.replace(destination)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
 
 
 def _render_worksheet(rows: list[dict[str, Any]], *, result_digest: str) -> str:

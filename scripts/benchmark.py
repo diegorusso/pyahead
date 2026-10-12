@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import platform
 import shutil
 import statistics
@@ -24,6 +23,13 @@ from pathlib import Path
 from typing import Any
 
 from pyahead._human_text import SafeArgumentParser, escape_terminal_text
+
+if not __package__:  # run as a file: make the `scripts` package importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts import _common
+
+_positive_integer = _common.positive_integer
+_write_atomic = _common.write_atomic
 
 
 class BenchmarkError(RuntimeError):
@@ -46,18 +52,6 @@ _CORPORA = frozenset({"synthetic", "stdlib"})
 # Real, varied modules present in every supported CPython. Exact contents
 # follow the interpreter running the benchmark, which the results record.
 _STDLIB_PACKAGES = ("asyncio", "email", "importlib", "json", "http", "urllib")
-
-
-def _positive_integer(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as error:
-        message = "value must be an integer"
-        raise argparse.ArgumentTypeError(message) from error
-    if parsed <= 0:
-        message = "value must be greater than zero"
-        raise argparse.ArgumentTypeError(message)
-    return parsed
 
 
 def _strict_number(value: object, *, label: str) -> float:
@@ -350,23 +344,7 @@ def _write_output(destination: Path, content: str) -> None:
     if destination == Path("-"):
         sys.stdout.write(content)
         return
-    destination = destination.resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        dir=destination.parent,
-        prefix=f".{destination.name}.",
-        suffix=".tmp",
-    )
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary_path.replace(destination)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
+    _write_atomic(destination, content)
 
 
 def _parser() -> argparse.ArgumentParser:
