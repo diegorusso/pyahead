@@ -12,12 +12,13 @@
 // either side moves. Pyodide 314.0.6 runs Python 3.14.2 and ships libcst
 // 1.8.6, which satisfies PyAhead's `libcst>=1.8,<2` without an override.
 export const PYODIDE_VERSION = "314.0.6";
-export const PYAHEAD_VERSION = "0.6.0";
+export const PYAHEAD_VERSION = "0.7.0";
 export const PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
 // Installed in order: the two pure-Python dependencies first, so PyAhead's own
-// wheel finds them already present and micropip never reaches PyPI. libcst and
-// PyYAML come from Pyodide's own distribution.
+// wheel finds them already present and micropip never reaches PyPI. libcst,
+// PyYAML and jsonschema (with referencing and rpds-py) come from Pyodide's own
+// distribution; a scan never imports jsonschema, but the wheel declares it.
 const WHEELS = [
   "packaging-26.3-py3-none-any.whl",
   "pathspec-1.1.1-py3-none-any.whl",
@@ -113,7 +114,7 @@ export function createScanner({ loadPyodide, indexURL, vendorBase, onProgress = 
       const pyodide = await loadPyodide(indexURL ? { indexURL } : undefined);
 
       onProgress({ stage: "packages", message: "Loading the Python parser" });
-      await pyodide.loadPackage(["micropip", "libcst", "pyyaml"]);
+      await pyodide.loadPackage(["micropip", "libcst", "pyyaml", "jsonschema"]);
 
       onProgress({ stage: "pyahead", message: `Installing PyAhead ${PYAHEAD_VERSION}` });
       const micropip = pyodide.pyimport("micropip");
