@@ -312,6 +312,32 @@ def _check_zip_archive_limits(raw: bytes) -> None:
         _fail_metadata("invalid ZIP archive")
 
 
+# Everything zipfile and its decompressors raise for a malformed archive.
+_ZIP_ERRORS = (
+    EOFError,
+    OSError,
+    RuntimeError,
+    UnicodeError,
+    ValueError,
+    zipfile.BadZipFile,
+    zlib.error,
+)
+
+
+def _read_zip_member(
+    archive: zipfile.ZipFile, member: zipfile.ZipInfo, what: str
+) -> bytes:
+    """Read one bounded member, charging its expansion to the shared budget."""
+    if member.file_size > _MAX_METADATA_BYTES:
+        _fail_metadata(f"{what} exceeds the size limit")
+    with archive.open(member) as stream:
+        payload = stream.read(_MAX_METADATA_BYTES + 1)
+    _consume_archive_expansion(len(payload))
+    if len(payload) > _MAX_METADATA_BYTES:
+        _fail_metadata(f"{what} exceeds the size limit")
+    return payload
+
+
 def _zip_metadata(raw: bytes, suffix: str) -> tuple[str, bytes]:
     _check_zip_archive_limits(raw)
     try:
@@ -331,25 +357,12 @@ def _zip_metadata(raw: bytes, suffix: str) -> tuple[str, bytes]:
                 message = f"archive must contain exactly one {suffix}"
                 _fail_metadata(message)
             selected = candidates[0]
-            if selected.file_size > _MAX_METADATA_BYTES:
-                _fail_metadata("core metadata exceeds the size limit")
-            with archive.open(selected) as stream:
-                payload = stream.read(_MAX_METADATA_BYTES + 1)
-            _consume_archive_expansion(len(payload))
-            if len(payload) > _MAX_METADATA_BYTES:
-                _fail_metadata("core metadata exceeds the size limit")
-            return selected.filename, payload
+            return selected.filename, _read_zip_member(
+                archive, selected, "core metadata"
+            )
     except _MetadataError:
         raise
-    except (
-        EOFError,
-        OSError,
-        RuntimeError,
-        UnicodeError,
-        ValueError,
-        zipfile.BadZipFile,
-        zlib.error,
-    ):
+    except _ZIP_ERRORS:
         _fail_metadata("invalid ZIP archive")
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import re
 import zipfile
-import zlib
 from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
@@ -32,9 +31,11 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from email.message import Message
 from pyahead.dependencies._archives import (
+    _ZIP_ERRORS,
     _check_zip_archive_limits,
     _metadata_payload,
     _read_artifact,
+    _read_zip_member,
 )
 from pyahead.dependencies._config import _resolved_dependency_root
 from pyahead.dependencies._model import (
@@ -56,7 +57,6 @@ from pyahead.dependencies._model import (
     MetadataArtifact,
     MetadataIssue,
     MetadataKind,
-    _consume_archive_expansion,
     _error,
     _fail_metadata,
     _MetadataError,
@@ -268,26 +268,10 @@ def _wheel_file_payload(raw: bytes, dist_info: str) -> bytes:
                 _fail_metadata(
                     "wheel dist-info directory must contain exactly one RECORD"
                 )
-            wheel_member = wheel_members[0]
-            if wheel_member.file_size > _MAX_METADATA_BYTES:
-                _fail_metadata("WHEEL metadata exceeds the size limit")
-            with archive.open(wheel_member) as stream:
-                payload = stream.read(_MAX_METADATA_BYTES + 1)
-            _consume_archive_expansion(len(payload))
-            if len(payload) > _MAX_METADATA_BYTES:
-                _fail_metadata("WHEEL metadata exceeds the size limit")
-            return payload
+            return _read_zip_member(archive, wheel_members[0], "WHEEL metadata")
     except _MetadataError:
         raise
-    except (
-        EOFError,
-        OSError,
-        RuntimeError,
-        UnicodeError,
-        ValueError,
-        zipfile.BadZipFile,
-        zlib.error,
-    ):
+    except _ZIP_ERRORS:
         _fail_metadata("invalid ZIP archive")
 
 
