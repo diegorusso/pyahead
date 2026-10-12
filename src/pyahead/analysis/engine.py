@@ -4,7 +4,7 @@ import hashlib
 import io
 import tokenize
 from collections import defaultdict
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, fields, replace
 from pathlib import Path, PurePosixPath
 
@@ -1143,8 +1143,30 @@ def _cst_nesting_diagnostic(
                 "concrete syntax tree",
                 MAX_CST_DEPTH,
             )
-        stack.extend((child, depth + 1) for child in node.children)
+        stack.extend((child, depth + 1) for child in _child_nodes(node))
     return None
+
+
+_NODE_FIELDS: dict[type[cst.CSTNode], tuple[str, ...]] = {}
+
+
+def _child_nodes(node: cst.CSTNode) -> Iterator[cst.CSTNode]:
+    """Yield the nodes ``node.children`` would, read straight from its fields.
+
+    ``children`` runs a visitor on every call, which tripled the cost of this
+    walk. Every CST node is a dataclass whose children are its node-valued
+    fields and the nodes inside its sequence fields; only the order differs,
+    and depth does not depend on order.
+    """
+    names = _NODE_FIELDS.get(type(node))
+    if names is None:
+        names = _NODE_FIELDS[type(node)] = tuple(item.name for item in fields(node))
+    for name in names:
+        value = getattr(node, name)
+        if isinstance(value, cst.CSTNode):
+            yield value
+        elif isinstance(value, (tuple, list)):
+            yield from (item for item in value if isinstance(item, cst.CSTNode))
 
 
 def _parse_module(
