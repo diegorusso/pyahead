@@ -4,7 +4,14 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
-## Unreleased
+## 0.7.0 - 2026-10-12
+
+Scans are about twice as fast with byte-identical reports, and files from
+outside the package (`--registry` directories, `--evidence` artifacts) are
+checked against PyAhead's published JSON Schemas, which makes `jsonschema`
+a runtime dependency. A minor release for that dependency and the new
+public API below. The registry is the one 0.5.0 and 0.6.0 shipped
+(`2026.10.10`, `fa9db725e612`).
 
 ### Added
 
