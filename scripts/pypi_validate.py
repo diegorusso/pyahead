@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from functools import cache
 from importlib.metadata import PathDistribution
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TextIO, TypeAlias
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version
@@ -32,7 +32,7 @@ from packaging.version import Version
 from pyahead._human_text import SafeArgumentParser, escape_terminal_text
 from pyahead.registry import load_registry
 from pyahead.versions import InvalidPythonMinorError, PythonMinor
-from scripts import pypi_corpus
+from scripts import _common, pypi_corpus
 from scripts._common import normalized_name as _normalized_name
 from scripts._common import positive_float as _positive_float
 from scripts._common import positive_integer as _positive_integer
@@ -726,22 +726,12 @@ def _site_packages_dir(python_executable: Path, *, timeout: float) -> Path:
 # --- static scan --------------------------------------------------------
 
 
-def _scan_environment() -> dict[str, str]:
-    environment = os.environ.copy()
-    for name in ("PYTHONHOME", "PYTHONPATH"):
-        environment.pop(name, None)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    return environment
+_scan_environment = _common.scan_environment
 
 
-def _read_limited(stream: Any) -> str:  # noqa: ANN401 - a writable text file object.
-    stream.flush()
-    size = stream.tell()
-    if size > _MAX_REPORT_BYTES:
-        message = "scan report exceeded the 64 MiB review limit"
-        raise PypiValidateError(message)
-    stream.seek(0)
-    return stream.read()  # type: ignore[no-any-return]
+def _read_limited(stream: TextIO) -> str:
+    message = "scan report exceeded the 64 MiB review limit"
+    return _common.read_limited(stream, _MAX_REPORT_BYTES, PypiValidateError(message))
 
 
 def _run_scan(

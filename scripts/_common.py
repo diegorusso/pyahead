@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from typing import TextIO
 
 # A spreadsheet evaluates a cell that starts with one of these as a formula.
 SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
@@ -90,3 +91,26 @@ def write_atomic_bytes(path: Path, content: bytes) -> None:
 def write_atomic(path: Path, content: str) -> None:
     """Replace ``path`` with UTF-8 ``content``, newlines written as given."""
     write_atomic_bytes(path, content.encode("utf-8"))
+
+
+def scan_environment() -> dict[str, str]:
+    """Return the environment a PyAhead scan subprocess runs with.
+
+    The interpreter's own path configuration is dropped so the scan imports
+    the PyAhead installed alongside it, and no bytecode is written into the
+    scanned tree.
+    """
+    environment = os.environ.copy()
+    for name in ("PYTHONHOME", "PYTHONPATH"):
+        environment.pop(name, None)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return environment
+
+
+def read_limited(stream: TextIO, limit: int, too_large: Exception) -> str:
+    """Return what was written to ``stream``, raising ``too_large`` past ``limit``."""
+    stream.flush()
+    if stream.tell() > limit:
+        raise too_large
+    stream.seek(0)
+    return stream.read()

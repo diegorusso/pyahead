@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 _SPREADSHEET_FORMULA_PREFIXES = _common.SPREADSHEET_FORMULA_PREFIXES
 _positive_float = _common.positive_float
 _positive_integer = _common.positive_integer
+_scan_environment = _common.scan_environment
 _sha256_path = _common.sha256_path
 _spreadsheet_safe = _common.spreadsheet_safe
 _write_atomic = _common.write_atomic
@@ -269,22 +270,9 @@ def _verify_checkout(
         raise CorpusError(message)
 
 
-def _scan_environment() -> dict[str, str]:
-    environment = os.environ.copy()
-    for name in ("PYTHONHOME", "PYTHONPATH"):
-        environment.pop(name, None)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    return environment
-
-
 def _read_limited(stream: TextIO) -> str:
-    stream.flush()
-    size = stream.tell()
-    if size > _MAX_REPORT_BYTES:
-        message = "corpus scan report exceeded the 64 MiB review limit"
-        raise CorpusError(message)
-    stream.seek(0)
-    return stream.read()
+    message = "corpus scan report exceeded the 64 MiB review limit"
+    return _common.read_limited(stream, _MAX_REPORT_BYTES, CorpusError(message))
 
 
 def _run_scan(spec: RepositorySpec, *, timeout: float) -> tuple[int, float, Any]:
