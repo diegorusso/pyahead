@@ -6,7 +6,6 @@ import math
 import os
 import stat
 from collections.abc import Iterator, Mapping
-from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import resources
@@ -16,6 +15,8 @@ from typing import IO, Protocol, TypeAlias, cast
 
 import yaml
 
+from pyahead._io_errors import NotAFilePathError, UnsafeEntryError
+from pyahead._rooted_reader import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.model import (
     CoverageDisposition,
     CoverageManifest,
@@ -150,17 +151,6 @@ def _validate_file_status(
         raise RegistryError(message)
 
 
-def _validate_opened_file(
-    expected: os.stat_result,
-    opened: os.stat_result,
-    relative_path: PurePosixPath,
-) -> None:
-    _validate_file_status(opened, relative_path)
-    if not os.path.samestat(expected, opened):
-        message = "registry entry changed while it was being opened"
-        raise RegistryError(message)
-
-
 @dataclass(frozen=True)
 class _PackageFiles:
     """Registry files installed as package resources."""
@@ -210,52 +200,26 @@ class _PathFiles:
                 raise RegistryError(message)
         return status
 
-    @staticmethod
-    def _read_descriptor(
-        descriptor: int,
-        relative_path: PurePosixPath,
-    ) -> str:
-        data = bytearray()
-        while len(data) <= MAX_REGISTRY_FILE_BYTES:
-            chunk = os.read(
-                descriptor,
-                min(_READ_CHUNK_BYTES, MAX_REGISTRY_FILE_BYTES + 1 - len(data)),
+    def read_text(self, relative_path: PurePosixPath) -> str:
+        """Read one bounded regular file that no symlink leads to."""
+        candidate = self.root.joinpath(*relative_path.parts)
+        _validate_file_status(self._checked_status(candidate), relative_path)
+        try:
+            data = read_rooted_bytes(
+                self.root, Path(*relative_path.parts), MAX_REGISTRY_FILE_BYTES
             )
-            if not chunk:
-                break
-            data.extend(chunk)
-        if len(data) > MAX_REGISTRY_FILE_BYTES:
+        except RootedReadTooLargeError as error:
             message = (
                 f"registry file {relative_path.as_posix()!r} exceeds the "
                 f"{MAX_REGISTRY_FILE_BYTES}-byte limit"
             )
-            raise RegistryError(message)
-        return _decode_registry_bytes(bytes(data), relative_path)
-
-    def read_text(self, relative_path: PurePosixPath) -> str:
-        """Read one bounded regular file through its verified descriptor."""
-        candidate = self.root.joinpath(*relative_path.parts)
-        descriptor = -1
-        expected_status = self._checked_status(candidate)
-        _validate_file_status(expected_status, relative_path)
-        try:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(self.root)
-            flags = os.O_RDONLY
-            for name in ("O_BINARY", "O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
-                flags |= cast("int", getattr(os, name, 0))
-            descriptor = os.open(candidate, flags)
-            opened_status = os.fstat(descriptor)
-            _validate_opened_file(expected_status, opened_status, relative_path)
-            return self._read_descriptor(descriptor, relative_path)
-        except RegistryError:
-            raise
-        except (OSError, UnicodeError, ValueError) as error:
+            raise RegistryError(message) from error
+        except (UnsafeEntryError, NotAFilePathError) as error:
+            message = "registry entry changed while it was being opened"
+            raise RegistryError(message) from error
+        except (OSError, RuntimeError, ValueError) as error:
             raise RegistryError(_read_error(relative_path)) from error
-        finally:
-            if descriptor >= 0:
-                with suppress(OSError):
-                    os.close(descriptor)
+        return _decode_registry_bytes(data, relative_path)
 
 
 def _validate_yaml_graph(node: yaml.nodes.Node, context: str) -> None:

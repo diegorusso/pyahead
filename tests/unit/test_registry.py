@@ -461,15 +461,19 @@ def test_registry_detects_file_replacement_between_check_and_open(
     original_open = os.open
     replaced = False
 
-    def replace_before_open(path: Path, flags: int) -> int:
+    def replace_before_open(path: str | Path, flags: int, **kwargs: int) -> int:
         nonlocal replaced
-        if Path(path) == rule_path and not replaced:
+        if Path(path).name == rule_path.name and not replaced:
             replaced = True
             rule_path.replace(tmp_path / "original.yaml")
             replacement.replace(rule_path)
-        return original_open(path, flags)
+        return original_open(path, flags, **kwargs)
 
     monkeypatch.setattr(os, "open", replace_before_open)
+    # The wrapper still opens relative to a directory descriptor.
+    monkeypatch.setattr(
+        os, "supports_dir_fd", os.supports_dir_fd | {replace_before_open}
+    )
 
     with pytest.raises(RegistryError, match="changed while it was being opened"):
         load_registry(registry)
