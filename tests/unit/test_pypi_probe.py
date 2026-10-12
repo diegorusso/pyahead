@@ -1786,3 +1786,96 @@ def test_subject_probe_reports_import_error_for_a_submodule_missing_a_dependency
     assert results["s"]["error"] == (
         "ModuleNotFoundError: No module named 'definitely_missing_dependency_xyz'"
     )
+
+
+# --- source bindings ------------------------------------------------------
+
+
+def _local_import_probe(**source_binding: str | None) -> dict[str, Any]:
+    return {
+        "id": "b",
+        "kind": "binding",
+        "module": "local_import",
+        "enclosing_scope": ["use"],
+        "head": "pth",
+        "attribute_path": ["join"],
+        "subject": _subject("os.path", ["join"]),
+        "source_binding": source_binding,
+    }
+
+
+def test_a_source_binding_resolves_a_function_local_import(tmp_path: Path) -> None:
+    """`import os.path as pth` inside a function: run it, walk `join`, compare."""
+    _write(
+        tmp_path,
+        "local_import.py",
+        "def use():\n    import os.path as pth\n    return pth.join('a', 'b')\n",
+    )
+    results = _run_batch(
+        tmp_path,
+        [_local_import_probe(imports="os.path", binds="os.path", attribute=None)],
+    )
+    assert results["b"]["status"] == "resolved"
+    assert results["b"]["identity_match"] is True
+
+
+def test_a_source_binding_to_another_object_refutes(tmp_path: Path) -> None:
+    """The import the source names is what the walk starts from, nothing else."""
+    _write(tmp_path, "local_import.py", "def use():\n    import json as pth\n")
+    results = _run_batch(
+        tmp_path,
+        [_local_import_probe(imports="json", binds="json", attribute=None)],
+    )
+    assert results["b"]["status"] == "resolved"
+    assert results["b"]["identity_match"] is False
+
+
+def test_a_source_binding_from_imports_an_attribute_or_a_submodule(
+    tmp_path: Path,
+) -> None:
+    """`from os import path` takes the attribute; `from xml import dom` imports it."""
+    _write(tmp_path, "local_import.py", "def use():\n    pass\n")
+    probe = _local_import_probe(imports="os", binds="os", attribute="path")
+    submodule = {
+        **_local_import_probe(imports="xml", binds="xml", attribute="dom"),
+        "id": "s",
+        "attribute_path": ["minidom"],
+        "subject": _subject("xml.dom", ["minidom"]),
+    }
+    _write(tmp_path, "xml_user.py", "")
+    results = _run_batch(tmp_path, [probe, submodule])
+    assert results["b"]["identity_match"] is True
+    assert results["s"]["status"] == "resolved"
+
+
+def test_a_failing_source_binding_is_an_import_error(tmp_path: Path) -> None:
+    """Where the imported module is gone, the result says so, as an import error."""
+    _write(tmp_path, "local_import.py", "def use():\n    pass\n")
+    results = _run_batch(
+        tmp_path,
+        [
+            _local_import_probe(
+                imports="no_such_mod", binds="no_such_mod", attribute=None
+            )
+        ],
+    )
+    assert results["b"]["status"] == "import-error"
+    assert "no_such" in results["b"]["error"]
+
+
+def test_a_visible_binding_wins_over_the_source_binding(tmp_path: Path) -> None:
+    """The source binding is a fallback; a name the probe can see is used as is."""
+    _write(tmp_path, "local_import.py", "import json as pth\ndef use():\n    pass\n")
+    results = _run_batch(
+        tmp_path,
+        [_local_import_probe(imports="os.path", binds="os.path", attribute=None)],
+    )
+    assert results["b"]["identity_match"] is False
+
+
+def test_a_malformed_source_binding_is_rejected() -> None:
+    """The payload's source binding has exactly three fields."""
+    with pytest.raises(pypi_probe.PypiProbeError, match="source_binding"):
+        pypi_probe._parse_binding_probe(
+            {**_local_import_probe(imports="os"), "id": "b"}, probe_id="b"
+        )

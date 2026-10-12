@@ -37,6 +37,7 @@ from scripts.pypi_validate._record import (
     _owned_python_files,
 )
 from scripts.pypi_validate._scan import _mapped_finding, _run_scan
+from scripts.pypi_validate._site_names import site_names
 
 if TYPE_CHECKING:
     from scripts.pypi_validate._model import InstalledInterpreter, RunOptions
@@ -307,6 +308,8 @@ def _process_package(  # noqa: C901 - one early return per closed shard status.
             probe_isolation_mode = mode
             return results
 
+        sites = import_sites(findings, site_packages)
+        names, statement_bindings = site_names(findings, site_packages, sites)
         findings, interpreters_used = _adjudicate(
             findings,
             installed=installed,
@@ -314,7 +317,9 @@ def _process_package(  # noqa: C901 - one early return per closed shard status.
             available_binding_minors=frozenset(binding_venvs),
             run_binding_probes=_run_binding_probes,
             run_subject_probes=_run_subject_probes,
-            import_sites=import_sites(findings, site_packages),
+            import_sites=sites,
+            site_names=names,
+            statement_bindings=statement_bindings,
         )
         adjudication = _adjudication_summary(
             findings, interpreters_used=interpreters_used

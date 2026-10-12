@@ -94,7 +94,7 @@ agreement nor a disagreement.
   abbreviates it.** A finding's evidence records only the names a
   `from A import ...` binds, so before probing, the harness reads the
   statement at the finding's location in the installed source
-  (`scripts/pypi_validate/_import_sites.py`) and takes three facts from it:
+  (`scripts/pypi_validate/_import_sites.py`) and takes four facts from it:
   - `from A import B as C` is probed as `C` against `A.B`, the attribute it
     really names; `A.C` may exist and be something else (`crypt` imports its
     C helper as `crypt._crypt`).
@@ -115,6 +115,35 @@ agreement nor a disagreement.
   Where the statement cannot be read (a syntax error, a star import, no
   `from` statement at that location) the static evidence is probed as
   before.
+- **A name the probe cannot see is resolved through the import that binds
+  it, when the source has exactly one.** The probe reads a name from the
+  module's globals or the enclosing callable's, so it misses three kinds of
+  binding (`binding-not-visible`), and the harness reads the source for
+  each (`scripts/pypi_validate/_site_names.py`):
+  - A reference is probed as the site spells it: after `import typing as t`
+    the site says `t.AnyStr`, and the walk starts from `t`, not from a
+    `typing` global the module never bound.
+  - Where the name's scope, found by Python's own lookup rules (class bodies
+    skipped, `global` and `nonlocal` honoured, annotations and defaults
+    read outside their function), binds it exactly once, by an absolute
+    import, the probe runs that import and walks from the object it binds.
+    This covers a function-local `import asyncio` and a
+    `from typing import Text` under `if TYPE_CHECKING:` that never runs.
+    The probe still compares identities: the source names the binding, the
+    interpreter supplies the object. A name the probe can see is used as
+    it is, and the source binding is never consulted.
+  - A module-import finding inside a function is its own binding, used only
+    where nothing in the source decides whether it runs: no enclosing test
+    that mentions a version, `TYPE_CHECKING` or a constant, no such test
+    earlier in an enclosing block that can `return` or `raise` first, not
+    in an `except` or `try`-`else` block, and no earlier statement in an
+    enclosing `try` body that could fail first (the `unicode = unicode`
+    shape).
+
+  A name bound more than once, by anything other than an import, by a
+  relative or star import, or by an import the probe cannot run (a
+  Windows-only attribute on Linux, reported as `import-error`) stays
+  `binding-not-visible` or unadjudicable as before.
 - **A subject that is not observable at the reference interpreter is
   unadjudicable, not refuted.** C1 can only compare a live binding against
   `S` where `S` exists. When the probe finds `S` absent at an interpreter

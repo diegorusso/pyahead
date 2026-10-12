@@ -170,12 +170,15 @@ def _parse_binding_probe(item: dict[str, Any], *, probe_id: str) -> dict[str, An
         "attribute_path",
         "subject",
     }
-    if set(item) != allowed:
+    if set(item) not in (allowed, allowed | {"source_binding"}):
         message = f"binding probe {probe_id} has unexpected fields"
         raise PypiProbeError(message)
     enclosing_scope = item["enclosing_scope"]
     if enclosing_scope is not None:
         enclosing_scope = _string_list(enclosing_scope, field="enclosing_scope")
+    source_binding = item.get("source_binding")
+    if source_binding is not None:
+        source_binding = _source_binding(source_binding, field="source_binding")
     return {
         "id": probe_id,
         "kind": "binding",
@@ -184,6 +187,21 @@ def _parse_binding_probe(item: dict[str, Any], *, probe_id: str) -> dict[str, An
         "head": _nonempty_str(item["head"], field="head"),
         "attribute_path": _string_list(item["attribute_path"], field="attribute_path"),
         "subject": _subject_descriptor(item["subject"], field="subject"),
+        "source_binding": source_binding,
+    }
+
+
+def _source_binding(value: object, *, field: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"imports", "binds", "attribute"}:
+        message = f"{field} must contain exactly imports, binds and attribute"
+        raise PypiProbeError(message)
+    attribute = value["attribute"]
+    if attribute is not None:
+        attribute = _nonempty_str(attribute, field=f"{field}.attribute")
+    return {
+        "imports": _nonempty_str(value["imports"], field=f"{field}.imports"),
+        "binds": _nonempty_str(value["binds"], field=f"{field}.binds"),
+        "attribute": attribute,
     }
 
 
@@ -654,29 +672,74 @@ def _walk_candidates(
     return head_outcome
 
 
+def _binding_import_error(
+    probe: dict[str, Any], error: BaseException
+) -> dict[str, Any]:
+    return {
+        "id": probe["id"],
+        "kind": "binding",
+        "status": "import-error",
+        "identity_match": None,
+        "subject_status": None,
+        "error": _error_text(error),
+    }
+
+
+def _run_source_binding(probe: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the head through the one import statement that binds it in source.
+
+    The harness sends `source_binding` only when the head's scope binds it
+    exactly once, by that import: a function-local `import asyncio`, or a
+    module-level import under `if TYPE_CHECKING:` that never runs. Running
+    the import here gives the very object the site's name is bound to
+    whenever the site runs, so the walk and identity check below are the
+    same ones a visible binding gets. A failed import is an import error,
+    reported as such and never confused with the site's own module failing.
+    """
+    source = probe["source_binding"]
+    try:
+        importlib.import_module(source["imports"])
+        value = sys.modules[source["binds"]]
+        if source["attribute"] is not None:
+            try:
+                value = getattr(value, source["attribute"])
+            except AttributeError:
+                # `from pkg import submodule` imports it when it is no attribute.
+                value = importlib.import_module(
+                    f"{source['binds']}.{source['attribute']}"
+                )
+    except Exception as error:  # noqa: BLE001 - reported as a structured status.
+        return _binding_import_error(probe, error)
+    subject_resolution = _resolve_subject(probe["subject"])
+    walk = _walk_candidates(
+        probe,
+        module_globals={probe["head"]: value},
+        scope_globals=None,
+        local_names=frozenset(),
+        subject=subject_resolution,
+    )
+    if walk is None:  # pragma: no cover - the head is bound by construction.
+        return _binding_not_visible(probe)
+    return _binding_result(probe, walk, subject_resolution)
+
+
 def _run_binding_probe(probe: dict[str, Any]) -> dict[str, Any]:
     try:
         module = importlib.import_module(probe["module"])
     except Exception as error:  # noqa: BLE001 - reported as a structured status.
-        return {
-            "id": probe["id"],
-            "kind": "binding",
-            "status": "import-error",
-            "identity_match": None,
-            "subject_status": None,
-            "error": _error_text(error),
-        }
+        return _binding_import_error(probe, error)
 
+    has_source = probe.get("source_binding") is not None
     scope = _resolve_scope(module, probe["enclosing_scope"])
     if scope is None:
-        return _binding_not_visible(probe)
+        return _run_source_binding(probe) if has_source else _binding_not_visible(probe)
     scope_globals, local_names = scope
     if probe["head"] in local_names:
         # A name the enclosing callable binds locally shadows any
         # same-named module global for the whole callable body, by Python's
         # own scoping rules - comparing the module global here would blame
         # or clear the subject based on the wrong object entirely.
-        return _binding_not_visible(probe)
+        return _run_source_binding(probe) if has_source else _binding_not_visible(probe)
 
     subject_resolution = _resolve_subject(probe["subject"])
     walk = _walk_candidates(
@@ -687,7 +750,15 @@ def _run_binding_probe(probe: dict[str, Any]) -> dict[str, Any]:
         subject=subject_resolution,
     )
     if walk is None:
-        return _binding_not_visible(probe)
+        return _run_source_binding(probe) if has_source else _binding_not_visible(probe)
+    return _binding_result(probe, walk, subject_resolution)
+
+
+def _binding_result(
+    probe: dict[str, Any],
+    walk: tuple[Any, str | None, bool],
+    subject_resolution: SubjectResolution,
+) -> dict[str, Any]:
     resolved, walk_error, slot_consistent = walk
     if walk_error is not None:
         identity_match: bool | None = None if slot_consistent else False

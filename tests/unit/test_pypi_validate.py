@@ -2482,3 +2482,54 @@ def test_an_import_error_fallback_failing_where_predicted_is_not_refuted() -> No
             import_sites={"f1": replace(site, import_error_fallback=fallback)},
         )
         assert findings[0]["adjudication_status"] == expected
+
+
+def test_source_readings_reach_the_binding_probe() -> None:
+    """A site name replaces the spelling; a statement binding rides along."""
+    sent: list[dict[str, Any]] = []
+    runners = _make_run_probes(
+        binding_results={
+            "r": _binding_result(identity_match=True),
+            "i": _binding_result(identity_match=True),
+        },
+        subject_status_by_minor={12: "present", 13: "absent"},
+    )
+
+    def recording_binding_probes(
+        minor: int, probes: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        sent.extend(probes)
+        return runners.run_binding_probes(minor, probes)
+
+    reference = _mapped_finding_fixture(
+        fingerprint="r",
+        match_kind="qualified-reference",
+        evidence={"qualified_names": ["cgi.escape"]},
+        interpreters_needed=[12, 13],
+    )
+    local_import = _mapped_finding_fixture(
+        fingerprint="i",
+        evidence={"bound_names": ["cgi"], "syntax": "import", "imported_module": "cgi"},
+        interpreters_needed=[12, 13],
+    )
+    cgi = pypi_validate.SourceBinding("cgi", "cgi", None)
+    findings, _ = pypi_validate._adjudicate(
+        [reference, local_import],
+        installed=_installed(12, 13),
+        reference_minor=12,
+        available_binding_minors=frozenset({12}),
+        run_binding_probes=recording_binding_probes,
+        run_subject_probes=runners.run_subject_probes,
+        site_names={"r": pypi_validate.SiteName("c", ("escape",), cgi)},
+        statement_bindings={"i": cgi},
+    )
+
+    by_id = {probe["id"]: probe for probe in sent}
+    assert (by_id["r"]["head"], by_id["r"]["attribute_path"]) == ("c", ["escape"])
+    assert by_id["r"]["source_binding"] == cgi.as_probe()
+    assert by_id["i"]["head"] == "cgi"
+    assert by_id["i"]["source_binding"] == cgi.as_probe()
+    assert [finding["adjudication_status"] for finding in findings] == [
+        "confirmed",
+        "confirmed",
+    ]

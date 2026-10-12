@@ -6,7 +6,7 @@ import importlib
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cache
 from typing import TYPE_CHECKING, Any, TypeAlias
 
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from scripts.pypi_validate._import_sites import ImportSite
+    from scripts.pypi_validate._site_names import SiteName, SourceBinding
 
 
 from scripts.pypi_validate._interpreters import _action_version_minor
@@ -72,6 +73,7 @@ class BindingTarget:
     head: str
     attribute_path: tuple[str, ...]
     subject: SubjectDescriptor
+    source_binding: SourceBinding | None = None
 
 
 @cache
@@ -208,7 +210,7 @@ def _binding_target(
 
 
 def _binding_probe_payload(fingerprint: str, target: BindingTarget) -> dict[str, Any]:
-    return {
+    payload = {
         "id": fingerprint,
         "kind": "binding",
         "module": target.module,
@@ -219,6 +221,32 @@ def _binding_probe_payload(fingerprint: str, target: BindingTarget) -> dict[str,
         "attribute_path": list(target.attribute_path),
         "subject": target.subject.as_probe(),
     }
+    if target.source_binding is not None:
+        payload["source_binding"] = target.source_binding.as_probe()
+    return payload
+
+
+def _as_the_source_says(
+    target: BindingTarget,
+    name: SiteName | None,
+    statement_binding: SourceBinding | None,
+) -> BindingTarget:
+    """Probe the site's own spelling, and the import that binds it if hidden.
+
+    See `_site_names`: the canonical name a reference records may not be
+    how the site spells it, and the probe cannot see a function-local or
+    never-run import without the statement read from source.
+    """
+    if name is not None:
+        return replace(
+            target,
+            head=name.head,
+            attribute_path=name.attribute_path,
+            source_binding=name.source_binding,
+        )
+    if statement_binding is not None:
+        return replace(target, source_binding=statement_binding)
+    return target
 
 
 def _call_shape_probe_payload(
@@ -474,13 +502,15 @@ def _site_subject_and_target(
     return subject, target
 
 
-def _run_binding_phase(  # noqa: C901 - one verdict path per binding outcome.
+def _run_binding_phase(  # noqa: C901, PLR0913 - one verdict path per binding outcome.
     pending: list[dict[str, Any]],
     *,
     run_binding_probes: _ProbeRunner,
     reference_minor: int,
     available_minors: frozenset[int],
     sites: Mapping[str, ImportSite],
+    names: Mapping[str, SiteName],
+    statement_bindings: Mapping[str, SourceBinding],
 ) -> tuple[list[dict[str, Any]], dict[str, SubjectDescriptor]]:
     """Run C1 binding probes; assign a verdict in place for every non-holding one.
 
@@ -508,6 +538,9 @@ def _run_binding_phase(  # noqa: C901 - one verdict path per binding outcome.
             finding["adjudication_status"] = "not-adjudicable:module-not-importable"
             continue
         fingerprint = finding["fingerprint"]
+        target = _as_the_source_says(
+            target, names.get(fingerprint), statement_bindings.get(fingerprint)
+        )
         subject_by_fingerprint[fingerprint] = subject
         minors = {reference_minor} | (
             set(finding["interpreters_needed"]) & available_minors
@@ -714,6 +747,8 @@ def _adjudicate(  # noqa: PLR0913 - one input per independent adjudication conce
     run_binding_probes: _ProbeRunner,
     run_subject_probes: _ProbeRunner,
     import_sites: Mapping[str, ImportSite] | None = None,
+    site_names: Mapping[str, SiteName] | None = None,
+    statement_bindings: Mapping[str, SourceBinding] | None = None,
 ) -> tuple[list[dict[str, Any]], frozenset[int]]:
     """Adjudicate every `pending` finding against a real CPython interpreter.
 
@@ -735,6 +770,8 @@ def _adjudicate(  # noqa: PLR0913 - one input per independent adjudication conce
         reference_minor=reference_minor,
         available_minors=available_binding_minors,
         sites=import_sites or {},
+        names=site_names or {},
+        statement_bindings=statement_bindings or {},
     )
 
     timeline_pending: list[dict[str, Any]] = []
