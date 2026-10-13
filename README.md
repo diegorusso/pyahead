@@ -235,6 +235,18 @@ Inputs mirror the command line (`path`, `baseline-python`, `horizon-python`,
 the `exit-code` and `sarif-file` outputs are there for later steps. See
 [`action.yml`](action.yml).
 
+It is also a [pre-commit](https://pre-commit.com) hook, which scans the whole
+project whenever a commit touches a Python file or `pyproject.toml` and fails
+the commit when a finding meets the gate:
+
+```yaml
+repos:
+  - repo: https://github.com/diegorusso/pyahead
+    rev: v0.8.0
+    hooks:
+      - id: pyahead
+```
+
 Outside GitHub Actions, or to drive it yourself:
 
 Write SARIF or deterministic JSON atomically:

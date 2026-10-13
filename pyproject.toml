@@ -58,6 +58,7 @@ packages = ["src/pyahead"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "/.pre-commit-hooks.yaml",
   "/AGENTS.md",
   "/CHANGELOG.md",
   "/LICENSE",

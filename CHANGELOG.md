@@ -4,6 +4,15 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
+## Unreleased
+
+### Added
+
+- A [pre-commit](https://pre-commit.com) hook, `pyahead`, published by
+  `.pre-commit-hooks.yaml`. It runs `pyahead check` on the whole project
+  when a commit stages a Python file or `pyproject.toml`, and fails the
+  commit when the gate does.
+
 ## 0.7.0 - 2026-10-12
 
 Scans are about twice as fast with byte-identical reports, and files from

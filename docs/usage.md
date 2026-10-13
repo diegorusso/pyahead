@@ -284,7 +284,33 @@ shown as visible `\uXXXX` or `\UXXXXXXXX` text; normal printable Unicode and
 PyAhead's own report line structure remain unchanged. JSON and SARIF preserve
 their machine data rather than applying terminal escaping.
 
-### Pytest warning evidence in user CI
+### pre-commit
+
+`.pre-commit-hooks.yaml` at the repository root publishes one hook, `pyahead`,
+available from 0.8.0:
+
+```yaml
+repos:
+  - repo: https://github.com/diegorusso/pyahead
+    rev: v0.8.0
+    hooks:
+      - id: pyahead
+```
+
+The hook runs `pyahead check` from the repository root with the project's own
+configuration, so the commit fails exactly when the gate does (`fail-on`,
+`--fail-new-only` with a baseline file, and suppressions all apply). A finding
+depends on the whole project, not on the staged files alone, so the hook passes
+no filenames: pre-commit runs the full scan when any staged file is a Python
+file (`.py`, `.pyi`) or a `pyproject.toml`, and skips it otherwise.
+
+- pre-commit installs PyAhead into an environment of its own, which needs
+  Python 3.11 or later. If pre-commit's default Python is older, set
+  `language_version: python3.11` (or newer) on the hook.
+- `args` add options: `args: [--fail-on, risk]`, or
+  `args: [--baseline-file, .pyahead-baseline.json, --fail-new-only]`.
+- To rescan when the baseline file alone changes, add `always_run: true`.
+
 
 PyAhead's first observed-evidence provider is an explicit pytest plugin. Tests
 and imports run only in the repository owner's CI job; `pyahead check` still

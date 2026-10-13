@@ -1,0 +1,17 @@
+# pre-commit hooks published by this repository: https://pre-commit.com
+#
+# `pyahead check` assesses the whole project, not a list of files: a finding
+# depends on the project's baseline and horizon, on imports in other modules,
+# and on the baseline file and suppressions. pre-commit therefore passes no
+# filenames; it runs the scan when a Python file or pyproject.toml changes.
+- id: pyahead
+  name: pyahead
+  description: >-
+    Find the CPython deprecations and removals this project will hit between
+    its oldest and newest supported Python.
+  entry: pyahead check
+  language: python
+  pass_filenames: false
+  files: '(\.pyi?|(^|/)pyproject\.toml)$'
+  require_serial: true
+  minimum_pre_commit_version: "3.0.0"
