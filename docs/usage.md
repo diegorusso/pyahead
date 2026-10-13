@@ -15,8 +15,8 @@ installed locally.
 Use an isolated tool environment after publication:
 
 ```console
-pipx install pyahead==0.7.0
-uvx pyahead==0.7.0 --version
+pipx install pyahead==0.8.0
+uvx pyahead==0.8.0 --version
 ```
 
 For a repository build:
@@ -24,7 +24,7 @@ For a repository build:
 ```console
 uv build
 python -m venv .pyahead-smoke
-.pyahead-smoke/bin/python -m pip install dist/pyahead-0.7.0-py3-none-any.whl
+.pyahead-smoke/bin/python -m pip install dist/pyahead-0.8.0-py3-none-any.whl
 .pyahead-smoke/bin/pyahead --version
 ```
 
@@ -249,7 +249,7 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v7
-      - uses: diegorusso/pyahead@v0.7.0
+      - uses: diegorusso/pyahead@v0.8.0
         with:
           baseline-python: "3.11"
 ```

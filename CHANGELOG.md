@@ -4,7 +4,12 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
-## Unreleased
+## 0.8.0 - 2026-10-13
+
+PyAhead is now a pre-commit hook as well as a command and a GitHub Action.
+The analyser, its reports and the registry are those of 0.7.0
+(`2026.10.10`, `fa9db725e612`); a minor version because the hook is a new
+way to use it.
 
 ### Added
 
@@ -12,6 +17,11 @@ stabilizing.
   `.pre-commit-hooks.yaml`. It runs `pyahead check` on the whole project
   when a commit stages a Python file or `pyproject.toml`, and fails the
   commit when the gate does.
+
+### Fixed
+
+- The sdist carries `action.yml` and `.pre-commit-hooks.yaml`, so the tests
+  that check them pass when run from an unpacked sdist.
 
 ## 0.7.0 - 2026-10-12
 
