@@ -2,6 +2,8 @@
 
 `docs/design.md` is the implementation contract. Read it completely with
 `README.md`, `pyproject.toml`, and current repository instructions before work.
+`docs/history.md` keeps the delivered milestones, gates, and prompts under
+their original section numbers; read it when work cites one of them.
 
 - Implement only the requested milestone. Never add later-milestone analyser,
   registry, browser-site, or other features opportunistically.
