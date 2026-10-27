@@ -770,6 +770,7 @@ def project_module_paths(
 
 def dynamic_path_module_paths(
     files: tuple[DiscoveredFile, ...],
+    issues: tuple[DiscoveryIssue, ...] = (),
 ) -> dict[str, tuple[PurePosixPath, ...]]:
     """Map modules that a dynamically added repository directory could expose.
 
@@ -780,8 +781,14 @@ def dynamic_path_module_paths(
     ``sys.path.append`` or ``sys.path.insert`` call.
     """
     candidates: defaultdict[str, set[PurePosixPath]] = defaultdict(set)
-    for file in files:
-        path = file.relative_path
+    items: tuple[DiscoveredFile | DiscoveryIssue, ...] = (*files, *issues)
+    for item in items:
+        path = item.relative_path
+        if (
+            isinstance(item, DiscoveryIssue)
+            and item.entry_kind is DiscoveryEntryKind.DIRECTORY
+        ):
+            continue
         if path.suffix != ".py" or len(path.parts) < MIN_DYNAMIC_PATH_PARTS:
             continue
         module = path.parent.name if path.stem == "__init__" else path.stem

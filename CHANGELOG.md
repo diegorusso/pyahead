@@ -11,6 +11,22 @@ stabilizing.
 - The GitHub Action reports paths relative to the checkout when scanning a
   subdirectory, while preserving fingerprints and the scan's exit code. Unsafe
   report destinations and failed path rewrites prevent upload.
+- Reachable `sys.path.insert` and `sys.path.append` calls affect import origins
+  only on their target versions. Candidate modules outside configured source
+  roots and skipped files participate in this check. Competing local imports
+  keep `ImportError` fallbacks reachable.
+- Incomplete dynamic-path discovery keeps completed files and their findings
+  in the report, with incomplete diagnostics and exit code 3 by default. A
+  partial index cannot prove that an import fallback is unreachable.
+- `from tkinter import tix` matches the existing removed-submodule rule.
+- Unused imports of removed symbols, such as `from inspect import getargspec`,
+  now report the import's failure. Existing use-site findings keep their
+  fingerprints and cover the import on the versions they already report.
+  Imports add findings only for otherwise uncovered failing versions; optional
+  imports with an import-error fallback do not add blockers.
+  Proven Python-version constants exclude legacy branches; unknown guards
+  remain available at medium confidence. Import-only findings have separate,
+  stable identities, so existing baselines do not acquire duplicate failures.
 
 ## 0.8.0 - 2026-10-13
 

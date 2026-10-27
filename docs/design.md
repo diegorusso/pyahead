@@ -892,11 +892,26 @@ The M6 precision review adds one deliberately narrow dynamic-path exception.
 When the coordinated traversal observes an exact import-derived
 `sys.path.insert(...)` or `sys.path.append(...)`, build a second conservative
 index of nested repository `.py` basenames which such a directory could expose
-as top-level modules. Do not evaluate or trust the path argument. A matching
-`insert` reduces the affected import origin to medium confidence for the whole
-target window. A matching `append` leaves a removed standard-library module
-high confidence only while the standard-library module still exists; at and
-after removal its origin is ambiguous. Emit `PYA2001` with the candidate paths
+as top-level modules. This index includes files outside configured source roots
+and ignored files; the additional root walk is needed only when a runtime path
+mutation is reachable. Do not evaluate or trust the path argument. A matching
+`insert` makes the import origin ambiguous only on targets where it is reachable.
+At the default high-confidence threshold, retain findings on unaffected targets;
+if none have reportable states, retain the affected match at medium confidence
+for filtering. When medium confidence is requested, retain all reachable targets
+in one conservatively medium-confidence finding, so earlier deprecation debt
+cannot hide later ambiguous breakage. The single finding keeps its fingerprint
+across thresholds and target windows. Include skipped source-file names in the
+dynamic index, since their existence still makes import origins uncertain;
+opaque directories make this scan incomplete because their contents are unknown.
+Keep completed files, their findings and known candidate modules when this
+additional discovery is incomplete; attach diagnostics without abandoning the
+report. Incompleteness still controls the scan exit code under §14.3.
+A matching `append` leaves
+a removed standard-library module high confidence before removal and on targets
+where the append is unreachable; otherwise its origin is ambiguous. Typing-only
+and unreachable mutations do not affect runtime origins. Emit `PYA2001` with
+the candidate paths
 and mutation locations. Shadowed `sys` lookalikes, unrelated nested modules,
 and attribute-removal rules must not trigger this exception.
 
@@ -919,12 +934,39 @@ class StaticMatch:
     reachable_versions: frozenset[PythonMinor]
     usage_contexts: frozenset[UsageContext]
     evidence: tuple[tuple[str, EvidenceValue], ...]
+    import_reference_locations: tuple[SourceLocation, ...] | None = None
 ```
 
 `evidence` contains only structured, formatter-safe facts such as resolved
 qualified names and call keyword names. M1 stores deterministic immutable
 key-value pairs and serializes them as a JSON mapping; it must not contain LibCST
 objects.
+
+An absolute `from parent import child` also matches an exact module-import rule
+for `parent.child`, such as `tkinter.tix`, subject to the same origin and guard
+checks. An absolute symbol import also matches an exact qualified-reference
+rule with a removed event and an admitted read context. It contributes only
+runtime targets at or after removal: an unused import of an available but
+deprecated symbol does not establish deprecated usage. Relative imports, star
+imports and competing project modules retain their existing origin boundaries.
+Imports handled by an enclosing `ImportError`, `Exception`, `BaseException` or
+bare handler do not add import-only blockers. A handler consisting solely of a
+raise does not recover; handlers around a function definition cannot catch its
+later execution. General handler control flow is not evaluated.
+
+For these new import matches, prove version aliases only from a single plain
+assignment at module scope on an earlier line. Rebinding, conditional writes,
+shadowed names and arbitrary helper calls remain unknown. Boolean aliases of
+the existing guard grammar and aliases of `sys.version_info` cover the common
+`PY2`/`PY3` compatibility branches. Three-integer comparisons can be decided
+when their major/minor prefix differs from the target; a matching minor remains
+unknown without assuming a patch version. Existing reference reachability is
+unchanged. At high confidence, retain only the import's proven reachable
+targets; at medium confidence, include uncertain targets in one medium finding.
+Imports in exception handlers whose execution is not ruled out by the existing
+fallback grammar are likewise uncertain, rather than new high-confidence blockers.
+Imports inside decorated functions are also uncertain: a decorator can prevent
+execution, including version-skipped tests. Decorator semantics are not evaluated.
 
 ### 10.5 Matcher index
 
@@ -942,6 +984,15 @@ The engine visits each file once and asks only relevant matcher groups to inspec
 Multiple matchers may identify the same construct. Deduplicate by rule, file, source region, and canonical subject. Keep the strongest confidence and union non-conflicting evidence.
 
 Do not merge distinct call sites merely because they use the same rule.
+
+An existing module-import match at the same construct takes precedence over
+the new symbol candidate, preserving its evidence and fingerprint.
+Process existing matches before symbol-import candidates. LibCST assignment
+references link each import binding to its uses, including closure references;
+an unrelated alias or scope cannot cover it. Remove targets already covered by
+an emitted use-site finding, including a suppressed or baselined finding, from
+the import candidate. A guarded use cannot hide an unconditional import on
+other targets. Internal reference locations are not serialized as report data.
 
 ---
 
@@ -1010,6 +1061,14 @@ derived from the host interpreter, so the result is the same on every host;
 a test checks each entry against a real interpreter and that no entry is a
 module or attribute the registry says is removed. A finding the fallback
 narrowed carries `reachability_guard=import-fallback` evidence.
+
+This guarantee requires an unambiguous import origin. A competing project module
+keeps the handler reachable. A reachable `sys.path.insert` anywhere in the scanned
+sources does the same on its target versions when the dynamic index contains a
+matching module. Revisit affected fallbacks using the original source snapshot
+after collecting path mutations, so file order cannot hide a fallback failure.
+If the dynamic index is incomplete, any such insert can shadow a guaranteed
+import on its target versions; keep those handlers reachable as well.
 
 ### 11.2 Evaluation algorithm
 
@@ -1161,6 +1220,15 @@ sha256(
 ```
 
 The occurrence ordinal counts matches for the same rule and subject within the enclosing scope, not physical lines. This survives unrelated line insertions better than a line-based hash.
+
+Symbol-import candidates use the separate `pyahead-import-fingerprint-v1`
+prefix and their own occurrence counter. They never consume a reference's
+ordinal, even if the import or reference is filtered by policy or reachability.
+No existing v1 identity changes. New import-only failures may legitimately be
+new against an old baseline; an already reported use does not create a duplicate.
+The approved historical precision record describes the released analyser;
+import-only detection needs its own precision evidence and cannot inherit that
+approval merely by preserving existing findings.
 
 Tests must cover:
 

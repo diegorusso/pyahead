@@ -771,6 +771,61 @@ def test_source_entry_limit_fails_closed_before_parsing(
     assert report.exit_code is ExitCode.INCOMPLETE
 
 
+@pytest.mark.parametrize("failure", ["enumeration", "limit"])
+def test_dynamic_module_discovery_failures_preserve_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """A partial dynamic index preserves source errors and completed findings."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "main.py").write_text(
+        "import sys\nsys.path.insert(0, 'compat')\nimport asynchat\n",
+        encoding="utf-8",
+    )
+    (source / "broken.py").write_text("def broken(\n", encoding="utf-8")
+
+    def discover(
+        root: Path,
+        paths: tuple[Path, ...],
+        options: DiscoveryOptions | None = None,
+    ) -> DiscoveryResult:
+        if paths:
+            return discover_python_files(root, paths, options)
+        if failure == "enumeration":
+            message = "unable to enumerate a source directory"
+            raise DiscoveryIncompleteError(message)
+        return DiscoveryResult(
+            files=(),
+            issues=(
+                DiscoveryIssue(
+                    relative_path=PurePosixPath("compat/later.py"),
+                    code="PYA1006",
+                    message="source entry count exceeds the analysis limit",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("pyahead.analysis.engine.discover_python_files", discover)
+    report = scan(
+        ScanRequest(
+            root=tmp_path,
+            paths=(Path("src"),),
+            source_roots=("src",),
+            baseline_python="3.11",
+            horizon_python="3.13",
+        )
+    )
+
+    assert [finding.rule_id for finding in report.findings] == ["CPY0003"]
+    assert report.counts.files_analyzed == 1
+    assert report.counts.files_incomplete == _TWO_FILES
+    assert {diagnostic.code for diagnostic in report.diagnostics} == {
+        "PYA1003",
+        "PYA1001" if failure == "enumeration" else "PYA1006",
+    }
+    assert report.exit_code is ExitCode.INCOMPLETE
+
+
 def test_incomplete_discovery_is_not_reported_as_clean(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

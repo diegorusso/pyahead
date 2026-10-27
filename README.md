@@ -52,7 +52,7 @@ The default static command does not execute target code, install target
 dependencies, infer general receiver types, resolve arbitrary dynamic imports,
 access the network, or send telemetry. Dependency evidence is a separate opt-in
 command with explicit targets, network policy, and deadlines. Version helpers,
-user-defined constants, patch-level guards, and general control flow outside
+general user-defined constants, patch-level guards, and control flow outside
 the documented lexical grammar remain unknown.
 Skipped, unreadable, oversized, unparseable, or over-limit source entries make
 analysis incomplete rather than silently clean. See

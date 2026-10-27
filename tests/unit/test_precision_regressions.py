@@ -32,6 +32,454 @@ def _rule_findings(report: ScanReport, *rule_ids: str) -> list[Finding]:
     return [finding for finding in report.findings if finding.rule_id in rule_ids]
 
 
+@pytest.mark.parametrize(
+    "name", ["tix", "tix as legacy", "tix as first, tix as second"]
+)
+def test_from_import_detects_a_removed_submodule(tmp_path: Path, name: str) -> None:
+    """A removed child module cannot escape matching through its parent."""
+    _write_project(tmp_path, {"source.py": f"from tkinter import {name}\n"})
+
+    (finding,) = _rule_findings(_scan(tmp_path), "CPY0028")
+
+    assert finding.impact.value == "breaking"
+    assert dict(finding.match_evidence)["imported_module"] == "tkinter.tix"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from .tkinter import tix\n",
+        "from tkinter import *\n",
+        "from tkinter import ttk\n",
+        "import sys\nif sys.version_info < (3, 13):\n    from tkinter import tix\n",
+        (
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+            "    from tkinter import tix\n"
+        ),
+    ],
+)
+def test_submodule_import_matching_respects_origin_and_guards(
+    tmp_path: Path, source: str
+) -> None:
+    """Only a reachable, absolute import of the removed child is a blocker."""
+    _write_project(tmp_path, {"source.py": source})
+    assert not _rule_findings(_scan(tmp_path), "CPY0028")
+
+
+def test_submodule_import_does_not_match_a_local_package(tmp_path: Path) -> None:
+    """A project can provide its own child module."""
+    _write_project(
+        tmp_path,
+        {"source.py": "from tkinter import tix\n", "tkinter/__init__.py": "tix = 1\n"},
+    )
+    assert not _rule_findings(_scan(tmp_path), "CPY0028")
+
+
+@pytest.mark.parametrize("helper", ["a_paths.py", "z_paths.py"])
+@pytest.mark.parametrize("source_roots", [None, ("src",), ()])
+def test_dynamic_local_import_keeps_its_fallback_reachable(
+    tmp_path: Path, helper: str, source_roots: tuple[str, ...] | None
+) -> None:
+    """Cross-file path changes invalidate guaranteed imports on their targets."""
+    _write_project(
+        tmp_path,
+        {
+            f"src/{helper}": "import sys\nif sys.version_info >= (3, 13):\n"
+            "    sys.path.insert(0, 'compat')\n",
+            "src/main.py": "try:\n    import json\nexcept ImportError:\n"
+            "    import imp\n",
+            "compat/json.py": "raise ImportError('missing backend')\n",
+            ".gitignore": "compat/\n",
+        },
+    )
+    report = scan(
+        ScanRequest(
+            root=tmp_path,
+            baseline_python="3.11",
+            horizon_python="3.13",
+            source_roots=source_roots,
+            paths=(Path("src"),),
+        )
+    )
+    (finding,) = _rule_findings(report, "CPY0024")
+    assert tuple(map(str, finding.reachable_versions)) == ("3.13",)
+    assert report.exit_code == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "sys.path.append('compat')",
+        "if sys.version_info < (3, 0):\n    sys.path.insert(0, 'compat')",
+        "if TYPE_CHECKING:\n    sys.path.insert(0, 'compat')",
+    ],
+)
+def test_noncompeting_path_changes_do_not_reopen_import_fallbacks(
+    tmp_path: Path, mutation: str
+) -> None:
+    """An append or an unreachable insert cannot shadow a present stdlib module."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": "import sys\nfrom typing import TYPE_CHECKING\n"
+            f"{mutation}\ntry:\n    import json\nexcept ImportError:\n    import imp\n",
+            "compat/json.py": "raise ImportError('missing backend')\n",
+        },
+    )
+    assert not _rule_findings(_scan(tmp_path), "CPY0024")
+
+
+@pytest.mark.parametrize("confidence", ["high", "medium"])
+def test_partial_insert_preserves_blockers_on_unaffected_targets(
+    tmp_path: Path, confidence: str
+) -> None:
+    """Adding older targets cannot erase a failure on a newer interpreter."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": "import sys\nif sys.version_info[:2] == (3, 12):\n"
+            "    sys.path.insert(0, 'compat')\nimport asynchat\n",
+            "compat/asynchat.py": "VALUE = 1\n",
+        },
+    )
+    reports = [
+        scan(
+            ScanRequest(
+                root=tmp_path,
+                baseline_python=baseline,
+                horizon_python="3.13",
+                minimum_confidence=confidence,
+            )
+        )
+        for baseline in ("3.13", "3.11")
+    ]
+    assert [report.exit_code for report in reports] == [1, 1]
+    assert [report.findings[0].fingerprint for report in reports] == [
+        reports[0].findings[0].fingerprint,
+    ] * 2
+    assert reports[1].findings[0].match_confidence is MatchConfidence(confidence)
+    assert tuple(map(str, reports[1].findings[0].reachable_versions)) == (
+        ("3.11", "3.13") if confidence == "high" else ("3.11", "3.12", "3.13")
+    )
+
+
+def test_expanded_window_preserves_medium_confidence_breaking_targets(
+    tmp_path: Path,
+) -> None:
+    """Earlier high-confidence debt cannot hide later ambiguous breakage."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": "import sys\nif sys.version_info >= (3, 12):\n"
+            "    sys.path.insert(0, 'not-present')\nimport asynchat\n",
+            "compat/asynchat.py": "VALUE = 1\n",
+        },
+    )
+    reports = [
+        scan(
+            ScanRequest(
+                root=tmp_path,
+                baseline_python=baseline,
+                horizon_python="3.13",
+                minimum_confidence="medium",
+            )
+        )
+        for baseline in ("3.13", "3.11")
+    ]
+    assert [report.exit_code for report in reports] == [1, 1]
+    (narrow,), (wide,) = [report.findings for report in reports]
+    assert narrow.fingerprint == wide.fingerprint
+    assert wide.match_confidence is MatchConfidence.MEDIUM
+    assert tuple(map(str, wide.reachable_versions)) == ("3.11", "3.12", "3.13")
+
+    high = scan(
+        ScanRequest(root=tmp_path, baseline_python="3.11", horizon_python="3.13")
+    )
+    (debt,) = high.findings
+    assert debt.fingerprint == wide.fingerprint
+    assert debt.match_confidence is MatchConfidence.HIGH
+    assert tuple(map(str, debt.reachable_versions)) == ("3.11",)
+    assert high.exit_code == 0
+
+
+@pytest.mark.parametrize("size_limit", [128, 1024])
+@pytest.mark.parametrize(
+    ("source", "candidate", "expected_rules"),
+    [
+        (
+            (
+                "sys.path.insert(0, 'compat')\ntry:\n    import json\n"
+                "except ImportError:\n    import imp\n"
+            ),
+            "json",
+            ["CPY0024"],
+        ),
+        ("sys.path.append('compat')\nimport asynchat\n", "asynchat", []),
+    ],
+)
+def test_dynamic_module_origins_do_not_depend_on_candidate_size(
+    tmp_path: Path,
+    size_limit: int,
+    source: str,
+    candidate: str,
+    expected_rules: list[str],
+) -> None:
+    """Skipped compatibility files still compete with standard-library imports."""
+    _write_project(
+        tmp_path,
+        {
+            "src/main.py": "import sys\n" + source,
+            f"compat/{candidate}.py": "# filler\n" * 40
+            + ("raise ImportError\n" if candidate == "json" else "VALUE = 1\n"),
+        },
+    )
+    report = scan(
+        ScanRequest(
+            root=tmp_path,
+            paths=(Path("src"),),
+            source_roots=("src",),
+            baseline_python="3.13",
+            horizon_python="3.13",
+            max_file_size_bytes=size_limit,
+        )
+    )
+    assert [finding.rule_id for finding in report.findings] == expected_rules
+    assert report.exit_code == int(bool(expected_rules))
+
+
+@pytest.mark.parametrize("source_roots", [None, ("src",)])
+@pytest.mark.parametrize("paths", [(), (Path("src"),)])
+@pytest.mark.parametrize(
+    "handler",
+    [
+        "    import imp\n",
+        "    try:\n        import email\n    except ImportError:\n        import imp\n",
+    ],
+)
+def test_opaque_dynamic_directory_cannot_produce_a_clean_scan(
+    tmp_path: Path,
+    source_roots: tuple[str, ...] | None,
+    paths: tuple[Path, ...],
+    handler: str,
+) -> None:
+    """An untraversed path outside the source roots leaves origins incomplete."""
+    root = tmp_path / "project"
+    _write_project(
+        root,
+        {
+            "src/main.py": "import sys\nsys.path.insert(0, 'compat')\n"
+            f"try:\n    import json\nexcept ImportError:\n{handler}"
+        },
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "json.py").write_text("raise ImportError\n", encoding="utf-8")
+    try:
+        (root / "compat").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("the platform does not permit directory symlinks")
+
+    report = scan(
+        ScanRequest(
+            root=root,
+            paths=paths,
+            source_roots=source_roots,
+            baseline_python="3.13",
+            horizon_python="3.13",
+        )
+    )
+    assert report.exit_code == 3  # noqa: PLR2004
+    assert report.counts.files_analyzed == 1
+    assert report.counts.files_incomplete == 1
+    assert [finding.rule_id for finding in report.findings] == ["CPY0024"]
+    assert [(item.code, item.incomplete) for item in report.diagnostics] == [
+        ("PYA1004", True),
+    ]
+
+
+@pytest.mark.parametrize("mutation", ["append('compat')", "insert(0, 'compat')"])
+def test_partial_dynamic_index_preserves_findings_and_known_candidates(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Opaque directories do not erase findings or known competing modules."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": f"import sys\nsys.path.{mutation}\nimport asynchat\n"
+            "import codecs\ncodecs.open('README.md')\n",
+            "compat/asynchat.py": "VALUE = 1\n",
+        },
+    )
+    try:
+        (tmp_path / "opaque").symlink_to("compat", target_is_directory=True)
+    except OSError:
+        pytest.skip("the platform does not permit directory symlinks")
+
+    report = scan(
+        ScanRequest(root=tmp_path, baseline_python="3.13", horizon_python="3.16")
+    )
+
+    assert [finding.rule_id for finding in report.findings] == ["CPY0106"]
+    assert report.counts.files_analyzed == 2  # noqa: PLR2004
+    assert report.counts.files_incomplete == 1
+    assert report.exit_code == 3  # noqa: PLR2004
+    assert [inference.code for inference in report.inferences] == ["PYA2001"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "import sys\nPY2 = sys.version_info[0] == 2\n"
+            "if PY2:\n    from collections import Mapping, Sequence\n"
+        ),
+        (
+            "import sys\nPY2 = sys.version_info[0] == 2\n"
+            "if not PY2:\n    import inspect\n"
+            "else:\n    from inspect import getargspec\n"
+        ),
+        (
+            "import sys\npy = sys.version_info\npy3k = py >= (3, 0, 0)\n"
+            "if py3k:\n    if py < (3, 3, 0):\n"
+            "        from collections import MutableMapping\n"
+            "else:\n    from collections import MutableMapping\n"
+        ),
+    ],
+)
+def test_legacy_branch_imports_do_not_add_high_confidence_findings(
+    tmp_path: Path, source: str
+) -> None:
+    """The attrs, Flask and Bottle compatibility imports keep release behavior."""
+    _write_project(tmp_path, {"source.py": source})
+
+    assert not _scan(tmp_path).findings
+
+
+@pytest.mark.parametrize("source_roots", [("src",), ()])
+@pytest.mark.parametrize("operation", ["append('compat')", "insert(0, 'compat')"])
+def test_dynamic_modules_outside_explicit_source_roots_are_still_indexed(
+    tmp_path: Path, source_roots: tuple[str, ...], operation: str
+) -> None:
+    """A dynamically exposed compatibility module can live outside package roots."""
+    _write_project(
+        tmp_path,
+        {
+            "src/main.py": f"import sys\nsys.path.{operation}\nimport asynchat\n",
+            "compat/asynchat.py": "VALUE = 1\n",
+            ".gitignore": "compat/\n",
+        },
+    )
+    report = scan(
+        ScanRequest(
+            root=tmp_path,
+            baseline_python="3.13",
+            horizon_python="3.13",
+            source_roots=source_roots,
+            paths=(Path("src"),),
+        )
+    )
+    assert report.exit_code == 0
+    assert [inference.code for inference in report.inferences] == ["PYA2001"]
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "local_path"),
+    [
+        ("import json", "json.py"),
+        ("from collections.abc import Mapping", "collections/__init__.py"),
+    ],
+)
+def test_fallback_imports_remain_reachable_when_a_local_module_competes(
+    tmp_path: Path, import_statement: str, local_path: str
+) -> None:
+    """A known stdlib name cannot guarantee that a competing local module loads."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": (
+                f"try:\n    {import_statement}\nexcept ImportError:\n    import imp\n"
+            ),
+            local_path: 'raise ImportError("optional backend missing")\n',
+        },
+    )
+
+    (finding,) = _rule_findings(_scan(tmp_path), "CPY0024")
+
+    assert finding.impact.value == "breaking"
+    assert "reachability_guard" not in dict(finding.match_evidence)
+
+
+@pytest.mark.parametrize("operation", ["append('compat')", "insert(0, 'compat')"])
+@pytest.mark.parametrize("guard", ["sys.version_info < (3, 0)", "TYPE_CHECKING"])
+def test_unreachable_path_changes_cannot_hide_breaking_imports(
+    tmp_path: Path, operation: str, guard: str
+) -> None:
+    """Path changes outside runtime reachability do not affect module origins."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": "import sys\nfrom typing import TYPE_CHECKING\n"
+            f"if {guard}:\n    sys.path.{operation}\nimport asynchat\n",
+            "compat/asynchat.py": "VALUE = 1\n",
+        },
+    )
+
+    report = _scan(tmp_path)
+    (finding,) = _rule_findings(report, "CPY0003")
+
+    assert finding.impact.value == "breaking"
+    assert finding.match_confidence is MatchConfidence.HIGH
+    assert not report.inferences
+
+
+def test_appended_path_affects_only_versions_reached_by_the_mutation(
+    tmp_path: Path,
+) -> None:
+    """An append on 3.12 does not hide the same removed module on 3.13."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": "import sys\nif sys.version_info < (3, 13):\n"
+            "    sys.path.append('compat')\nimport asynchat\n",
+            "compat/asynchat.py": "VALUE = 1\n",
+        },
+    )
+
+    (finding,) = _rule_findings(_scan(tmp_path), "CPY0003")
+
+    assert finding.impact.value == "breaking"
+    assert str(finding.action_version) == "3.13"
+    assert tuple(str(version) for version in finding.reachable_versions) == (
+        "3.11",
+        "3.13",
+        "3.14",
+        "3.15",
+        "3.16",
+    )
+
+
+@pytest.mark.parametrize("operation", ["append('compat')", "insert(0, 'compat')"])
+def test_path_changes_on_other_versions_do_not_change_import_confidence(
+    tmp_path: Path, operation: str
+) -> None:
+    """Disjoint mutation and import branches cannot affect one another."""
+    _write_project(
+        tmp_path,
+        {
+            "source.py": "import sys\nif sys.version_info < (3, 12):\n"
+            f"    sys.path.{operation}\nelse:\n    import asynchat\n",
+            "compat/asynchat.py": "VALUE = 1\n",
+        },
+    )
+
+    report = _scan(tmp_path)
+    (finding,) = _rule_findings(report, "CPY0003")
+
+    assert finding.impact.value == "breaking"
+    assert finding.match_confidence is MatchConfidence.HIGH
+    assert not report.inferences
+
+
 def test_appended_compat_modules_do_not_create_post_removal_breaking_findings(
     tmp_path: Path,
 ) -> None:

@@ -165,6 +165,25 @@ fallback narrowed carries `reachability_guard=import-fallback`. A third-party
 or unlisted import, a handler that also catches another exception, a bare
 `except`, or a call, subscript, operator or compound statement in the `try`
 body leaves the handler as reachable as before. Unknown conditions conservatively enter both branches.
+
+An unused absolute import of a removed symbol is also reported, since importing
+it fails before the name can be used. Existing use-site findings retain their
+fingerprints and cover the import on the target versions they already report;
+only otherwise uncovered failing targets add an import finding. Suppressing or
+baselining an existing use does not create a duplicate import blocker.
+
+These import-only checks recognize common `PY2`/`PY3` guards from a single
+module-level assignment on an earlier line, including aliases of
+`sys.version_info`. Rebound or conditional constants and helper calls remain
+unknown. Unknown guarded imports require `--minimum-confidence medium`;
+proven reachable targets still report at high confidence. Available but
+deprecated symbols and typing-only imports do not add import-only findings.
+Imports in exception handlers also require medium confidence when the analyser
+cannot prove whether the handler executes. Imports inside decorated functions
+require medium confidence because a decorator can prevent execution.
+Optional imports with an import-error fallback do not add import-only blockers;
+a handler that only re-raises the exception does not count as recovery.
+
 The annotation
 of a local variable inside a function body, which Python never evaluates, is
 a typing-only reference, so a runtime-only rule does not report it;

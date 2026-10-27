@@ -24,6 +24,7 @@ from pyahead.model import (
     SubjectKind,
 )
 from pyahead.timeline import derive_state_ranges
+from pyahead.versions import PythonMinor
 
 
 @dataclass(frozen=True)
@@ -45,12 +46,15 @@ class ImportPathMutation:
 
     operation: str
     location: SourceLocation
+    reachable_versions: frozenset[PythonMinor]
 
 
 def _fingerprint(match: StaticMatch, occurrence_ordinal: int) -> str:
     material = "\0".join(
         (
-            "pyahead-fingerprint-v1",
+            "pyahead-fingerprint-v1"
+            if match.import_reference_locations is None
+            else "pyahead-import-fingerprint-v1",
             match.rule_id,
             match.location.path.as_posix(),
             match.enclosing_scope,
@@ -93,6 +97,13 @@ def deduplicate_matches(matches: list[StaticMatch]) -> tuple[StaticMatch, ...]:
         if existing is None:
             deduplicated[key] = match
             continue
+        if (existing.import_reference_locations is None) != (
+            match.import_reference_locations is None
+        ):
+            # An existing import matcher already covers this construct and identity.
+            if match.import_reference_locations is None:
+                deduplicated[key] = match
+            continue
         existing_strength = (
             _CONFIDENCE_PRIORITY[existing.confidence],
             _MATCH_KIND_PRIORITY[existing.matcher_kind],
@@ -125,6 +136,18 @@ def deduplicate_matches(matches: list[StaticMatch]) -> tuple[StaticMatch, ...]:
             ),
             usage_contexts=primary.usage_contexts | secondary.usage_contexts,
             evidence=tuple(evidence),
+            import_reference_locations=(
+                None
+                if primary.import_reference_locations is None
+                else tuple(
+                    sorted(
+                        {
+                            *primary.import_reference_locations,
+                            *(secondary.import_reference_locations or ()),
+                        }
+                    )
+                )
+            ),
         )
     return tuple(deduplicated.values())
 
@@ -144,24 +167,13 @@ def dynamic_path_adjustments(
     registry: Registry,
     dynamic_modules: dict[str, tuple[PurePosixPath, ...]],
     mutations: list[ImportPathMutation],
+    *,
+    minimum_confidence: MatchConfidence,
 ) -> tuple[list[StaticMatch], tuple[AnalysisInference, ...]]:
     """Prevent dynamic repository paths from fabricating an exact origin."""
     if not mutations:
         return matches, ()
     rules = {rule.id: rule for rule in registry.rules}
-    operations = tuple(sorted({mutation.operation for mutation in mutations}))
-    mutation_locations = tuple(
-        sorted(
-            {
-                (
-                    f"{mutation.location.path.as_posix()}:"
-                    f"{mutation.location.region.start.line}:"
-                    f"{mutation.location.region.start.column}"
-                )
-                for mutation in mutations
-            }
-        )
-    )
     adjusted: list[StaticMatch] = []
     inferences: dict[tuple[SourceLocation, str], AnalysisInference] = {}
     for match in matches:
@@ -171,6 +183,12 @@ def dynamic_path_adjustments(
             continue
         module = match.subject.partition(".")[0]
         candidates = dynamic_modules.get(module, ())
+        applicable = [
+            mutation
+            for mutation in mutations
+            if mutation.reachable_versions & match.reachable_versions
+        ]
+        operations = tuple(sorted({mutation.operation for mutation in applicable}))
         rule = rules[match.rule_id]
         has_insert = "insert" in operations
         removals = tuple(
@@ -187,6 +205,18 @@ def dynamic_path_adjustments(
             adjusted.append(match)
             continue
 
+        mutation_locations = tuple(
+            sorted(
+                {
+                    (
+                        f"{mutation.location.path.as_posix()}:"
+                        f"{mutation.location.region.start.line}:"
+                        f"{mutation.location.region.start.column}"
+                    )
+                    for mutation in applicable
+                }
+            )
+        )
         candidate_paths = tuple(path.as_posix() for path in candidates)
         resolution = (
             "dynamic-sys-path-ambiguity"
@@ -195,13 +225,33 @@ def dynamic_path_adjustments(
         )
         reachable_versions = match.reachable_versions
         confidence = match.confidence
-        if has_insert:
-            confidence = MatchConfidence.MEDIUM
-        else:
+        if append_after_removal:
             removal = min(removals)
-            reachable_versions = frozenset(
-                version for version in reachable_versions if version < removal
+            appended_versions = frozenset(
+                version
+                for mutation in applicable
+                if mutation.operation == "append"
+                for version in mutation.reachable_versions
             )
+            reachable_versions = frozenset(
+                version
+                for version in reachable_versions
+                if version < removal or version not in appended_versions
+            )
+        if has_insert:
+            inserted_versions = frozenset(
+                version
+                for mutation in applicable
+                if mutation.operation == "insert"
+                for version in mutation.reachable_versions
+            )
+            unaffected = reachable_versions - inserted_versions
+            if minimum_confidence is MatchConfidence.HIGH and derive_state_ranges(
+                rule, unaffected
+            ):
+                reachable_versions = unaffected
+            else:
+                confidence = MatchConfidence.MEDIUM
         adjusted.append(
             replace(
                 match,
@@ -237,6 +287,30 @@ def dynamic_path_adjustments(
     return adjusted, tuple(inferences[key] for key in sorted(inferences))
 
 
+def _uncovered_import(
+    match: StaticMatch,
+    reported: dict[tuple[str, SourceLocation], frozenset[PythonMinor]],
+    minimum_confidence: MatchConfidence,
+) -> StaticMatch:
+    if match.import_reference_locations is None:
+        return match
+    covered = frozenset(
+        version
+        for location in match.import_reference_locations
+        for version in reported.get((match.rule_id, location), ())
+    )
+    versions = match.reachable_versions - covered
+    uncertain = dict(match.evidence).get("unknown_guard_versions", ())
+    confidence = match.confidence
+    if minimum_confidence is MatchConfidence.HIGH:
+        versions = frozenset(
+            version for version in versions if str(version) not in uncertain
+        )
+    elif any(str(version) in uncertain for version in versions):
+        confidence = MatchConfidence.MEDIUM
+    return replace(match, reachable_versions=versions, confidence=confidence)
+
+
 def build_findings(
     matches: list[StaticMatch],
     context: FindingContext,
@@ -245,26 +319,31 @@ def build_findings(
     registry = context.registry
     policy = context.policy
     rules = {rule.id: rule for rule in registry.rules}
-    ordinals: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
+    ordinals: defaultdict[tuple[str, str, str, str, bool], int] = defaultdict(int)
+    reported: dict[tuple[str, SourceLocation], frozenset[PythonMinor]] = {}
     findings: list[Finding] = []
-    for match in sorted(
+    for raw_match in sorted(
         deduplicate_matches(matches),
         key=lambda item: (
+            item.import_reference_locations is not None,
             item.location.path.as_posix(),
             item.location.region.start,
             item.rule_id,
         ),
     ):
+        match = _uncovered_import(raw_match, reported, context.minimum_confidence)
         ordinal_key = (
             match.location.path.as_posix(),
             match.rule_id,
             match.enclosing_scope,
             match.subject,
+            match.import_reference_locations is not None,
         )
         occurrence_ordinal = ordinals[ordinal_key]
         ordinals[ordinal_key] += 1
         # Fingerprint identity is established before finding-emission filters.
         fingerprint = _fingerprint(match, occurrence_ordinal)
+        reachable_versions = match.reachable_versions
         if (
             _CONFIDENCE_PRIORITY[match.confidence]
             < _CONFIDENCE_PRIORITY[context.minimum_confidence]
@@ -274,7 +353,7 @@ def build_findings(
         usage_contexts = frozenset(rule.contexts).intersection(match.usage_contexts)
         if not usage_contexts:
             continue
-        states = derive_state_ranges(rule, match.reachable_versions)
+        states = derive_state_ranges(rule, reachable_versions)
         if not states:
             continue
         removal_unscheduled = rule.removal_unscheduled
@@ -308,7 +387,7 @@ def build_findings(
             usage_contexts=tuple(
                 sorted(usage_contexts, key=lambda context: context.value)
             ),
-            reachable_versions=tuple(sorted(match.reachable_versions)),
+            reachable_versions=tuple(sorted(reachable_versions)),
             states=states,
             impact=impact,
             action_version=action_version,
@@ -335,6 +414,8 @@ def build_findings(
                 ),
             )
         )
+        if match.import_reference_locations is None:
+            reported[match.rule_id, match.location] = reachable_versions
     return tuple(
         sorted(
             findings,

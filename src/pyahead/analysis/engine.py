@@ -3,10 +3,11 @@
 import io
 import tokenize
 from collections.abc import Callable, Collection, Iterator, Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path, PurePosixPath
 
 import libcst as cst
+from libcst.helpers import get_full_name_for_node
 from libcst.metadata import (
     ClassScope,
     CodeRange,
@@ -20,13 +21,14 @@ from libcst.metadata import (
     QualifiedNameSource,
     ScopeProvider,
 )
-from libcst.metadata.scope_provider import Scope
+from libcst.metadata.scope_provider import Assignment, ImportAssignment, Scope
 
 from pyahead import __version__
 from pyahead._fs.errors import UnsafeEntryError
 from pyahead._fs.rooted import RootedReadTooLargeError, read_rooted_bytes
 from pyahead.analysis.discovery import (
     DiscoveredFile,
+    DiscoveryEntryKind,
     DiscoveryError,
     DiscoveryIncompleteError,
     DiscoveryIssue,
@@ -42,6 +44,8 @@ from pyahead.analysis.findings import (
     build_findings,
     dynamic_path_adjustments,
 )
+from pyahead.analysis.import_guards import evaluate_import_guard
+from pyahead.analysis.known_imports import KNOWN_IMPORTS
 from pyahead.analysis.matchers import MatcherIndex, build_matcher_index
 from pyahead.analysis.matchers.base import IndexedMatcher
 from pyahead.analysis.matchers.builtins import matches_builtin_pattern
@@ -71,8 +75,10 @@ from pyahead.analysis.reachability import (
     BranchReachability,
     LexicalReachability,
     ReachabilityTracker,
+    TruthValue,
     branch_reachability,
     import_fallback_versions,
+    try_body_imports,
 )
 from pyahead.analysis.suppressions import (
     InlineSuppressionIndex,
@@ -174,6 +180,7 @@ class _FileAnalysisContext:
     source_roots: tuple[str, ...]
     max_file_size_bytes: int
     registry: Registry
+    uncertain_imports: dict[str, frozenset[PythonMinor]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -185,6 +192,8 @@ class _FileAnalysis:
     matches: tuple[StaticMatch, ...] = ()
     inferences: tuple[AnalysisInference, ...] = ()
     path_mutations: tuple[ImportPathMutation, ...] = ()
+    fallback_imports: frozenset[str] = frozenset()
+    source: str | None = None
 
     @property
     def incomplete(self) -> bool:
@@ -244,6 +253,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         source_roots: tuple[str, ...],
         *,
         wrapper: MetadataWrapper | None = None,
+        uncertain_imports: Mapping[str, frozenset[PythonMinor]] | None = None,
     ) -> None:
         """Configure one coordinated read-only traversal."""
         self._wrapper = wrapper
@@ -252,6 +262,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         self._index = matcher_index
         self._project_modules = project_modules
         self._source_roots = source_roots
+        self._uncertain_imports = uncertain_imports or {}
         self._inference_keys: set[tuple[int, int, str]] = set()
         self._guard_inference_keys: set[SourceLocation] = set()
         initial_contexts = (
@@ -275,6 +286,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         self.matches: list[StaticMatch] = []
         self.inferences: list[AnalysisInference] = []
         self.path_mutations: list[ImportPathMutation] = []
+        self.fallback_imports: set[str] = set()
 
     def on_visit(self, node: cst.CSTNode) -> bool:
         """Track ``node`` as the innermost ancestor while it is visited."""
@@ -454,9 +466,18 @@ class _MatcherVisitor(cst.CSTVisitor):
         type, or unknown import leaves the handler as reachable as before.
         """
         active = self._reachability
+        imports = try_body_imports(node.body) or ()
+        if any(
+            competing_project_paths(name, self._project_modules) for name in imports
+        ):
+            return
         known = import_fallback_versions(node, active.versions)
         if not known:
             return
+        for name in imports:
+            module = name.partition(".")[0]
+            self.fallback_imports.add(module)
+            known -= self._uncertain_imports.get(module, frozenset())
         unreachable_free = LexicalReachability(
             versions=active.versions - known,
             usage_contexts=active.usage_contexts,
@@ -499,6 +520,7 @@ class _MatcherVisitor(cst.CSTVisitor):
         *,
         reachable_versions: frozenset[PythonMinor] | None = None,
         usage_contexts: frozenset[UsageContext] | None = None,
+        import_reference_locations: tuple[SourceLocation, ...] | None = None,
     ) -> None:
         reachability = self._reachability
         if self._tracker.in_import_fallback and not any(
@@ -530,6 +552,7 @@ class _MatcherVisitor(cst.CSTVisitor):
                     else usage_contexts
                 ),
                 evidence=evidence,
+                import_reference_locations=import_reference_locations,
             )
         )
 
@@ -738,6 +761,211 @@ class _MatcherVisitor(cst.CSTVisitor):
         """Match absolute from-import statements."""
         for imported in imported_modules(node):
             self._record_import(node, imported)
+            if isinstance(node.names, cst.ImportStar):
+                continue
+            for alias in node.names:
+                qualified_name = (
+                    f"{imported.module}.{get_full_name_for_node(alias.name)}"
+                )
+                if any(
+                    isinstance(binding.matcher, ModuleImportMatcher)
+                    and binding.matcher.module == qualified_name
+                    for binding in self._index.module_imports.get(
+                        imported.module.partition(".")[0], ()
+                    )
+                ):
+                    self._record_import(
+                        node,
+                        ImportedModule(
+                            module=qualified_name,
+                            syntax=imported.syntax,
+                            bound_names=tuple(
+                                get_full_name_for_node(
+                                    name.asname.name
+                                    if name.asname is not None
+                                    else name.name
+                                )
+                                or qualified_name
+                                for name in node.names
+                                if name.name.deep_equals(alias.name)
+                            ),
+                        ),
+                    )
+                self._record_symbol_import(node, alias, qualified_name)
+
+    def _guard_alias_value(self, node: cst.Name) -> cst.BaseExpression | None:
+        scope = self.get_metadata(ScopeProvider, node, None)
+        assignments = tuple(scope[node.value]) if scope is not None else ()
+        if len(assignments) != 1:
+            return None
+        assignment = assignments[0]
+        if not isinstance(assignment, Assignment) or isinstance(
+            assignment, ImportAssignment
+        ):
+            return None
+        target = self._parent(assignment.node)
+        if not isinstance(target, cst.AssignTarget):
+            return None
+        parent = self._parent(target)
+        if not isinstance(parent, cst.Assign) or len(parent.targets) != 1:
+            return None
+        statement = self._parent(parent)
+        if (
+            statement is None
+            or not isinstance(self._parent(statement), cst.Module)
+            or self._position(parent).end.line >= self._position(node).start.line
+        ):
+            return None
+        return parent.value
+
+    def _matches_import_guard_name(self, node: cst.BaseExpression, name: str) -> bool:
+        while isinstance(node, cst.Name):
+            value = self._guard_alias_value(node)
+            if value is None:
+                break
+            node = value
+        return self._matches_guard_name(node, name)
+
+    def _symbol_import_versions(
+        self,
+    ) -> tuple[frozenset[PythonMinor], frozenset[PythonMinor]]:
+        versions = self._reachability.versions
+        uncertain: set[PythonMinor] = set()
+        for index, ancestor in enumerate(self._ancestors[:-1]):
+            if isinstance(ancestor, (cst.ExceptHandler, cst.ExceptStarHandler)) or (
+                isinstance(ancestor, cst.FunctionDef) and ancestor.decorators
+            ):
+                uncertain.update(versions)
+            if not isinstance(ancestor, cst.If):
+                continue
+            in_body = self._ancestors[index + 1] is ancestor.body
+            excluded = TruthValue.FALSE if in_body else TruthValue.TRUE
+            evaluated = {
+                version: evaluate_import_guard(
+                    ancestor.test,
+                    version,
+                    self._matches_import_guard_name,
+                    self._guard_alias_value,
+                )
+                for version in versions
+            }
+            versions = frozenset(
+                version for version, truth in evaluated.items() if truth is not excluded
+            )
+            uncertain.update(
+                version
+                for version, truth in evaluated.items()
+                if truth is TruthValue.UNKNOWN
+            )
+        return versions, frozenset(uncertain.intersection(versions))
+
+    def _record_symbol_import(
+        self, node: cst.ImportFrom, alias: cst.ImportAlias, qualified_name: str
+    ) -> None:
+        for binding in self._index.qualified_references.get(
+            terminal_name(alias.name) or "", ()
+        ):
+            matcher = binding.matcher
+            removals = [
+                event.python
+                for event in binding.rule.events
+                if event.kind is ChangeEventKind.REMOVED
+            ]
+            if (
+                not isinstance(matcher, QualifiedReferenceMatcher)
+                or matcher.qualified_name != qualified_name
+                or (matcher.contexts and ReferenceContext.READ not in matcher.contexts)
+                or not removals
+                or self._symbol_import_is_optional()
+            ):
+                continue
+            candidates = qualified_project_candidates(
+                qualified_name, self._project_modules
+            )
+            if candidates:
+                self._record_qualified_inference(node, qualified_name, candidates)
+                continue
+            versions, uncertain = self._symbol_import_versions()
+            bound_name = get_full_name_for_node(
+                alias.asname.name if alias.asname else alias.name
+            )
+            scope = self.get_metadata(ScopeProvider, node)
+            references = tuple(
+                _location(self._path, self._position(access.node))
+                for assignment in (scope[bound_name or ""] if scope is not None else ())
+                if isinstance(assignment, ImportAssignment) and assignment.node is node
+                for access in assignment.references
+            )
+            self._record_match(
+                binding,
+                node,
+                MatchConfidence.HIGH,
+                (
+                    ("qualified_names", (qualified_name,)),
+                    ("reference_context", "read"),
+                    ("resolution", "exact-import"),
+                    ("syntax", "from-import"),
+                    ("bound_names", (bound_name or qualified_name,)),
+                    ("unknown_guard_versions", tuple(map(str, sorted(uncertain)))),
+                ),
+                reachable_versions=frozenset(
+                    version for version in versions if version >= min(removals)
+                ),
+                usage_contexts=self._reachability.usage_contexts.intersection(
+                    {UsageContext.RUNTIME}
+                ),
+                import_reference_locations=references,
+            )
+
+    def _symbol_import_is_optional(self) -> bool:
+        """Exclude handled import failures from import-only blockers."""
+        for index in range(len(self._ancestors) - 2, -1, -1):
+            ancestor = self._ancestors[index]
+            if isinstance(ancestor, (cst.FunctionDef, cst.Lambda)):
+                break
+            if (
+                not isinstance(ancestor, (cst.Try, cst.TryStar))
+                or self._ancestors[index + 1] is not ancestor.body
+            ):
+                continue
+            for handler in ancestor.handlers:
+                members = (
+                    [
+                        item.value
+                        for item in handler.type.elements
+                        if isinstance(item, cst.Element)
+                    ]
+                    if isinstance(handler.type, cst.Tuple)
+                    else [handler.type]
+                )
+                catches = handler.type is None or any(
+                    member is not None
+                    and self._resolution_sources(
+                        member,
+                        name,
+                        frozenset(
+                            {QualifiedNameSource.IMPORT, QualifiedNameSource.BUILTIN}
+                        ),
+                    ).confidence
+                    is MatchConfidence.HIGH
+                    for member in members
+                    for name in (
+                        "builtins.ImportError",
+                        "builtins.Exception",
+                        "builtins.BaseException",
+                    )
+                )
+                if not catches:
+                    continue
+                statements = handler.body.body
+                if len(statements) == 1 and isinstance(
+                    statements[0], cst.SimpleStatementLine
+                ):
+                    statements = statements[0].body
+                if len(statements) == 1 and isinstance(statements[0], cst.Raise):
+                    break
+                return True
+        return False
 
     def _resolution(
         self,
@@ -980,7 +1208,11 @@ class _MatcherVisitor(cst.CSTVisitor):
     def visit_Call(self, node: cst.Call) -> None:  # noqa: N802
         """Match qualified calls, call shapes, and literal dynamic imports."""
         operation = terminal_name(node.func)
-        if operation in ("append", "insert"):
+        if (
+            operation in ("append", "insert")
+            and self._reachability.versions
+            and UsageContext.RUNTIME in self._reachability.usage_contexts
+        ):
             resolution = self._resolution(node.func, f"sys.path.{operation}")
             if resolution.confidence is MatchConfidence.HIGH:
                 self.path_mutations.append(
@@ -990,6 +1222,7 @@ class _MatcherVisitor(cst.CSTVisitor):
                             self._path,
                             self._position(node),
                         ),
+                        reachable_versions=self._reachability.versions,
                     )
                 )
         for binding in self._indexed_bindings(node.func, self._index.qualified_calls):
@@ -1189,17 +1422,20 @@ def _parse_module(
 def _analyse_file(
     path: DiscoveredFile,
     context: _FileAnalysisContext,
+    *,
+    source: str | None = None,
 ) -> _FileAnalysis:
-    source, read_diagnostic = _read_source(
-        context.root,
-        path,
-        context.max_file_size_bytes,
-    )
-    if read_diagnostic is not None:
-        return _FileAnalysis(
-            suppressions=index_inline_suppressions(()),
-            diagnostics=(read_diagnostic,),
+    if source is None:
+        source, read_diagnostic = _read_source(
+            context.root,
+            path,
+            context.max_file_size_bytes,
         )
+        if read_diagnostic is not None:
+            return _FileAnalysis(
+                suppressions=index_inline_suppressions(()),
+                diagnostics=(read_diagnostic,),
+            )
     if source is None:  # pragma: no cover - guarded by the diagnostic result.
         msg = "source text is absent without a read diagnostic"
         raise RuntimeError(msg)
@@ -1229,6 +1465,7 @@ def _analyse_file(
         context.target_versions,
         context.source_roots,
         wrapper=wrapper,
+        uncertain_imports=context.uncertain_imports,
     )
     inline_suppressions = index_inline_suppressions(inline_directives)
     try:
@@ -1264,6 +1501,8 @@ def _analyse_file(
         matches=tuple(visitor.matches),
         inferences=tuple(visitor.inferences),
         path_mutations=tuple(visitor.path_mutations),
+        fallback_imports=frozenset(visitor.fallback_imports),
+        source=source if visitor.fallback_imports else None,
     )
 
 
@@ -1400,7 +1639,74 @@ def _scan_report(  # noqa: PLR0913 - one report assembly point.
     )
 
 
-def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordinator.
+def _analyse_dynamic_imports(
+    analyses: list[tuple[DiscoveredFile, _FileAnalysis]],
+    context: _FileAnalysisContext,
+    module_discovery: DiscoveryResult,
+    module_options: DiscoveryOptions,
+    *,
+    source_roots_inferred: bool,
+) -> tuple[
+    list[tuple[DiscoveredFile, _FileAnalysis]],
+    dict[str, tuple[PurePosixPath, ...]],
+    tuple[Diagnostic, ...],
+]:
+    """Index dynamic candidates and revisit fallbacks whose imports can fail."""
+    mutations = [
+        mutation for _, analysis in analyses for mutation in analysis.path_mutations
+    ]
+    if not mutations:
+        return analyses, {}, ()
+    try:
+        discovery = (
+            module_discovery
+            if source_roots_inferred
+            else _discover_configured(context.root, (), module_options)
+        )
+    except DiscoveryIncompleteError as error:
+        discovery = DiscoveryResult(files=(), issues=())
+        incomplete: tuple[Diagnostic, ...] = (
+            Diagnostic(
+                code="PYA1001",
+                category=DiagnosticCategory.DISCOVERY,
+                message=str(error),
+                incomplete=True,
+            ),
+        )
+    else:
+        incomplete = tuple(
+            _discovery_issue_diagnostic(issue)
+            for issue in discovery.issues
+            if issue.code == "PYA1006"
+            or issue.entry_kind is DiscoveryEntryKind.DIRECTORY
+        )
+    dynamic_modules = dynamic_path_module_paths(discovery.files, discovery.issues)
+    inserted_versions = frozenset(
+        version
+        for mutation in mutations
+        if mutation.operation == "insert"
+        for version in mutation.reachable_versions
+    )
+    if inserted_versions:
+        uncertain_modules = set(dynamic_modules)
+        if incomplete:
+            # An opaque directory can shadow any otherwise guaranteed import.
+            uncertain_modules.update(name.partition(".")[0] for name in KNOWN_IMPORTS)
+        context = replace(
+            context,
+            uncertain_imports=dict.fromkeys(uncertain_modules, inserted_versions),
+        )
+        # Revisit only affected fallbacks, using the original source snapshot.
+        analyses = [
+            (path, _analyse_file(path, context, source=analysis.source))
+            if analysis.fallback_imports.intersection(uncertain_modules)
+            else (path, analysis)
+            for path, analysis in analyses
+        ]
+    return analyses, dynamic_modules, incomplete
+
+
+def scan(request: ScanRequest) -> ScanReport:
     """Scan Python source without importing, executing, or networking."""
     if request.fail_new_only and request.baseline_file is None:
         message = "--fail-new-only requires --baseline-file"
@@ -1501,7 +1807,6 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         module_discovery.issues,
         None if resolved.source_roots_inferred else resolved.scan.source_roots,
     )
-    dynamic_modules = dynamic_path_module_paths(module_discovery.files)
     matcher_index = build_matcher_index(registry)
     file_context = _FileAnalysisContext(
         root=root,
@@ -1513,20 +1818,10 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
         registry=registry,
     )
 
-    matches: list[StaticMatch] = []
-    inferences: list[AnalysisInference] = []
-    path_mutations: list[ImportPathMutation] = []
-    inline_suppressions: dict[PurePosixPath, InlineSuppressionIndex] = {}
-    diagnostics = [
-        *suppression_diagnostics,
-        *(_discovery_issue_diagnostic(issue) for issue in discovery.issues),
-    ]
-    incomplete_files = len(discovery.issues)
-    analyzed = 0
+    analyses: list[tuple[DiscoveredFile, _FileAnalysis]] = []
     for index, path in enumerate(discovery.files, start=1):
         analysis = _analyse_file(path, file_context)
-        inline_suppressions[path.relative_path] = analysis.suppressions
-        diagnostics.extend(analysis.diagnostics)
+        analyses.append((path, analysis))
         _report_file_progress(
             request,
             FileProgress(
@@ -1536,19 +1831,37 @@ def scan(request: ScanRequest) -> ScanReport:  # noqa: PLR0915 - pipeline coordi
                 incomplete=analysis.incomplete,
             ),
         )
-        if analysis.incomplete:
-            incomplete_files += 1
-            continue
-        analyzed += 1
-        matches.extend(analysis.matches)
-        inferences.extend(analysis.inferences)
-        path_mutations.extend(analysis.path_mutations)
+    analyses, dynamic_modules, dynamic_diagnostics = _analyse_dynamic_imports(
+        analyses,
+        file_context,
+        module_discovery,
+        module_options,
+        source_roots_inferred=resolved.source_roots_inferred,
+    )
+    matches = [match for _, analysis in analyses for match in analysis.matches]
+    inferences = [item for _, analysis in analyses for item in analysis.inferences]
+    inline_suppressions = {
+        path.relative_path: analysis.suppressions for path, analysis in analyses
+    }
+    diagnostics = [
+        *suppression_diagnostics,
+        *(_discovery_issue_diagnostic(issue) for issue in discovery.issues),
+        *(item for _, analysis in analyses for item in analysis.diagnostics),
+    ]
+    incomplete_files = (
+        len(discovery.issues)
+        + sum(analysis.incomplete for _, analysis in analyses)
+        + len(set(dynamic_diagnostics).difference(diagnostics))
+    )
+    diagnostics.extend(set(dynamic_diagnostics).difference(diagnostics))
+    analyzed = sum(not analysis.incomplete for _, analysis in analyses)
 
     matches, path_inferences = dynamic_path_adjustments(
         matches,
         registry,
         dynamic_modules,
-        path_mutations,
+        [mutation for _, analysis in analyses for mutation in analysis.path_mutations],
+        minimum_confidence=resolved.scan.minimum_confidence,
     )
     inferences.extend(path_inferences)
 

@@ -57,6 +57,44 @@ def _baseline_value() -> dict[str, object]:
     }
 
 
+def test_imported_reference_keeps_its_080_baseline_identity(tmp_path: Path) -> None:
+    """An import must not steal the existing use site's occurrence ordinal."""
+    (tmp_path / "main.py").write_text(
+        "from inspect import getargspec\ngetargspec(lambda: None)\n",
+        encoding="utf-8",
+    )
+    fingerprint = "151a3854ff68b9b2f7e0128539475772ca3769bc3a52266957c702091151c20a"
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "created_by": "pyahead 0.8.0",
+                "registry_revision": (
+                    "fa9db725e6121a363c59a4612145cc05feea79a00303adc0592f6f3cfc4a8287"
+                ),
+                "findings": [
+                    {
+                        "fingerprint": fingerprint,
+                        "rule_id": "CPY0201",
+                        "path": "main.py",
+                        "subject": "inspect.getargspec",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = _scan(tmp_path, baseline_file=baseline)
+
+    (finding,) = report.findings
+    assert finding.location.region.start.line == 2  # noqa: PLR2004
+    assert finding.fingerprint == fingerprint
+    assert finding.baseline_status is BaselineStatus.EXISTING
+    assert report.exit_code == 0
+
+
 def test_baseline_document_byte_limit_is_exact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

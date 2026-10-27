@@ -303,6 +303,10 @@ def test_each_named_matcher_has_an_ambiguous_name_fixture(
         assert [inference.code for inference in report.inferences] == ["PYA2001"]
         assert [inference.code for inference in inferences] == ["PYA2001"]
     else:
+        if matcher_name == "qualified_reference":
+            assert matches[0].import_reference_locations is not None
+            assert not matches[0].reachable_versions
+            matches = matches[1:]
         assert len(matches) == 1
         assert matches[0].confidence is MatchConfidence.MEDIUM
         assert dict(matches[0].evidence)["resolution"] == "ambiguous-import"
@@ -872,6 +876,50 @@ def test_call_matchers_deduplicate_to_the_most_specific_shape(tmp_path: Path) ->
 
     assert len(report.findings) == 1
     assert report.findings[0].match_kind == "call-shape"
+
+
+def test_symbol_import_preserves_an_existing_module_import_match(
+    tmp_path: Path,
+) -> None:
+    """Overlapping custom matchers retain the legacy import identity and states."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("from targetpkg import old\n", encoding="utf-8")
+    module_matcher = {"kind": "module-import", "module": "targetpkg.old"}
+    reports = []
+    for name, matchers in (
+        ("module", [module_matcher]),
+        (
+            "overlapping",
+            [
+                module_matcher,
+                {"kind": "qualified-reference", "qualified_name": "targetpkg.old"},
+            ],
+        ),
+    ):
+        registry = _write_registry(
+            tmp_path / name,
+            matchers,
+            subject_kind="module",
+            subject_name="targetpkg.old",
+        )
+        reports.append(
+            scan(
+                ScanRequest(
+                    root=project,
+                    baseline_python="3.11",
+                    horizon_python="3.13",
+                    registry_source=registry,
+                )
+            )
+        )
+    (original,) = reports[0].findings
+    (overlapping,) = reports[1].findings
+    assert overlapping.fingerprint == original.fingerprint
+    assert overlapping.match_kind == original.match_kind
+    assert overlapping.match_evidence == original.match_evidence
+    assert overlapping.reachable_versions == original.reachable_versions
+    assert overlapping.states == original.states
 
 
 def test_type_exact_literal_matchers_select_only_their_scalar_kind(

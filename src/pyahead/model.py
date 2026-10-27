@@ -531,6 +531,7 @@ class StaticMatch:
     reachable_versions: frozenset[PythonMinor]
     usage_contexts: frozenset[UsageContext]
     evidence: tuple[tuple[str, EvidenceValue], ...]
+    import_reference_locations: tuple[SourceLocation, ...] | None = None
 
 
 @dataclass(frozen=True)
