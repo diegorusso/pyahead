@@ -833,6 +833,33 @@ def _real_pipeline_manifest(tmp_path: Path, entry: dict[str, Any]) -> tuple[Path
     return manifest_path, wheelhouse
 
 
+@pytest.fixture
+def pipeline_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run synthetic wheels under the test host, independent of uv's inventory."""
+    interpreter = pypi_validate.InstalledInterpreter(
+        minor=sys.version_info.minor,
+        version=sys.version.split()[0],
+        path=Path(sys.executable).resolve(),
+    )
+    # uv can route venv links through aliases in its managed installation root.
+    install_root = pypi_validate._uv_python_install_dir(
+        pypi_validate._uv_executable(), timeout=60
+    )
+    if install_root is None or not interpreter.path.is_relative_to(install_root):
+        install_root = Path(sys.base_prefix).resolve()
+    pypi_validate.patch(
+        monkeypatch,
+        "_installed_interpreters",
+        lambda *_args, **_kwargs: {interpreter.minor: interpreter},
+    )
+    pypi_validate.patch(
+        monkeypatch,
+        "_uv_python_install_dir",
+        lambda *_args, **_kwargs: install_root,
+    )
+
+
+@pytest.mark.usefixtures("pipeline_interpreter")
 def test_run_writes_a_scanned_shard_with_a_mapped_finding(tmp_path: Path) -> None:
     """A package that imports a removed stdlib module scans to one mapped finding."""
     wheelhouse = tmp_path / "wheelhouse"
@@ -887,6 +914,7 @@ def test_run_writes_a_scanned_shard_with_a_mapped_finding(tmp_path: Path) -> Non
     assert not (work_dir / "tmp").exists() or not list((work_dir / "tmp").iterdir())
 
 
+@pytest.mark.usefixtures("pipeline_interpreter")
 def test_run_survives_an_unexpected_failure_past_venv_creation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -936,6 +964,7 @@ def test_run_survives_an_unexpected_failure_past_venv_creation(
     assert "64 MiB" in document["reason"]
 
 
+@pytest.mark.usefixtures("pipeline_interpreter")
 def test_run_skips_a_package_with_no_python_files(tmp_path: Path) -> None:
     """A distribution with only non-.py files never reaches the scanner."""
     wheelhouse = tmp_path / "wheelhouse"
@@ -971,6 +1000,7 @@ def test_run_skips_a_package_with_no_python_files(tmp_path: Path) -> None:
     assert document["reason"] == "no-python-files"
 
 
+@pytest.mark.usefixtures("pipeline_interpreter")
 def test_run_captures_an_install_failure(tmp_path: Path) -> None:
     """A pinned version missing from the offline wheelhouse is `install-failed`."""
     wheelhouse = tmp_path / "wheelhouse"
@@ -1078,6 +1108,7 @@ def test_run_resolves_a_relative_work_dir_before_processing(
     assert (tmp_path / "work" / "shards" / "0001-relative.json").is_file()
 
 
+@pytest.mark.usefixtures("pipeline_interpreter")
 def test_run_records_no_probe_isolation_mode_without_findings(tmp_path: Path) -> None:
     """A scanned package with nothing to probe records no probe isolation mode.
 
