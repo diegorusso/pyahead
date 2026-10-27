@@ -100,17 +100,18 @@ export function timelineLabel(timeline) {
 const isDocumentationUrl = (url) => typeof url === "string" && url.startsWith("https://");
 
 function findingView(finding) {
-  const children = [
-    el("div", {
-      class: "finding-head",
-      children: [
-        text("span", finding.rule_id, { class: "rule" }),
-        text("span", finding.impact, { class: `badge impact-${finding.impact}` }),
+  const summary = el("summary", {
+    children: [
+      text("span", finding.rule_id, { class: "rule" }),
+      el("span", { class: "finding-label", children: [
         text("code", finding.subject, { class: "subject" }),
-      ],
-    }),
+        text("span", locationLabel(finding.location), { class: "location" }),
+      ] }),
+      text("span", finding.impact, { class: `impact impact-${finding.impact}` }),
+    ],
+  });
+  const children = [
     text("p", finding.title ?? "", { class: "finding-title" }),
-    text("p", locationLabel(finding.location), { class: "location" }),
   ];
 
   const timeline = timelineLabel(finding.timeline);
@@ -136,7 +137,9 @@ function findingView(finding) {
   if (finding.enclosing_scope) {
     children.push(text("p", `in ${finding.enclosing_scope}`, { class: "scope" }));
   }
-  return el("li", { class: "finding", children });
+  return el("li", { class: "finding", children: [
+    el("details", { children: [summary, el("div", { class: "finding-detail", children })] }),
+  ] });
 }
 
 /**

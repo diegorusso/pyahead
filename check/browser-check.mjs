@@ -78,6 +78,8 @@ check("the pins are written into the page",
   pins.includes(`PyAhead ${PYAHEAD_VERSION}`) && pins.includes(`Pyodide ${PYODIDE_VERSION}`), pins);
 check("results and download stay hidden before a scan", !(await page.locator("#report-region").isVisible()) && !(await page.locator("#download").isVisible()));
 check("the repository field has a visible label", await page.getByLabel("GitHub repository", { exact: true }).isVisible());
+check("the local example installs the pinned release", (await page.getByLabel("Local scan commands").textContent()).includes(`pyahead==${PYAHEAD_VERSION}`));
+check("the Action example uses the pinned release", (await page.getByLabel("GitHub Actions step").textContent()).includes(`diegorusso/pyahead@v${PYAHEAD_VERSION}`));
 
 console.log("\nchoosing a Python range");
 check("the default baseline is still 3.11", (await page.inputValue("#baseline")) === "3.11");
@@ -199,6 +201,19 @@ check("a clean example shows no incompleteness banner", (await page.locator(".in
 check("completion moves focus to the results", await page.locator("#results-title").evaluate((element) => element === document.activeElement));
 check("scan inputs are restored after completion", await page.locator("#repository").isEnabled() && await page.locator("#baseline").isEnabled() && await page.locator("#horizon").isEnabled());
 
+console.log("\nreading a finding with the keyboard");
+const disclosure = page.locator(".finding details").first();
+const disclosureSummary = disclosure.locator("summary");
+check("each finding has a collapsed disclosure", (await page.locator(".finding details:not([open])").count()) === 5);
+check("the collapsed row includes the rule, subject, location and impact",
+  await disclosureSummary.locator(".rule").isVisible() && await disclosureSummary.locator(".subject").isVisible() &&
+  await disclosureSummary.locator(".location").isVisible() && await disclosureSummary.locator(".impact").isVisible());
+await disclosureSummary.focus();
+await page.keyboard.press("Enter");
+check("Enter reveals guidance and documentation", await disclosure.locator(".remediation").isVisible() && await disclosure.locator(".doc-link").isVisible());
+await page.keyboard.press("Space");
+check("Space collapses the guidance", !(await disclosure.locator(".finding-detail").isVisible()));
+
 console.log("\nsecond scan reuses the cached runtime");
 // Wall-clock was the old test, and it is a guess: a loaded runner can make a
 // warm scan look slow. The actual claim is that nothing is downloaded again,
@@ -225,10 +240,79 @@ check("PyPI was never contacted", ![...hosts].some((host) => host.includes("pypi
 console.log("\nconsole");
 check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 
+console.log("\nchoosing a theme");
+const isDark = (target) => target.locator("body").evaluate((body) =>
+  getComputedStyle(body).backgroundColor.match(/\d+/g).slice(0, 3).every((channel) => Number(channel) < 100));
+const chooseTheme = async (target, name) => {
+  await target.locator("#theme").click();
+  await target.getByRole("dialog", { name: "Color mode" }).getByRole("button", { name, exact: true }).click();
+};
+const themeIs = (name) => page.getByRole("button", { name: `Color mode, currently ${name}`, exact: true }).isVisible();
+const themeMenu = page.getByRole("dialog", { name: "Color mode" });
+check("the theme defaults to the device setting", await themeIs("Auto"));
+await page.locator("#theme").focus();
+await page.keyboard.press("Enter");
+check("Enter opens the color menu", await themeMenu.isVisible());
+check("the menu identifies the selected mode", await themeMenu.getByRole("button", { name: "Auto", pressed: true }).isVisible());
+await page.keyboard.press("Escape");
+check("Escape closes the menu and restores focus", !(await themeMenu.isVisible()) && await page.locator("#theme").evaluate(el => el === document.activeElement));
+await page.locator("#theme").click();
+await page.locator("h1").click();
+check("clicking outside closes the color menu", !(await themeMenu.isVisible()));
+await page.emulateMedia({ colorScheme: "dark" });
+check("a dark device setting gives a dark page", await isDark(page));
+await page.locator("#theme").focus();
+await page.keyboard.press("Enter");
+check("the menu focuses its first choice", await themeMenu.getByRole("button", { name: "Light", exact: true }).evaluate(el => el === document.activeElement));
+await page.keyboard.press("Enter");
+check("an explicit light choice overrides a dark device", !(await isDark(page)));
+check("choosing a mode closes the menu", !(await themeMenu.isVisible()));
+await chooseTheme(page, "Dark");
+await page.emulateMedia({ colorScheme: "light" });
+check("an explicit dark choice overrides a light device", await isDark(page));
+check("changing the theme preserves the report", (await page.locator(".finding").count()) === 5 && await page.locator("#download").isVisible());
+
 console.log("\nnarrow screen");
 await page.setViewportSize({ width: 360, height: 720 });
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
 check("the page does not scroll sideways at 360px", overflow <= 1, `${overflow}px of overflow`);
+await page.locator(".finding summary").first().click();
+check("guidance opens on a narrow screen", await page.locator(".finding-detail").first().isVisible());
+check("expanded findings fit at 360px", await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1));
+await page.goto(`${origin}/about.html`, { waitUntil: "load" });
+check("the About page fits at 360px", await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1));
+check("limitations remain available", await page.locator("#limitations").isVisible());
+check("the theme choice survives navigation", await themeIs("Dark") && await isDark(page));
+await page.reload();
+check("the theme choice survives reload", await themeIs("Dark") && await isDark(page));
+await page.locator("#theme").click();
+check("the menu fits at 360px", await themeMenu.evaluate(el => { const rect = el.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight; }));
+await themeMenu.getByRole("button", { name: "Auto", exact: true }).click();
+check("Auto restores the light device setting", !(await isDark(page)));
+await page.emulateMedia({ colorScheme: "dark" });
+check("Auto follows a later device change", await isDark(page));
+await page.reload();
+check("Auto remains selected after reload", await themeIs("Auto") && await isDark(page));
+
+const restricted = await browser.newContext({ colorScheme: "dark" });
+await restricted.addInitScript(() => {
+  Object.defineProperty(window, "localStorage", { get() { throw new DOMException("Storage disabled", "SecurityError"); } });
+});
+const restrictedPage = await restricted.newPage();
+restrictedPage.on("pageerror", (error) => consoleErrors.push(String(error)));
+await restrictedPage.goto(origin);
+check("blocked storage preserves the system theme", await isDark(restrictedPage));
+await chooseTheme(restrictedPage, "Light");
+check("the theme can change when storage is blocked", !(await isDark(restrictedPage)));
+await restricted.close();
+
+const noScript = await browser.newContext({ javaScriptEnabled: false, colorScheme: "dark" });
+const noScriptPage = await noScript.newPage();
+await noScriptPage.goto(origin);
+check("dark mode works without JavaScript", await isDark(noScriptPage));
+check("the manual theme control is hidden without JavaScript", !(await noScriptPage.locator("#theme").isVisible()));
+await noScript.close();
+check("theme changes cause no script errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 
 await browser.close();
 server.close();

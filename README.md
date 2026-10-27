@@ -12,7 +12,10 @@ WebAssembly, and renders the report. That is the entire flow.
 There is no server here. No repository content, URL or report reaches any
 machine operated by this project, because there is no such machine — the site
 is static files on GitHub Pages, and the scan happens inside your own browser.
-Nothing is stored, nothing is published, and no account is needed.
+Repository URLs, source and reports are not saved between visits, nothing is
+published, and no account is needed. The color-mode button offers Light, Dark
+and Auto. Auto follows the device setting; an explicit light or dark choice is
+saved in this browser.
 
 The page talks to exactly three hosts: a CDN for the Python runtime,
 `api.github.com` to list a repository's files, and `raw.githubusercontent.com`
