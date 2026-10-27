@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/pyahead/"><img src="https://img.shields.io/pypi/v/pyahead?label=PyPI&color=246449" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/pyahead/"><img src="https://img.shields.io/pypi/v/pyahead.svg?label=PyPI&color=246449" alt="PyPI version"></a>
   <a href="https://pypi.org/project/pyahead/"><img src="https://img.shields.io/pypi/pyversions/pyahead?color=246449" alt="Supported host Python versions"></a>
   <a href="https://github.com/diegorusso/pyahead/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/diegorusso/pyahead/ci.yml?branch=main&label=CI" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/diegorusso/pyahead?color=246449" alt="Apache-2.0 license"></a>
@@ -23,8 +23,8 @@
 <p align="center">
   <a href="https://www.diegor.it/pyahead/">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/diegorusso/pyahead/main/.github/readme/site-dark.png">
-      <img src="https://raw.githubusercontent.com/diegorusso/pyahead/main/.github/readme/site.png" width="920" alt="PyAhead 0.8.1 upgrade report for paramiko 2.7.2: 7 breaking and 1 deprecated finding, grouped by Python version, with a finding expanded to show its location, timeline, replacement and source documentation.">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/diegorusso/pyahead/7cb0ac29f6062df4ff5568accb2a9f39a22b929f/.github/readme/site-dark.png">
+      <img src="https://raw.githubusercontent.com/diegorusso/pyahead/7cb0ac29f6062df4ff5568accb2a9f39a22b929f/.github/readme/site.png" width="920" alt="PyAhead 0.8.1 upgrade report for paramiko 2.7.2: 7 breaking and 1 deprecated finding, grouped by Python version, with a finding expanded to show its location, timeline, replacement and source documentation.">
     </picture>
   </a>
   <br>
