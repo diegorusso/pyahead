@@ -4,6 +4,14 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
+## Unreleased
+
+### Fixed
+
+- The GitHub Action reports paths relative to the checkout when scanning a
+  subdirectory, while preserving fingerprints and the scan's exit code. Unsafe
+  report destinations and failed path rewrites prevent upload.
+
 ## 0.8.0 - 2026-10-13
 
 PyAhead is now a pre-commit hook as well as a command and a GitHub Action.

@@ -283,6 +283,11 @@ The SARIF file is valid independently of GitHub. Upload availability depends on 
 
 The repository root carries a composite GitHub Action, `action.yml`, for this journey. It is a packaging of the same CLI, not a second implementation: it installs the PyPI release matching the tag it is referenced by (or its own source at any other ref), runs `pyahead check --root <path> --format sarif`, uploads the report with `github/codeql-action/upload-sarif`, and only then exits with PyAhead's code, so findings reach code scanning even when the gate fails the job. Upload is an input that defaults on; because availability depends on the repository and plan, users without code scanning set it off and keep the report. Inputs reach its scripts only as environment variables, never as expression interpolation, so no input can inject shell code. `.github/workflows/action-self-test.yml` runs the action from source against the golden project with upload off.
 
+For a nested project, the Action rewrites SARIF result and diagnostic locations
+relative to the checkout before upload, preserving fingerprints and the scan's
+exit code. A failed rewrite prevents upload and returns exit code 2; the report
+is replaced atomically within the scan root.
+
 The root also carries `.pre-commit-hooks.yaml`, publishing one pre-commit hook, `pyahead`, that runs `pyahead check` with the project's own configuration. It is the same CLI again, installed by pre-commit from the tag the user pins. Because a finding depends on the whole project (its policy, imports in other modules, the baseline file and suppressions), the hook passes no filenames: pre-commit runs the full scan whenever a Python file or `pyproject.toml` is staged, and the commit fails exactly when the gate does.
 
 ### 5.4 Existing repository adopting a baseline

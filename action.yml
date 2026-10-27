@@ -89,6 +89,7 @@ runs:
         fi
         "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$spec"
         echo "PYAHEAD_BIN=$venv/bin/pyahead" >> "$GITHUB_ENV"
+        echo "PYAHEAD_PYTHON=$venv/bin/python" >> "$GITHUB_ENV"
         "$venv/bin/pyahead" --version
 
     - name: Scan
@@ -112,13 +113,68 @@ runs:
         [[ -n "$PYAHEAD_HORIZON" ]] && args+=(--horizon-python "$PYAHEAD_HORIZON")
         [[ -n "$PYAHEAD_FAIL_ON" ]] && args+=(--fail-on "$PYAHEAD_FAIL_ON")
         [[ -n "$PYAHEAD_CONFIDENCE" ]] && args+=(--minimum-confidence "$PYAHEAD_CONFIDENCE")
-        # A report left by an earlier run must not be uploaded as this one's:
-        # invalid input and internal errors write no report at all.
-        rm -f -- "$PYAHEAD_SARIF"
-        "$PYAHEAD_BIN" "${args[@]}"
-        code=$?
+        if [[ "$PYAHEAD_SARIF" == "-" ]]; then
+          echo "::error title=PyAhead::sarif-file must name a file, not stdout"
+          code=2
+        else
+          "$PYAHEAD_BIN" "${args[@]}"
+          code=$?
+        fi
+        if [[ "$code" =~ ^(0|1|3)$ && -f "$PYAHEAD_SARIF" ]]; then
+          # GitHub resolves alert locations from the checkout, not the scan root.
+          "$PYAHEAD_PYTHON" -I - <<'PY'
+        import json
+        import os
+        import sys
+        import tempfile
+        from pathlib import Path
+        from urllib.parse import quote
+
+        # Standard library only: this runs under whichever release `version`
+        # installed, so it must not import PyAhead itself.
+        try:
+            root = Path.cwd().resolve(strict=True)
+            workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+            prefix = root.relative_to(workspace).as_posix()
+            if prefix != ".":
+                report = root / os.environ["PYAHEAD_SARIF"]
+                parent = report.parent.resolve(strict=True)
+                parent.relative_to(root)
+                if report.is_symlink() or not report.is_file():
+                    raise OSError("the report is not a regular file in the project")
+                descriptor = os.open(
+                    parent / report.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                )
+                with os.fdopen(descriptor, "rb") as handle:
+                    document = json.loads(handle.read())
+                for run in document["runs"]:
+                    records = run["results"] + [
+                        item
+                        for invocation in run.get("invocations", [])
+                        for item in invocation.get("toolExecutionNotifications", [])
+                    ]
+                    for record in records:
+                        for location in record.get("locations", []):
+                            artifact = location["physicalLocation"]["artifactLocation"]
+                            artifact["uri"] = quote(prefix + "/", safe="/-._~") + artifact["uri"]
+                text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+                handle, temporary = tempfile.mkstemp(dir=parent, prefix=".pyahead-", suffix=".tmp")
+                try:
+                    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                        stream.write(text)
+                    os.replace(temporary, parent / report.name)
+                except BaseException:
+                    Path(temporary).unlink(missing_ok=True)
+                    raise
+        except (OSError, ValueError, KeyError, TypeError):
+            print("pyahead: unable to prepare checkout-relative SARIF locations", file=sys.stderr)
+            sys.exit(2)
+        PY
+          [[ "$?" == "0" ]] || code=2
+        fi
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
-        if [[ -f "$PYAHEAD_SARIF" ]]; then
+        # Only these exit codes guarantee the CLI replaced the report.
+        if [[ "$code" =~ ^(0|1|3)$ && -f "$PYAHEAD_SARIF" ]]; then
           echo "sarif-file=${PYAHEAD_PATH%/}/$PYAHEAD_SARIF" >> "$GITHUB_OUTPUT"
         fi
         # The gate is applied after the upload, so findings reach code
