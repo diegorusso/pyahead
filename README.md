@@ -82,16 +82,16 @@ analysis incomplete rather than silently clean. See
 ## Install
 
 ```console
-pipx install pyahead==0.8.0
+pipx install pyahead==0.8.1
 # or run without a persistent tool environment
-uvx pyahead==0.8.0 --version
+uvx pyahead==0.8.1 --version
 ```
 
 To build and install a candidate from this repository instead:
 
 ```console
 uv build
-pipx install dist/pyahead-0.8.0-py3-none-any.whl
+pipx install dist/pyahead-0.8.1-py3-none-any.whl
 ```
 
 Installing PyAhead may contact the configured package index to obtain PyAhead
@@ -109,7 +109,7 @@ For paramiko 2.7.2 that reports eight findings, grouped by the Python version
 each change lands in:
 
 ```text
-PyAhead 0.8.0
+PyAhead 0.8.1
 Policy: Python 3.9 through 3.14
 Registry: 2026.10.10 (fa9db725e612)
 
@@ -177,7 +177,7 @@ the configured static scan completed without a gated finding.
 
 ## Status
 
-Version `0.8.0` is the current public-alpha release. It provides deterministic
+Version `0.8.1` is the current public-alpha release. It provides deterministic
 text, JSON, and SARIF 2.1.0 reports; strict project configuration; baselines and
 rule-specific suppressions; version-guard and typing-context reachability; a
 source-linked, coverage-audited CPython registry; opt-in pytest warning
@@ -225,7 +225,7 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v7
-      - uses: diegorusso/pyahead@v0.8.0
+      - uses: diegorusso/pyahead@v0.8.1
         with:
           baseline-python: "3.11"
 ```
@@ -242,7 +242,7 @@ the commit when a finding meets the gate:
 ```yaml
 repos:
   - repo: https://github.com/diegorusso/pyahead
-    rev: v0.8.0
+    rev: v0.8.1
     hooks:
       - id: pyahead
 ```

@@ -4,7 +4,12 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
-## Unreleased
+## 0.8.1 - 2026-10-27
+
+Correctness fixes for import detection, dynamic import paths, and the GitHub
+Action. Existing use-site fingerprints remain stable. The registry is unchanged
+at 205 rules (`2026.10.10`, `fa9db725e612`). The approved precision record is in
+[`docs/evidence/pypi-top-1000-2026-10-27.md`](docs/evidence/pypi-top-1000-2026-10-27.md).
 
 ### Fixed
 
