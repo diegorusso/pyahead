@@ -5,8 +5,12 @@
 <h1 align="center">PyAhead</h1>
 
 <p align="center">
-  <b>A little foresight for your Python code.</b><br>
-  Find the CPython deprecations and removals a codebase will hit — and when — before the upgrade does.
+  <b>Check your next Python upgrade.</b><br>
+  Find deprecated and removed CPython APIs. Run locally, in your browser, or in GitHub Actions.
+</p>
+
+<p align="center">
+  <a href="https://www.diegor.it/pyahead/">Browser scanner</a> · <a href="#install">Install the CLI</a> · <a href="#ci-and-review-workflows">GitHub Actions</a>
 </p>
 
 <p align="center">
@@ -17,9 +21,14 @@
 </p>
 
 <p align="center">
-  <a href="https://www.diegor.it/pyahead/"><img src="https://raw.githubusercontent.com/diegorusso/pyahead/main/.github/readme/site.png" width="920" alt="The PyAhead website after scanning paramiko 2.7.2 for Python 3.9 through 3.14: 7 breaking and 1 deprecated finding, the first a base64.decodestring call marked deprecated in 3.1 and removed in 3.9, with the replacement and a link to the Python 3.9 release notes."></a>
+  <a href="https://www.diegor.it/pyahead/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/diegorusso/pyahead/main/.github/readme/site-dark.png">
+      <img src="https://raw.githubusercontent.com/diegorusso/pyahead/main/.github/readme/site.png" width="920" alt="PyAhead 0.8.1 upgrade report for paramiko 2.7.2: 7 breaking and 1 deprecated finding, grouped by Python version, with a finding expanded to show its location, timeline, replacement and source documentation.">
+    </picture>
+  </a>
   <br>
-  <sub><a href="https://www.diegor.it/pyahead/">www.diegor.it/pyahead</a> — paramiko 2.7.2 scanned in the browser for Python 3.9 through 3.14. Nothing leaves your machine.</sub>
+  <sub><a href="https://www.diegor.it/pyahead/">www.diegor.it/pyahead</a> — paramiko 2.7.2 scanned with PyAhead 0.8.1 for Python 3.9 through 3.14. Analysis runs in your browser.</sub>
 </p>
 
 PyAhead scans a repository without importing or executing its code and presents
@@ -32,13 +41,20 @@ rule in its registry cites the change at the version it happened.
 [**www.diegor.it/pyahead**](https://www.diegor.it/pyahead/) scans a public
 GitHub repository in your browser. PyAhead runs there as WebAssembly: the page
 fetches the repository's Python files, analyses them on your machine, and
-renders the report. Nothing is uploaded, nothing is stored, and no account is
-needed — there is no server to send anything to.
+renders findings grouped by Python version. Expand a finding for its location,
+timeline, guidance and source links, or download the JSON report.
+
+The color-mode button offers Light, Dark and Auto; Auto follows your device's
+setting. Only an explicit theme choice is saved between visits, alongside the
+browser's ordinary download cache. Repository URLs, source and reports are not
+saved by the application, and no account is needed. Analysis runs locally;
+repository content is not uploaded to a PyAhead service.
 
 It reads public repositories only, and fetches file by file under a cap, so a
 large repository produces a scan that says it is incomplete rather than one
-that looks clean. For private code, continuous scanning, or CI, install the
-command below.
+that looks clean. For private code or repeatable checks,
+[install the CLI](#install). To scan on pushes or pull requests,
+[use the GitHub Action](#ci-and-review-workflows).
 
 ## Limitations — read before use
 
