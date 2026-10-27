@@ -663,6 +663,26 @@ def test_installed_interpreters_resolve_launcher_symlinks(
     assert installed[11].path != link
 
 
+def test_installed_interpreters_are_only_uv_managed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Homebrew or system Python outside the sandbox's binds is never chosen."""
+    seen: list[list[str]] = []
+
+    def _fake_run(
+        argv: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        seen.append(argv)
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout="[]", stderr=""
+        )
+
+    monkeypatch.setattr(pypi_validate.subprocess, "run", _fake_run)
+    pypi_validate._installed_interpreters("uv", timeout=5)
+    argv = seen[0]
+    assert argv[argv.index("--python-preference") + 1] == "only-managed"
+
+
 def test_uv_python_install_dir_resolves_a_symlinked_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

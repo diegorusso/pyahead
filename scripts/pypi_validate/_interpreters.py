@@ -36,6 +36,10 @@ def _installed_interpreters(
             "python",
             "list",
             "--only-installed",
+            # The sandbox binds only uv's managed install root, so a system or
+            # Homebrew interpreter listed first would crash every probe in it.
+            "--python-preference",
+            "only-managed",
             "--output-format",
             "json",
             "--offline",
