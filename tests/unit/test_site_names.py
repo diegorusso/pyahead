@@ -20,6 +20,26 @@ from scripts.pypi_validate._site_names import (
 _TYPING_T = SourceBinding("typing", "typing", None)
 
 
+@pytest.mark.parametrize("alias", ["getargspec", "getargspec as legacy"])
+def test_import_only_findings_probe_the_imported_symbol(alias: str) -> None:
+    """A from-import location probes its binding, including an unused alias."""
+    source = f"from inspect import {alias}\n"
+    assert site_name(source, 1, 1, "inspect.getargspec") == SiteName(
+        "legacy" if " as " in alias else "getargspec",
+        (),
+        SourceBinding("inspect", "inspect", "getargspec"),
+    )
+
+
+def test_import_only_probe_selects_the_matching_symbol_and_local_scope() -> None:
+    """Multi-symbol imports must not adjudicate a different attribute."""
+    source = "def f():\n    from inspect import formatargspec, getargspec as legacy\n"
+    assert site_name(source, 2, 5, "inspect.getargspec") == SiteName(
+        "legacy", (), SourceBinding("inspect", "inspect", "getargspec")
+    )
+    assert site_name(source, 2, 5, "other.getargspec") is None
+
+
 def test_an_alias_is_probed_as_the_site_spells_it() -> None:
     """`import typing as t` then `t.AnyStr`: walk `AnyStr` from `t`."""
     source = "import typing as t\n\ndef f(x: t.IO[t.AnyStr]) -> None: ...\n"

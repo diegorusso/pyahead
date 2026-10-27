@@ -123,6 +123,9 @@ agreement nor a disagreement.
   - A reference is probed as the site spells it: after `import typing as t`
     the site says `t.AnyStr`, and the walk starts from `t`, not from a
     `typing` global the module never bound.
+    A symbol-import finding similarly starts at its bound name: an unused
+    `from inspect import getargspec as legacy` is probed as `legacy` against
+    `inspect.getargspec`, including when the statement imports other symbols.
   - Where the name's scope, found by Python's own lookup rules (class bodies
     skipped, `global` and `nonlocal` honoured, annotations and defaults
     read outside their function), binds it exactly once, by an absolute

@@ -95,17 +95,29 @@ def _dotted(node: ast.AST) -> tuple[str, ...] | None:
 
 
 def _site_node(
-    tree: ast.AST, line: int, column: int, last: str
+    tree: ast.AST, line: int, column: int, qualified_name: str
 ) -> tuple[ast.AST, tuple[str, ...]] | None:
-    """Find the longest `name.attr...` at the location that ends in `last`."""
+    """Find the import or longest dotted reference matching the reported symbol."""
     best: tuple[ast.AST, tuple[str, ...]] | None = None
     for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and not node.level
+            and node.lineno == line
+            and node.col_offset == column
+        ):
+            for alias in node.names:
+                if f"{node.module}.{alias.name}" == qualified_name:
+                    return node, (alias.asname or alias.name,)
         if not isinstance(node, (ast.Name, ast.Attribute)):
             continue
         if node.lineno != line or node.col_offset != column:
             continue
         spelling = _dotted(node)
-        if spelling is None or spelling[-1] != last:
+        if (
+            spelling is None
+            or spelling[-1] != qualified_name.rsplit(".", maxsplit=1)[-1]
+        ):
             continue
         if best is None or len(spelling) > len(best[1]):
             best = (node, spelling)
@@ -277,9 +289,7 @@ def site_name(
     except (SyntaxError, ValueError, RecursionError):
         return None
     assert isinstance(tree, ast.Module)  # noqa: S101 - ast.parse's default mode.
-    found = _site_node(
-        tree, line, column - 1, qualified_name.rsplit(".", maxsplit=1)[-1]
-    )
+    found = _site_node(tree, line, column - 1, qualified_name)
     if found is None:
         return None
     node, spelling = found
