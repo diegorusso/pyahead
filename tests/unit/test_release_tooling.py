@@ -480,7 +480,10 @@ def test_ci_declares_exact_host_and_artifact_job_matrix() -> None:
         yaml.safe_load(workflow_path.read_text(encoding="utf-8")),
     )
     assert document["name"] == "CI"
-    assert document["env"] == {"PYO3_USE_ABI3_FORWARD_COMPATIBILITY": "1"}
+    assert document["env"] == {
+        "FORCE_COLOR": "1",
+        "PYO3_USE_ABI3_FORWARD_COMPATIBILITY": "1",
+    }
 
     jobs = cast("dict[str, dict[str, object]]", document["jobs"])
     assert jobs["quality"]["name"] == "Quality and Gate B / Linux / Python 3.11"
