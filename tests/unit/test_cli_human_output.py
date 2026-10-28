@@ -75,8 +75,10 @@ def _assert_hostile_text_is_one_safe_line(text: str) -> None:
 
 def test_argument_parser_and_nested_parser_escape_error_details(
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The parser class inherited by subcommands owns a safe error boundary."""
+    monkeypatch.setenv("PYTHON_COLORS", "0")
     parser = cli_module._build_parser()  # noqa: SLF001
 
     with pytest.raises(SystemExit) as raised:

@@ -1,6 +1,7 @@
 name: CI
 
 env:
+  FORCE_COLOR: "1"
   PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
 
 on:
@@ -71,14 +72,16 @@ jobs:
             python: "3.13"
           - os: ubuntu-latest
             python: "3.14"
+          - os: ubuntu-latest
+            python: "3.15"
           - os: macos-latest
             python: "3.11"
           - os: macos-latest
-            python: "3.14"
+            python: "3.15"
           - os: windows-latest
             python: "3.11"
           - os: windows-latest
-            python: "3.14"
+            python: "3.15"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -100,6 +103,7 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
+  # TODO Add 3.16, pending https://github.com/actions/setup-python/issues/1371
   prerelease:
     name: Prerelease / ubuntu-latest / Python 3.15
     runs-on: ubuntu-latest
@@ -160,15 +164,15 @@ jobs:
           - os: ubuntu-latest
             python: "3.11"
           - os: ubuntu-latest
-            python: "3.14"
+            python: "3.15"
           - os: macos-latest
             python: "3.11"
           - os: macos-latest
-            python: "3.14"
+            python: "3.15"
           - os: windows-latest
             python: "3.11"
           - os: windows-latest
-            python: "3.14"
+            python: "3.15"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
