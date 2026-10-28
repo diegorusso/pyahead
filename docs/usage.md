@@ -78,6 +78,13 @@ minor to assess. Both are inclusive:
 pyahead check . --baseline-python 3.11 --horizon-python 3.14
 ```
 
+Interactive text scans immediately show `Scanning...` on stderr, then update
+the number of processed files in place. Use `pyahead check . --no-progress` to
+hide the indicator while keeping the full report. `--quiet` also reduces the
+report to its summary. Progress is automatically disabled for JSON/SARIF output,
+redirected stderr, a non-empty `CI` environment variable, or an embedding caller
+that supplies its own `on_file` callback.
+
 Policy precedence is command line, `[tool.pyahead]`, then baseline inference
 from `[project].requires-python`. The default horizon is inferred from bundled
 release metadata. PyAhead reports provenance and rejects versions outside the

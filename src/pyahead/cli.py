@@ -169,6 +169,11 @@ def _scan_options(
     verbosity.add_argument("--quiet", action="store_true")
     if include_report_output:
         parser.add_argument(
+            "--no-progress",
+            action="store_true",
+            help="hide the scanning indicator without reducing report detail",
+        )
+        parser.add_argument(
             "--format",
             choices=("text", "json", "sarif"),
             default="text",
@@ -507,13 +512,37 @@ def _guarded(
         return _Failed(int(ExitCode.INTERNAL_ERROR))
 
 
+def _write_file_progress(progress: FileProgress) -> None:
+    sys.stderr.write(f"\rScanning... {progress.index}/{progress.total} files")
+    sys.stderr.flush()
+
+
 def _check(
     arguments: Namespace,
     on_file: Callable[[FileProgress], None] | None,
 ) -> ScanReport:
     _validate_evidence_arguments(arguments)
-    request = replace(_scan_request(arguments), on_file=on_file)
-    report = scan(request)
+    request = _scan_request(arguments)
+    show_progress = (
+        on_file is None
+        and arguments.output_format == "text"
+        and not arguments.quiet
+        and not arguments.no_progress
+        and not os.environ.get("CI")
+        and sys.stderr.isatty()
+    )
+    request = replace(
+        request, on_file=_write_file_progress if show_progress else on_file
+    )
+    if show_progress:
+        sys.stderr.write("Scanning...")
+        sys.stderr.flush()
+    try:
+        report = scan(request)
+    finally:
+        if show_progress:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
     if arguments.evidence:
         report = merge_evidence(
             report,

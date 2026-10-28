@@ -1,5 +1,6 @@
 """End-to-end tests for CLI reports and exit codes."""
 
+import io
 import json
 import os
 import subprocess
@@ -9,11 +10,13 @@ from typing import TYPE_CHECKING, NoReturn, cast
 
 import pytest
 
+import pyahead.cli as cli_module
 from pyahead.cli import main
-from pyahead.model import ExitCode
+from pyahead.model import ConfigurationError, ExitCode
 
 if TYPE_CHECKING:
-    from pyahead.analysis import FileProgress
+    from pyahead.analysis import FileProgress, ScanRequest
+    from pyahead.model import ScanReport
 
 
 def _check_args(output_format: str = "text") -> list[str]:
@@ -66,6 +69,118 @@ def test_check_reports_each_file_to_an_embedding_caller(
     ]
     report = json.loads(capsys.readouterr().out)
     assert [finding["rule_id"] for finding in report["findings"]] == ["CPY0001"]
+
+
+def test_check_shows_progress_before_scanning_without_changing_the_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Terminal users see flushed progress while findings and exit codes stay intact."""
+    (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    expected_code = main(_check_args())
+    expected_output = capsys.readouterr().out
+    terminal = io.StringIO()
+    flushed: list[str] = []
+    monkeypatch.setattr(terminal, "isatty", lambda: True)
+    monkeypatch.setattr(terminal, "flush", lambda: flushed.append(terminal.getvalue()))
+    monkeypatch.setattr(sys, "stderr", terminal)
+    monkeypatch.delenv("CI", raising=False)
+    real_scan = cli_module.scan
+
+    def scan_after_notice(request: "ScanRequest") -> "ScanReport":
+        assert flushed == ["Scanning..."]
+        return real_scan(request)
+
+    monkeypatch.setattr(cli_module, "scan", scan_after_notice)
+
+    assert main(_check_args()) == expected_code == int(ExitCode.INCOMPLETE)
+    assert capsys.readouterr().out == expected_output
+    assert terminal.getvalue() == (
+        "Scanning...\rScanning... 1/2 files\rScanning... 2/2 files\n"
+    )
+    assert flushed[-1] == terminal.getvalue()
+
+
+@pytest.mark.parametrize(
+    "mode", ["quiet", "no-progress", "json", "sarif", "redirected", "ci", "embedded"]
+)
+def test_check_omits_terminal_progress_when_inappropriate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+) -> None:
+    """Machine output, automation, quiet mode, and custom callbacks stay clean."""
+    (tmp_path / "clean.py").write_text("import pathlib\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: mode != "redirected")
+    monkeypatch.setenv("CI", "true" if mode == "ci" else "")
+    arguments = _check_args(mode if mode in {"json", "sarif"} else "text")
+    if mode in {"quiet", "no-progress"}:
+        arguments.append(f"--{mode}")
+    seen: list[FileProgress] = []
+
+    assert main(arguments, on_file=seen.append if mode == "embedded" else None) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Scanning..." not in captured.out
+    assert bool(seen) == (mode == "embedded")
+    if mode in {"json", "sarif"}:
+        json.loads(captured.out)
+
+
+def test_no_progress_retains_detailed_findings_and_the_failure_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Opting out of terminal progress preserves the full report byte for byte."""
+    (tmp_path / "legacy.py").write_text("import cgi\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.delenv("CI", raising=False)
+
+    assert main(_check_args()) == int(ExitCode.FINDINGS)
+    normal = capsys.readouterr()
+    assert "Scanning..." in normal.err
+    assert "CPY0001" in normal.out
+
+    assert main([*_check_args(), "--no-progress"]) == int(ExitCode.FINDINGS)
+    without_progress = capsys.readouterr()
+    assert without_progress.err == ""
+    assert without_progress.out == normal.out
+
+
+@pytest.mark.parametrize(
+    ("error", "exit_code"),
+    [
+        (ConfigurationError("invalid configuration"), ExitCode.INVALID_INPUT),
+        (RuntimeError("private implementation detail"), ExitCode.INTERNAL_ERROR),
+    ],
+)
+def test_check_ends_progress_before_reporting_a_scan_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+    exit_code: ExitCode,
+) -> None:
+    """A failed scan starts its diagnostic on a fresh line and preserves its code."""
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.delenv("CI", raising=False)
+
+    def fail(_request: "ScanRequest") -> NoReturn:
+        raise error
+
+    monkeypatch.setattr(cli_module, "scan", fail)
+
+    assert main(_check_args()) == int(exit_code)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("Scanning...\npyahead: ")
+    assert "private implementation detail" not in captured.err
 
 
 def test_check_exit_one_for_breaking_finding(

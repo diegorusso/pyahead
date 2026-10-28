@@ -4,6 +4,15 @@ All notable user-visible changes are recorded here. PyAhead follows Semantic
 Versioning, including prerelease identifiers while public contracts are still
 stabilizing.
 
+## Unreleased
+
+### Added
+
+- Interactive `pyahead check` text output immediately shows a scanning indicator
+  and updates a file counter on stderr. `--no-progress` hides only the indicator,
+  keeping the full report. Quiet mode, machine formats, redirected stderr, CI,
+  and embedding callers with their own callback also omit the indicator.
+
 ## 0.8.1 - 2026-10-27
 
 Correctness fixes for import detection, dynamic import paths, and the GitHub
