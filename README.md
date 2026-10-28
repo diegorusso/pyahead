@@ -199,9 +199,9 @@ rule-specific suppressions; version-guard and typing-context reachability; a
 source-linked, coverage-audited CPython registry; opt-in pytest warning
 evidence; and opt-in dependency metadata and isolated-resolution evidence.
 
-PyAhead supports host Python 3.11 through 3.14 on Linux, macOS, and Windows.
+PyAhead supports host Python 3.11 through 3.15 on Linux, macOS, and Windows.
 The host interpreter is independent of the baseline and horizon Python versions
-being assessed. Python 3.15 prerelease CI is advisory until support is claimed.
+being assessed.
 
 The first opt-in dynamic provider collects deprecation warnings with an explicit
 pytest plugin in the repository owner's CI, then merges its versioned artifact

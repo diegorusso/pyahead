@@ -499,10 +499,11 @@ def test_ci_declares_exact_host_and_artifact_job_matrix() -> None:
         ("ubuntu-latest", "3.12"),
         ("ubuntu-latest", "3.13"),
         ("ubuntu-latest", "3.14"),
+        ("ubuntu-latest", "3.15"),
         ("macos-latest", "3.11"),
-        ("macos-latest", "3.14"),
+        ("macos-latest", "3.15"),
         ("windows-latest", "3.11"),
-        ("windows-latest", "3.14"),
+        ("windows-latest", "3.15"),
     }
 
     install_strategy = cast("dict[str, object]", jobs["install"]["strategy"])
@@ -511,7 +512,7 @@ def test_ci_declares_exact_host_and_artifact_job_matrix() -> None:
     assert {(item["os"], item["python"]) for item in install_includes} == {
         (host, python)
         for host in ("ubuntu-latest", "macos-latest", "windows-latest")
-        for python in ("3.11", "3.14")
+        for python in ("3.11", "3.15")
     }
     install_steps = cast("list[dict[str, object]]", jobs["install"]["steps"])
     install_commands = [

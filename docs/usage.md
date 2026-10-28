@@ -7,7 +7,7 @@ as proof that a repository works on a target interpreter.
 
 ## Installation and supported hosts
 
-The public alpha supports CPython 3.11, 3.12, 3.13, and 3.14 as host
+The public alpha supports CPython 3.11 to 3.15 as host
 interpreters on Linux, macOS, and Windows. The host is the interpreter running
 PyAhead; target versions are the policy being assessed and do not need to be
 installed locally.
@@ -42,7 +42,7 @@ from pathlib import Path
 from pyahead.analysis import ScanReport, ScanRequest, scan
 from pyahead.registry import Registry, RegistryError, load_registry
 
-request = ScanRequest(root=Path.cwd(), baseline_python="3.11", horizon_python="3.14")
+request = ScanRequest(root=Path.cwd(), baseline_python="3.11", horizon_python="3.15")
 report: ScanReport = scan(request)
 registry: Registry = load_registry()
 ```
@@ -75,7 +75,7 @@ The baseline is the oldest supported Python minor. The horizon is the newest
 minor to assess. Both are inclusive:
 
 ```console
-pyahead check . --baseline-python 3.11 --horizon-python 3.14
+pyahead check . --baseline-python 3.11 --horizon-python 3.15
 ```
 
 Policy precedence is command line, `[tool.pyahead]`, then baseline inference
@@ -97,7 +97,7 @@ A strict project configuration can declare the complete policy:
 ```toml
 [tool.pyahead]
 baseline-python = "3.11"
-horizon-python = "3.14"
+horizon-python = "3.15"
 include = ["src/**/*.py", "tests/**/*.py"]
 exclude = ["src/generated/**"]
 source-roots = ["src"]
@@ -347,7 +347,7 @@ pytest -p pyahead.pytest_plugin \
 
 pyahead check . \
   --baseline-python 3.11 \
-  --horizon-python 3.14 \
+  --horizon-python 3.15 \
   --evidence pyahead-pytest-warnings.json \
   --source-commit "$GITHUB_SHA" \
   --format json \
@@ -389,7 +389,7 @@ One minimal GitHub Actions job sequence is:
   run: >-
     pyahead check .
     --baseline-python 3.11
-    --horizon-python 3.14
+    --horizon-python 3.15
     --evidence pyahead-pytest-warnings.json
     --source-commit "$GITHUB_SHA"
     --format json
